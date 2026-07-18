@@ -1,0 +1,2247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Dominion</title>
+<style>
+  :root {
+    --gold: #f5c542;
+    --purple: #6b3fa0;
+    --bg: #0b0714;
+    --card: #17102a;
+    --text: #f2ecff;
+    --dim: #a996c9;
+    --green: #58d18f;
+    --red: #e0555f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: 'Segoe UI', system-ui, sans-serif;
+    background: radial-gradient(circle at 50% 0%, #241640 0%, var(--bg) 60%);
+    color: var(--text); min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+    padding: 32px 16px 80px;
+  }
+  h1 {
+    font-size: 3em; margin: 0; letter-spacing: 4px;
+    background: linear-gradient(90deg, var(--gold), #fff6d8, var(--gold));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    text-shadow: 0 0 40px rgba(245,197,66,0.35);
+  }
+  .subtitle { color: var(--dim); letter-spacing: 2px; margin-top: 4px; margin-bottom: 36px; }
+  #startBtn {
+    font-size: 1.3em; padding: 16px 48px; border-radius: 40px; border: none;
+    background: linear-gradient(90deg, var(--gold), #ffd76b); color: #1a1024; font-weight: 700;
+    cursor: pointer; letter-spacing: 2px; box-shadow: 0 0 30px rgba(245,197,66,0.5);
+    transition: transform .15s ease;
+  }
+  #startBtn:hover:not(:disabled) { transform: scale(1.04); }
+  #startBtn:disabled { opacity: 0.6; cursor: default; }
+  #status { color: var(--dim); margin-top: 14px; min-height: 20px; }
+  #playersRemaining {
+    color: var(--gold); font-weight: 700; letter-spacing: 1px; font-size: 1.3em;
+    margin-top: 10px; text-align: center; min-height: 1.4em;
+  }
+
+  /* --- Host banner: a small persistent presence with rotating canned
+     commentary tied to key beats, so there's a visible "host" on screen
+     even though real generative host dialogue is a later phase. --- */
+  .host-banner {
+    width: 100%; max-width: 820px; margin-top: 16px;
+    display: flex; align-items: center; gap: 12px;
+    background: rgba(23,16,42,0.65); border: 1px solid #35234f; border-radius: 14px;
+    padding: 10px 20px;
+  }
+  .host-avatar {
+    font-size: 1.8em; flex-shrink: 0; width: 40px; height: 40px;
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(circle, #2a1a44, var(--card)); border-radius: 50%;
+    border: 1px solid var(--gold);
+  }
+  .host-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  /* An explicit "HOST" tag, since the mic emoji alone wasn't a clear enough
+     signal for who's actually speaking once the audience chatter feed
+     below started carrying similar short exclamations. */
+  .host-tag {
+    font-size: 0.72em; text-transform: uppercase; letter-spacing: 2px;
+    color: var(--gold); font-weight: 700;
+  }
+  .host-line { color: var(--text); font-style: italic; font-size: 1.05em; min-height: 1.4em; }
+  .host-line.pop { animation: hostPop .4s ease; }
+  @keyframes hostPop { from { opacity: 0.2; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* A quick backstage "get to know the contestant" tidbit, shown once per
+     duel just before the countdown -- personal color (profession, kingdom
+     name, the domain they're about to defend) rather than pure play-by-play,
+     since audiences like knowing a little about who they're rooting for. */
+  .interview-line {
+    width: 100%; max-width: 820px; margin-top: 6px; text-align: center;
+    font-size: 0.95em; color: var(--dim); font-style: italic; min-height: 1.3em;
+    opacity: 0; transition: opacity .3s ease;
+  }
+  .interview-line.show { opacity: 1; }
+
+  /* A live indicator while a player's assigned Ollama model is actually
+     mid-call for a target/continue/tax decision -- these calls take real,
+     variable time (see engine/ollama_agent.py), so this is what fills the
+     otherwise-quiet gap instead of the page looking frozen. Cleared as soon
+     as any other event is processed. */
+  .agent-thinking {
+    width: 100%; max-width: 820px; margin-top: 6px; text-align: center;
+    font-size: 0.85em; color: #7fd1c9; font-family: 'Consolas', monospace;
+    min-height: 1.2em; opacity: 0; transition: opacity .3s ease;
+  }
+  .agent-thinking.show { opacity: 1; animation: thinkingPulse 1.1s ease-in-out infinite; }
+
+  /* --- A compact stand-in for the design doc's Section 7 "Gossip Layer":
+     a tiny animated amphitheater plus a short chatter feed of scripted
+     audience exclamations and catty player asides. The real version (real
+     Claude-backed players and a host reacting live) is Phase 3, this is a
+     lightweight visual/textual preview of that idea using canned lines,
+     not actual generated commentary. --- */
+  .audience-panel {
+    width: 100%; max-width: 820px; margin-top: 10px;
+    background: rgba(23,16,42,0.5); border: 1px solid #2c1f45; border-radius: 14px;
+    padding: 10px 16px 12px;
+  }
+  /* A small kicker label, since a plain row of colored dots read as
+     ambiguous -- Scott's own guess that it might be "the in-house
+     audience... just not in a stadium seating arrangement" was exactly
+     right, so it's spelled out now and laid out as actual tiers below. */
+  .audience-label {
+    font-size: 0.78em; text-transform: uppercase; letter-spacing: 2px;
+    color: var(--gold); text-align: center; margin-bottom: 6px; opacity: 0.85;
+  }
+  /* Two curved tiers standing in for stadium seating: a smaller, dimmer
+     "back row" further from the stage, and a slightly bigger "front row"
+     closer to it, each row's dots nudged along a shallow arc (lifted at
+     the ends) rather than sitting in one flat strip. */
+  .amphitheater {
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid #2c1f45;
+  }
+  .aud-row { display: flex; justify-content: center; gap: 7px; }
+  .aud-row.back { gap: 10px; opacity: 0.65; }
+  .aud-head {
+    width: 13px; height: 13px; border-radius: 50%; flex-shrink: 0;
+    transform: translateY(var(--arc, 0px));
+    transition: transform .25s cubic-bezier(.34,1.56,.64,1);
+  }
+  .aud-row.back .aud-head { width: 10px; height: 10px; }
+  .aud-head.react { animation: audBob .5s ease; }
+  @keyframes audBob { 0% { transform: translateY(var(--arc, 0px)); } 40% { transform: translateY(calc(var(--arc, 0px) - 4px)); } 100% { transform: translateY(var(--arc, 0px)); } }
+  .chatter-feed { display: flex; flex-direction: column; gap: 4px; min-height: 1.4em; }
+  .chatter-line {
+    font-size: 0.88em; color: var(--dim); animation: chatterIn .3s ease both;
+  }
+  .chatter-line.audience { color: #a996c9; }
+  .chatter-line.gossip { color: #e0a3c9; font-style: italic; }
+  .chatter-label { font-weight: 700; text-transform: uppercase; font-size: 0.85em; letter-spacing: 0.5px; }
+  @keyframes chatterIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+  #stage { width: 100%; max-width: 820px; margin-top: 18px; display: flex; flex-direction: column; gap: 10px; }
+
+  .card {
+    background: var(--card); border: 1px solid #35234f; border-radius: 12px;
+    padding: 14px 20px; animation: rise .35s ease both; font-size: 1.05em;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+  .kicker { font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: var(--gold); margin-bottom: 4px; }
+  .body-line { color: var(--text); }
+  .dim { color: var(--dim); }
+
+  .card.draw { border-left: 4px solid #6b3fa0; }
+  .card.challenge { border-left: 4px solid #4fa3d1; }
+  .card.result { border-left: 4px solid #d1704f; }
+  .card.advantage { border-left: 4px solid var(--gold); }
+  .card.scramble { border-left: 4px solid #e05fb0; background: #241634; }
+  .card.burst { border-left: 4px solid #58d18f; }
+  .card.finale {
+    border: 2px solid var(--gold); background: radial-gradient(circle, #2a1a44, var(--card));
+    text-align: center; padding: 30px 18px;
+  }
+
+  .finale h2 { font-size: 1.6em; color: var(--dim); margin: 0 0 6px; letter-spacing: 2px; }
+  .finale .champion-number {
+    font-size: 1.25em; color: var(--gold); font-weight: 800; letter-spacing: 1px; margin-top: 4px;
+  }
+  .finale .body-line { font-size: 1.1em; margin-top: 4px; }
+  .prize {
+    font-size: 3.2em; font-weight: 900; margin: 14px 0;
+    background: linear-gradient(90deg, var(--gold), #fff6d8, var(--gold));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    animation: pulse 1s ease infinite alternate;
+  }
+  @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.05); } }
+  .sphere {
+    width: 90px; height: 90px; margin: 10px auto;
+    border-radius: 50%;
+    background: conic-gradient(from 0deg, var(--gold), var(--purple), #e05fb0, var(--gold));
+    box-shadow: 0 0 50px rgba(245,197,66,0.6);
+    animation: spin 6s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .title-card { font-size: 1.4em; letter-spacing: 3px; color: var(--gold); margin-top: 14px; }
+
+  /* --- Pre-production curtain intro: a real "Hollywood" open, not just a
+     plain panel slide -- velvet-textured curtains, sweeping spotlight
+     beams, twinkling lights, and a bright flash right as they part. --- */
+  #curtainOverlay { position: fixed; inset: 0; z-index: 900; display: none; overflow: hidden; background: #050208; }
+  #curtainOverlay.active { display: block; }
+  .curtain-beams {
+    position: absolute; inset: -20%; z-index: 1;
+    background: conic-gradient(from 0deg,
+      rgba(245,197,66,0.16) 0deg, transparent 18deg,
+      transparent 40deg, rgba(245,197,66,0.10) 55deg,
+      transparent 80deg, transparent 140deg,
+      rgba(245,197,66,0.14) 158deg, transparent 176deg,
+      transparent 220deg, rgba(245,197,66,0.10) 235deg,
+      transparent 260deg, transparent 320deg,
+      rgba(245,197,66,0.14) 338deg, transparent 356deg);
+    animation: beamSweep 9s linear infinite;
+    mix-blend-mode: screen;
+  }
+  @keyframes beamSweep { to { transform: rotate(360deg); } }
+  .curtain-sparkles { position: absolute; inset: 0; z-index: 2; }
+  .sparkle-dot {
+    position: absolute; width: 3px; height: 3px; border-radius: 50%;
+    background: #fff6d8; box-shadow: 0 0 6px 1px rgba(255,246,216,0.9);
+    animation: sparkleTwinkle 1.6s ease-in-out infinite;
+  }
+  @keyframes sparkleTwinkle { 0%, 100% { opacity: 0.15; transform: scale(0.6); } 50% { opacity: 1; transform: scale(1.3); } }
+  .curtain-flash {
+    position: absolute; inset: 0; z-index: 5; background: #fff;
+    opacity: 0; pointer-events: none;
+  }
+  /* A handful of little "pre-production" stagehands zipping around the
+     curtain while it's up, getting the show ready -- purely a whimsical
+     touch, they can fly, no explanation given or needed. */
+  .stagehand-layer { position: absolute; inset: 0; z-index: 6; pointer-events: none; overflow: hidden; }
+  .stagehand {
+    position: absolute; font-size: 17em; transform: translate(-50%, -50%);
+    transition: left 0.9s cubic-bezier(.45,0,.55,1), top 0.9s cubic-bezier(.45,0,.55,1);
+    animation: stagehandFlap 0.45s ease-in-out infinite alternate;
+    filter: drop-shadow(0 0 5px rgba(245,197,66,0.55));
+  }
+  @keyframes stagehandFlap {
+    0% { transform: translate(-50%, -50%) rotate(-10deg) scale(1); }
+    100% { transform: translate(-50%, -50%) rotate(10deg) scale(1.08); }
+  }
+  #curtainOverlay.flash .curtain-flash { animation: curtainFlash 0.6s ease-out; }
+  @keyframes curtainFlash { 0% { opacity: 0.9; } 100% { opacity: 0; } }
+  .curtain-panel {
+    position: absolute; top: 0; bottom: 0; width: 50%; z-index: 3;
+    background:
+      repeating-linear-gradient(90deg,
+        rgba(255,255,255,0.05) 0px, rgba(255,255,255,0.05) 3px,
+        rgba(0,0,0,0.12) 3px, rgba(0,0,0,0.12) 26px),
+      linear-gradient(135deg, #7a1530, #4a0d1f 55%, #22060e);
+    box-shadow: 0 0 80px rgba(0,0,0,0.7), inset 0 0 60px rgba(0,0,0,0.5);
+    transition: transform 1.1s cubic-bezier(.62,0,.3,1);
+  }
+  .curtain-panel::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 14px;
+    background: repeating-linear-gradient(90deg, var(--gold) 0 6px, #b8892c 6px 12px);
+    box-shadow: 0 0 12px rgba(245,197,66,0.6);
+  }
+  .curtain-panel.left { left: 0; transform: translateX(0); }
+  .curtain-panel.right { right: 0; transform: translateX(0); }
+  #curtainOverlay.open .curtain-panel.left { transform: translateX(-100%); }
+  #curtainOverlay.open .curtain-panel.right { transform: translateX(100%); }
+  .curtain-text {
+    position: absolute; inset: 0; z-index: 4; display: flex; align-items: center; justify-content: center;
+    font-size: 2.3em; letter-spacing: 5px; color: var(--gold); text-transform: uppercase;
+    opacity: 0; transition: opacity .35s ease; text-align: center; padding: 0 20px;
+    text-shadow: 0 0 12px rgba(0,0,0,0.9), 0 0 34px rgba(245,197,66,0.7);
+    font-weight: 800;
+  }
+  .curtain-text.show { opacity: 1; animation: curtainTextPop .5s cubic-bezier(.34,1.56,.64,1) both; }
+  @keyframes curtainTextPop { 0% { transform: scale(0.7); } 60% { transform: scale(1.08); } 100% { transform: scale(1); } }
+
+  /* --- New Game popup: appears a few seconds after the winner banner --- */
+  #newGameOverlay {
+    position: fixed; inset: 0; background: rgba(5,2,12,0.75);
+    display: none; align-items: center; justify-content: center; z-index: 1000;
+  }
+  #newGameOverlay.show { display: flex; animation: overlayFade .4s ease; }
+  @keyframes overlayFade { from { opacity: 0; } to { opacity: 1; } }
+  .overlay-box {
+    background: var(--card); border: 2px solid var(--gold); border-radius: 20px;
+    padding: 36px 48px; text-align: center; box-shadow: 0 0 60px rgba(245,197,66,0.4);
+  }
+  .overlay-title { font-size: 1.3em; color: var(--text); margin-bottom: 20px; letter-spacing: 1px; }
+  #newGameBtn {
+    font-size: 1.2em; padding: 14px 40px; border-radius: 40px; border: none;
+    background: linear-gradient(90deg, var(--gold), #ffd76b); color: #1a1024; font-weight: 700;
+    cursor: pointer; letter-spacing: 2px; box-shadow: 0 0 30px rgba(245,197,66,0.5);
+    transition: transform .15s ease;
+  }
+  #newGameBtn:hover { transform: scale(1.05); }
+
+  /* --- The board itself: fills in during the draw, recolors on capture.
+     Single column now, full width, directly under the duel stage so the
+     territory changes are always the visual anchor of the page. Sized
+     noticeably wider than the text panels above it (duel stage, host
+     banner, feed cards stay ~820-860px) since the board is meant to
+     dominate the page, not match the text column width. --- */
+  #boardWrap {
+    width: 100%; max-width: 1100px; margin-top: 18px; display: flex; justify-content: center;
+  }
+  .board-tile {
+    stroke: #3d2a5c; stroke-width: 2; transition: fill .5s ease;
+  }
+  .board-tile.empty { fill: #1a1330; stroke-dasharray: 4 3; }
+  .board-tile.pop { animation: tilePop .55s ease; }
+  .board-tile.capture { animation: tileCapture .6s ease; }
+  @keyframes tilePop {
+    0% { transform: scale(0.55); opacity: 0; }
+    60% { transform: scale(1.12); opacity: 1; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+  @keyframes tileCapture {
+    0% { filter: brightness(2.6); }
+    100% { filter: brightness(1); }
+  }
+  .board-tile { transform-box: fill-box; transform-origin: center; }
+  /* A tile whose domain has been named but not yet claimed by a player:
+     the domain "waits" on the ground before someone is placed on it. */
+  .board-tile.pending { stroke: var(--gold); stroke-width: 2.5; animation: pendingPulse 1s ease infinite; }
+  @keyframes pendingPulse { 0%, 100% { stroke-opacity: 0.55; } 50% { stroke-opacity: 1; } }
+  /* Tile labels: domain name on top, current owner below. White fill with a
+     dark stroke halo so it stays legible over any of the bright player
+     colors a tile might be filled with. */
+  .tile-label {
+    pointer-events: none; font-family: inherit; font-weight: 700; fill: #fff;
+    paint-order: stroke; stroke: rgba(10,6,20,0.75); stroke-width: 2.5px;
+    stroke-linejoin: round; user-select: none;
+  }
+  .tile-label.owner { font-weight: 600; fill: #ffe9a8; }
+  /* A small version of the same 8-bit face rendered on each owned tile,
+     Section 8: "faces sell" applies to the board too, not just the duel
+     stage -- lets the audience recognize who holds what at a glance. */
+  .tile-face-obj { pointer-events: none; }
+  .tile-face-obj > div { width: 100%; height: 100%; border-radius: 3px; overflow: hidden; box-shadow: 0 0 0 1px rgba(0,0,0,0.4); }
+
+  /* --- The Challenge Stage: the live duel panel --- */
+  #duelStage {
+    width: 100%; max-width: 860px; margin-top: 8px;
+    background: linear-gradient(180deg, #1d1436, #140d26);
+    border: 1px solid #3d2a5c; border-radius: 18px;
+    padding: 18px 22px 22px; opacity: 0; max-height: 0; overflow: hidden;
+    transition: opacity .35s ease, max-height .35s ease, margin .35s ease;
+  }
+  #duelStage.active { opacity: 1; max-height: 900px; margin-bottom: 6px; }
+  .stage-kicker {
+    text-align: center; font-size: 0.85em; letter-spacing: 3px; text-transform: uppercase;
+    color: var(--gold); margin-bottom: 10px;
+  }
+  /* Shared height cap for the two player badges and the image panel
+     between them, so the question image can never render larger than the
+     badges flanking it -- previously the countdown's oversized text made
+     the middle panel balloon taller than the players on either side.
+     Grown from an initial 300px once the larger badge text (face, name,
+     profession, expertise, domain, clock) needed more breathing room than
+     that cap actually allowed -- bigger text needs a bigger box around it,
+     not just a bigger font. */
+  :root { --badge-h: 348px; }
+  .stage-players { display: flex; align-items: stretch; gap: 18px; }
+  .duel-player {
+    flex: 1; min-height: var(--badge-h); max-height: var(--badge-h);
+    background: var(--card); border: 1px solid #35234f; border-radius: 12px;
+    padding: 14px 16px; text-align: center; overflow: hidden;
+    transition: border-color .2s ease, box-shadow .2s ease, transform .3s ease;
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+  }
+  .duel-player.active { border-color: var(--gold); box-shadow: 0 0 18px rgba(245,197,66,0.35); }
+  .duel-player .role { font-size: 0.7em; letter-spacing: 2px; text-transform: uppercase; color: var(--dim); margin-top: 6px; }
+  .duel-player .pname { font-size: 1.25em; margin-top: 2px; font-weight: 600; }
+  /* The 8-bit generated face: a small, blocky retro portrait built at
+     runtime per player (Section 8 personas don't ship real art), so every
+     contestant reads as a distinct character rather than just a number. */
+  .player-face {
+    width: 64px; height: 64px; border-radius: 10px; overflow: hidden;
+    background: #0f0a1e; border: 2px solid #35234f; margin-top: 2px;
+  }
+  /* Idle blink, timing randomized per face (set inline per rect at
+     generation time) so two faces on stage don't blink in lockstep. */
+  .player-face .face-eye {
+    transform-box: fill-box; transform-origin: center;
+    animation-name: faceBlink; animation-timing-function: ease-in-out; animation-iteration-count: infinite;
+  }
+  @keyframes faceBlink {
+    0%, 92%, 100% { transform: scaleY(1); }
+    96% { transform: scaleY(0.12); }
+  }
+  /* Brief reaction on the mouth when that player's own answer lands,
+     tied to the same flash-correct/flash-wrong beat the badge itself gets. */
+  .player-face .face-mouth {
+    transform-box: fill-box; transform-origin: center;
+    transition: transform .2s ease, filter .2s ease;
+  }
+  .duel-player.flash-correct .player-face .face-mouth { transform: scaleY(1.7); filter: brightness(1.4) saturate(1.3); }
+  .duel-player.flash-wrong .player-face .face-mouth { transform: scaleY(0.45) translateY(1px); filter: brightness(0.55) saturate(0.6); }
+  /* Three distinct facts about the player, deliberately kept visually
+     separate: real-world profession (job), chosen expertise (the domain
+     they were originally drafted into and personally identify with, fixed
+     for the whole show), and current domain (whatever they actually hold
+     right now, which can change through conquest or a domain tax). */
+  .p-expertise { font-size: 0.8em; color: var(--dim); margin-top: 6px; font-style: italic; }
+  /* The local Ollama model backing this player's live decisions (target
+     choice, push/retreat, domain tax) -- a small monospace tag, distinct
+     from the human-facing profession/expertise lines above it. */
+  .p-model { font-size: 0.72em; color: #7fd1c9; margin-top: 2px; font-family: 'Consolas', monospace; letter-spacing: 0.3px; }
+  .p-start-domain { font-size: 0.82em; color: #c9a8f5; margin-top: 2px; font-weight: 600; }
+  .p-domain { font-size: 0.85em; color: var(--gold); margin-top: 2px; font-weight: 600; }
+  /* Consecutive-win streak, shown only once it's actually worth bragging
+     about (2+ in a row) rather than on every single badge. */
+  .p-streak { font-size: 0.85em; color: #ff9d4d; margin-top: 2px; font-weight: 700; display: none; }
+  .p-streak.show { display: block; }
+  .duel-clock {
+    font-size: 2.3em; font-weight: 800; margin-top: 8px; font-variant-numeric: tabular-nums;
+    color: var(--text); transition: color .15s ease;
+  }
+  .duel-player.active .duel-clock { color: var(--gold); }
+  /* Flashes are box-shadow rings, not background swaps, so a player's own
+     color tint (set in JS from their board territory color) never gets
+     stomped mid-duel. */
+  .duel-player.flash-correct { animation: flashGreen .5s ease; }
+  .duel-player.flash-wrong { animation: flashRed .4s ease; }
+  @keyframes flashGreen { 0% { box-shadow: none; } 35% { box-shadow: 0 0 0 4px rgba(88,209,143,0.65) inset, 0 0 16px rgba(88,209,143,0.5); } 100% { box-shadow: none; } }
+  @keyframes flashRed { 0% { box-shadow: none; } 35% { box-shadow: 0 0 0 4px rgba(224,85,95,0.65) inset, 0 0 16px rgba(224,85,95,0.5); } 100% { box-shadow: none; } }
+  /* The bonus badge: made deliberately prominent, since it represents a
+     choice the player already made and told the host about before the
+     duel started, not something invoked mid-turn. Sits at the very top of
+     the player box. */
+  .bonus-badge {
+    display: none; font-size: 0.95em; letter-spacing: 1px; font-weight: 800;
+    color: #1a1024; background: var(--gold); border-radius: 10px; padding: 4px 12px;
+    box-shadow: 0 0 0 2px rgba(245,197,66,0.4);
+    animation: badgePulse 1.2s ease infinite;
+  }
+  .bonus-badge.show { display: inline-block; }
+  @keyframes badgePulse { 0%, 100% { box-shadow: 0 0 0 2px rgba(245,197,66,0.4), 0 0 0 rgba(245,197,66,0.6); } 50% { box-shadow: 0 0 0 2px rgba(245,197,66,0.4), 0 0 14px rgba(245,197,66,0.9); } }
+  /* The winner tag: hidden until a duel resolves, then flashed on the
+     winning side before the stage closes, so the win itself gets its own
+     visible beat instead of jumping straight to the next card. */
+  .winner-tag {
+    display: none; margin-top: 8px; font-size: 1.15em; font-weight: 800;
+    color: var(--gold); letter-spacing: 1px;
+  }
+  .duel-player.victory {
+    border-color: var(--gold); transform: scale(1.035);
+    box-shadow: 0 0 0 4px rgba(245,197,66,0.7) inset, 0 0 34px rgba(245,197,66,0.6);
+  }
+  .duel-player.victory .winner-tag { display: block; animation: prizePop .4s cubic-bezier(.34,1.56,.64,1) both; }
+
+  /* Capped to the same height as the player badges (--badge-h) -- the
+     question image sits between two badges and should never dominate the
+     row, so it gets the same ceiling they get, with its own scroll if a
+     rare long prompt doesn't fit. */
+  .duel-image-wrap {
+    flex: 1; max-height: var(--badge-h); display: flex; align-items: center; justify-content: center;
+  }
+  .duel-image {
+    width: 100%; max-height: var(--badge-h); overflow-y: auto;
+    min-height: 96px; display: flex; align-items: center; justify-content: center;
+    background: #0f0a1e; border: 1px dashed #4a3670; border-radius: 12px; padding: 14px 16px;
+    text-align: center; font-size: 1.2em; color: var(--text);
+    animation: reveal .3s ease both;
+  }
+  @keyframes reveal { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
+  /* The 3-2-1 countdown right before a duel's first question: bold and
+     large, but still capped within the badge-height ceiling above so it
+     never grows past the player boxes flanking it. */
+  .duel-image.countdown {
+    font-size: 3.4em; font-weight: 900; color: var(--gold);
+    text-shadow: 0 0 24px rgba(245,197,66,0.7);
+  }
+  .duel-domain-tag {
+    text-align: center; margin: 0 0 14px; font-size: 1em; letter-spacing: 1px; color: var(--dim);
+  }
+  .duel-guess {
+    margin-top: 10px; text-align: center; font-size: 1.15em; min-height: 1.4em;
+    opacity: 0; transition: opacity .25s ease;
+  }
+  .duel-guess.show { opacity: 1; }
+  .duel-guess .say-label { color: var(--dim); margin-right: 6px; }
+  .duel-guess.correct .say-text { color: var(--green); font-weight: 700; }
+  .duel-guess.wrong .say-text { color: var(--red); font-weight: 700; }
+  .duel-guess.passed .say-text { color: var(--dim); font-style: italic; font-weight: 400; }
+  /* "Thinking out loud" state: the calm fallback for the rare case a
+     question has no real distractors to rapid-fire through. */
+  .duel-guess.thinking .say-text { color: var(--dim); font-style: italic; animation: thinkingPulse 1.1s ease-in-out infinite; }
+  @keyframes thinkingPulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+  /* Rapid-fire guess flicker: bright, bold, and punchy rather than a calm
+     dim italic, with a quick pop retriggered on every flick (see
+     startRapidFireGuesses in JS) so the whole stretch the clock is ticking
+     reads as someone actually blurting out guesses, not idly waiting. */
+  .duel-guess.rapidfire .say-text { color: var(--text); font-weight: 700; animation: rapidFlick .15s ease; }
+  @keyframes rapidFlick { 0% { opacity: 0.35; transform: scale(0.94); } 100% { opacity: 1; transform: scale(1); } }
+  .duel-answer {
+    text-align: center; margin-top: 10px; font-size: 1.1em;
+  }
+  .duel-answer .answer-label { color: var(--dim); margin-right: 6px; }
+  .duel-answer .answer-text { color: var(--gold); font-weight: 700; font-size: 1.15em; }
+  .duel-player.flash-pass { animation: flashPass .45s ease; }
+  @keyframes flashPass { 0% { box-shadow: none; } 35% { box-shadow: 0 0 0 4px rgba(245,197,66,0.5) inset, 0 0 16px rgba(245,197,66,0.4); } 100% { box-shadow: none; } }
+
+  /* --- Prize / bonus spotlight moments: a step up from the ordinary feed
+     card, so a minor win doesn't scroll by unnoticed --- */
+  .card-emoji { margin-right: 6px; }
+  .card.prize-highlight {
+    border: 2px solid var(--gold);
+    box-shadow: 0 0 20px rgba(245,197,66,0.4);
+    animation: prizePop .5s cubic-bezier(.34,1.56,.64,1) both;
+  }
+  @keyframes prizePop {
+    0% { transform: scale(0.7); opacity: 0; }
+    60% { transform: scale(1.07); opacity: 1; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+
+  /* --- Grand prize: the whole finale card gets to have fun --- */
+  @keyframes jumpyText {
+    0%, 100% { transform: translateY(0) rotate(0deg); }
+    20% { transform: translateY(-10px) rotate(-3deg); }
+    40% { transform: translateY(0) rotate(2deg); }
+    60% { transform: translateY(-6px) rotate(-2deg); }
+    80% { transform: translateY(0) rotate(1deg); }
+  }
+  .card.finale .prize { animation: pulse 1s ease infinite alternate, jumpyText 1.8s ease infinite; }
+  .card.finale .title-card { animation: jumpyText 1.6s ease infinite; animation-delay: .3s; }
+  .confetti-piece {
+    position: fixed; top: -20px; width: 10px; height: 14px; border-radius: 2px;
+    pointer-events: none; z-index: 999; animation: confettiFall linear forwards;
+  }
+  @keyframes confettiFall {
+    0% { transform: translate(0,0) rotate(0deg); opacity: 1; }
+    25% { transform: translate(calc(var(--drift) * 0.3), 25vh) rotate(90deg); }
+    50% { transform: translate(calc(var(--drift) * -0.3), 50vh) rotate(200deg); }
+    75% { transform: translate(calc(var(--drift) * 0.5), 75vh) rotate(300deg); }
+    100% { transform: translate(var(--drift), 105vh) rotate(420deg); opacity: 0.9; }
+  }
+</style>
+</head>
+<body>
+  <div id="curtainOverlay">
+    <div class="curtain-beams"></div>
+    <div class="curtain-sparkles" id="curtainSparkles"></div>
+    <div class="curtain-panel left"></div>
+    <div class="curtain-panel right"></div>
+    <div class="curtain-text" id="curtainText"></div>
+    <div class="stagehand-layer" id="stagehandLayer"></div>
+    <div class="curtain-flash"></div>
+  </div>
+
+  <h1>DOMINION</h1>
+  <div class="subtitle">Agent vs. Agent</div>
+  <button id="startBtn">START SHOW</button>
+  <div id="status"></div>
+  <div id="playersRemaining"></div>
+
+  <div class="host-banner">
+    <div class="host-avatar">&#127908;</div>
+    <div class="host-text">
+      <div class="host-tag">Host</div>
+      <div class="host-line" id="hostLine">Good evening, and welcome to Dominion.</div>
+    </div>
+  </div>
+  <div class="interview-line" id="interviewLine"></div>
+  <div class="agent-thinking" id="agentThinkingLine"></div>
+
+  <div class="audience-panel" id="audiencePanel">
+    <div class="audience-label">In-House Audience</div>
+    <div class="amphitheater" id="amphitheater"></div>
+    <div class="chatter-feed" id="chatterFeed"></div>
+  </div>
+
+  <div id="duelStage">
+    <div class="stage-kicker">The Challenge Stage</div>
+    <div class="duel-domain-tag" id="duelDomainTag">Domain on the line: &mdash;</div>
+    <div class="stage-players">
+      <div class="duel-player" id="playerLeft">
+        <div class="bonus-badge" id="bonusLeft">&#9889; BONUS CLOCK</div>
+        <div class="player-face" id="faceLeft"></div>
+        <div class="role">Challenger</div>
+        <div class="pname" id="nameLeft">&mdash;</div>
+        <div class="p-expertise" id="expertiseLeft"></div>
+        <div class="p-model" id="modelLeft"></div>
+        <div class="p-start-domain" id="startDomainLeft"></div>
+        <div class="p-domain" id="domainLeft"></div>
+        <div class="p-streak" id="streakLeft"></div>
+        <div class="duel-clock" id="clockLeft">25</div>
+        <div class="winner-tag" id="winnerTagLeft">&#127942; WINS!</div>
+      </div>
+      <div class="duel-image-wrap">
+        <div class="duel-image" id="duelImage">&hellip;</div>
+      </div>
+      <div class="duel-player" id="playerRight">
+        <div class="bonus-badge" id="bonusRight">&#9889; BONUS CLOCK</div>
+        <div class="player-face" id="faceRight"></div>
+        <div class="role">Defender</div>
+        <div class="pname" id="nameRight">&mdash;</div>
+        <div class="p-expertise" id="expertiseRight"></div>
+        <div class="p-model" id="modelRight"></div>
+        <div class="p-start-domain" id="startDomainRight"></div>
+        <div class="p-domain" id="domainRight"></div>
+        <div class="p-streak" id="streakRight"></div>
+        <div class="duel-clock" id="clockRight">25</div>
+        <div class="winner-tag" id="winnerTagRight">&#127942; WINS!</div>
+      </div>
+    </div>
+    <div class="duel-answer" id="duelAnswer"><span class="answer-label">Answer sought:</span><span class="answer-text" id="duelAnswerText">&mdash;</span></div>
+    <div class="duel-guess" id="duelGuess"><span class="say-label" id="duelSayLabel">They say:</span><span class="say-text" id="duelGuessText">&mdash;</span></div>
+  </div>
+
+  <div id="boardWrap">
+    <svg id="boardSvg" viewBox="0 0 700 640" width="100%" style="max-width:1100px" role="img" aria-label="The board, filling in as players are assigned">
+      <g id="tileLayer"></g>
+    </svg>
+  </div>
+
+  <div id="stage"></div>
+
+  <div id="newGameOverlay">
+    <div class="overlay-box">
+      <div class="overlay-title">Ready for another round?</div>
+      <button id="newGameBtn">NEW GAME</button>
+    </div>
+  </div>
+
+<script>
+const startBtn = document.getElementById('startBtn');
+const statusEl = document.getElementById('status');
+const playersRemainingEl = document.getElementById('playersRemaining');
+const hostLine = document.getElementById('hostLine');
+const interviewEl = document.getElementById('interviewLine');
+const agentThinkingEl = document.getElementById('agentThinkingLine');
+const amphitheaterEl = document.getElementById('amphitheater');
+const chatterFeedEl = document.getElementById('chatterFeed');
+const stage = document.getElementById('stage');
+const duelStage = document.getElementById('duelStage');
+const playerLeft = document.getElementById('playerLeft');
+const playerRight = document.getElementById('playerRight');
+const faceLeft = document.getElementById('faceLeft');
+const faceRight = document.getElementById('faceRight');
+const nameLeft = document.getElementById('nameLeft');
+const nameRight = document.getElementById('nameRight');
+const expertiseLeft = document.getElementById('expertiseLeft');
+const expertiseRight = document.getElementById('expertiseRight');
+const modelLeft = document.getElementById('modelLeft');
+const modelRight = document.getElementById('modelRight');
+const startDomainLeft = document.getElementById('startDomainLeft');
+const startDomainRight = document.getElementById('startDomainRight');
+const domainLeft = document.getElementById('domainLeft');
+const domainRight = document.getElementById('domainRight');
+const streakLeft = document.getElementById('streakLeft');
+const streakRight = document.getElementById('streakRight');
+const clockLeft = document.getElementById('clockLeft');
+const clockRight = document.getElementById('clockRight');
+const duelImage = document.getElementById('duelImage');
+const duelDomainTag = document.getElementById('duelDomainTag');
+const duelGuess = document.getElementById('duelGuess');
+const duelSayLabel = document.getElementById('duelSayLabel');
+const duelGuessText = document.getElementById('duelGuessText');
+const duelAnswerText = document.getElementById('duelAnswerText');
+const bonusLeft = document.getElementById('bonusLeft');
+const bonusRight = document.getElementById('bonusRight');
+const winnerTagLeft = document.getElementById('winnerTagLeft');
+const winnerTagRight = document.getElementById('winnerTagRight');
+const boardSvg = document.getElementById('boardSvg');
+const tileLayerEl = document.getElementById('tileLayer');
+const curtainOverlay = document.getElementById('curtainOverlay');
+const curtainText = document.getElementById('curtainText');
+const curtainSparkles = document.getElementById('curtainSparkles');
+const stagehandLayerEl = document.getElementById('stagehandLayer');
+const newGameOverlay = document.getElementById('newGameOverlay');
+const newGameBtn = document.getElementById('newGameBtn');
+
+const BASE_CLOCK = 25;
+const BONUS_SECONDS = 5;
+
+function hexToRgba(hex, alpha) {
+  const r = parseInt(hex.substr(0, 2), 16), g = parseInt(hex.substr(2, 2), 16), b = parseInt(hex.substr(4, 2), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function fmtMoney(n) { return '$' + n.toLocaleString('en-US'); }
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+// Player IDs are 0-indexed internally throughout the engine (array/dict
+// keys, color palette indexing, board ownership), that's plumbing and
+// stays as-is. The audience should never see "Player 0" though, so every
+// on-screen label goes through this +1 offset instead of the raw id.
+function playerLabel(id) { return 'Player ' + (id + 1); }
+
+let playersRemainingCount = 13;
+function updatePlayersRemaining(n) {
+  playersRemainingCount = n;
+  playersRemainingEl.textContent = n === 1
+    ? '1 player remaining — champion crowned'
+    : `${n} players remaining`;
+}
+
+// A short, respectful/muted reaction pool shared between the host and the
+// audience chatter feed below -- Scott's note that "the players watching
+// should be the same as the host if not a bit more catty" is handled by
+// literally drawing from the same array for both, while player gossip
+// (further down) gets its own, sharper templates instead.
+const REACTION_EXCLAIM = ["Ooh.", "Ahh...", "Wow.", "Criminy!", "Hm.", "Well now.", "Oooh."];
+
+// --- Host banner: canned commentary lines tied to key beats. Real
+// generative host narration is later-phase work (Section 7/11), this
+// gives a visible, audible-feeling host presence in the meantime rather
+// than the show playing out with no host at all. Coverage was widened
+// this pass to more event types (domain tax, burst prize, milestone) since
+// the host previously stayed quiet through several notable beats. ---
+const HOST_LINES = {
+  intro: ["Welcome, welcome, welcome to Dominion!", "Good evening, everybody — let's build this board!"],
+  preduel: ["Ooh, this one's got stakes.", "Here we go, folks!", "This could get interesting fast.", "Let's see what they've got."],
+  bonus: ["Ooh, cashing in the banked bonus — bold move!", "A saved-up bonus, spent at just the right moment!"],
+  win: ["And that's the ballgame!", "What a finish!", "Territory changes hands!", "So close, but not close enough!"],
+  advantage: ["Somebody is on a roll tonight!", "Look at that streak build!"],
+  tax: ["Oh, a domain tax! That's a real gut punch.", "Trading domains — bold, and a little mean!", "That's going to sting for a while."],
+  burst: ["Let's check the leaderboard — big stakes right now!", "A checkpoint prize, and the territory race is tight!"],
+  milestone: ["Five tiles and counting — that's real money on the board!", "A territory milestone! The bank just opened up a little."],
+  scramble: ["Hold onto your hats, the board is changing shape!", "Here comes the Scramble, everybody!"],
+  finale: ["Ladies and gentlemen, we have our champion!", "And there it is — sole owner of the board!"],
+  // Deliberately short and a little restrained: the host holds the floor
+  // during a live duel (Section 7), but between duels can afford to just
+  // react like anyone else watching, not always deliver a full line.
+  postduel: REACTION_EXCLAIM,
+};
+function sayHost(category) {
+  const lines = HOST_LINES[category];
+  if (!lines || !lines.length) return;
+  hostLine.textContent = lines[Math.floor(Math.random() * lines.length)];
+  hostLine.classList.remove('pop');
+  void hostLine.offsetWidth;
+  hostLine.classList.add('pop');
+}
+
+// --- The amphitheater + chatter feed: a compact, always-visible stand-in
+// for Section 7's Gossip Layer. A row of small animated "heads" bobs when
+// the crowd reacts, and a short feed underneath carries scripted
+// exclamations (shared tone with the host, see REACTION_EXCLAIM above) and
+// catty scripted asides attributed to another player watching from the
+// sidelines. None of this is generated commentary -- that needs the
+// Phase 3 reasoning-agent upgrade -- it's a lightweight visual preview of
+// the idea using canned lines, so the show doesn't feel like it's playing
+// to a silent, empty room in the meantime. ---
+// Two rows rather than one flat strip: a back row (further from the
+// stage, smaller and dimmer) and a front row (closer, brighter), each
+// nudged along a shallow arc via the --arc custom property so the whole
+// thing actually reads as tiered stadium seating instead of a single
+// wrapping line of dots.
+const AUD_BACK_COUNT = 6;
+const AUD_FRONT_COUNT = 10;
+const AUD_ARC_HEIGHT = 7; // px the ends lift relative to the row's center
+
+function buildAudRow(container, count, rowClass, palette) {
+  const row = document.createElement('div');
+  row.className = 'aud-row ' + rowClass;
+  const center = (count - 1) / 2 || 1;
+  for (let i = 0; i < count; i++) {
+    const head = document.createElement('div');
+    head.className = 'aud-head';
+    head.style.background = palette[i % palette.length];
+    const t = (i - center) / center; // -1..1 across the row
+    const arc = Math.pow(t, 2) * AUD_ARC_HEIGHT; // lifts at the ends
+    head.style.setProperty('--arc', (-arc) + 'px');
+    row.appendChild(head);
+  }
+  container.appendChild(row);
+}
+
+function createAmphitheater() {
+  amphitheaterEl.innerHTML = '';
+  // A muted, spectator-toned palette -- deliberately distinct in feel from
+  // the bright, saturated PLAYER_COLORS used on the board and duel stage,
+  // so this row of dots doesn't get mistaken for player colors again.
+  const palette = ['#6b3fa0', '#4fa3d1', '#e05fb0', '#58d18f', '#f5c542', '#a996c9'];
+  buildAudRow(amphitheaterEl, AUD_BACK_COUNT, 'back', palette);
+  buildAudRow(amphitheaterEl, AUD_FRONT_COUNT, 'front', palette);
+}
+
+function bounceAmphitheater(intensity = 4) {
+  const heads = amphitheaterEl.querySelectorAll('.aud-head');
+  if (!heads.length) return;
+  const picks = new Set();
+  while (picks.size < Math.min(intensity, heads.length)) picks.add(Math.floor(Math.random() * heads.length));
+  picks.forEach(i => {
+    const el = heads[i];
+    el.classList.remove('react');
+    void el.offsetWidth;
+    el.classList.add('react');
+  });
+}
+
+const MAX_CHATTER_LINES = 5;
+// label is an explicit "who's talking" prefix (e.g. "Crowd") for lines that
+// don't already name a speaker -- gossip lines already open with a named
+// player from GOSSIP_TEMPLATES, so they're left unlabeled on purpose.
+function addChatterLine(text, cls, label) {
+  const line = document.createElement('div');
+  line.className = 'chatter-line' + (cls ? ' ' + cls : '');
+  if (label) {
+    const tag = document.createElement('span');
+    tag.className = 'chatter-label';
+    tag.textContent = label + ': ';
+    line.appendChild(tag);
+  }
+  line.appendChild(document.createTextNode(text));
+  chatterFeedEl.appendChild(line);
+  while (chatterFeedEl.children.length > MAX_CHATTER_LINES) {
+    chatterFeedEl.removeChild(chatterFeedEl.firstChild);
+  }
+}
+
+// A little sharper than the host/audience exclamations, per Scott's note
+// that onlooking players can be "a bit more catty" -- always attributed to
+// some OTHER known player, never the two currently dueling.
+const GOSSIP_TEMPLATES = [
+  (name) => `${name} smirks: "Lucky guess."`,
+  (name) => `${name} mutters: "I could've had that one."`,
+  (name) => `${name} rolls their eyes from the sidelines.`,
+  (name) => `${name} leans over: "Watch this fall apart."`,
+  (name) => `${name} whispers: "...not impressed."`,
+  (name) => `${name}: "Ha! Called it."`,
+  (name) => `${name} side-eyes the board: "That domain was mine to take."`,
+];
+
+function pickOtherPlayer(excludeIds) {
+  const known = Object.keys(playerDomain).map(Number).filter(id => !excludeIds.includes(id));
+  if (!known.length) return null;
+  return known[Math.floor(Math.random() * known.length)];
+}
+
+function playCrowdBlip() {
+  // A tiny, quiet murmur-blip for a single real-time audience reaction --
+  // deliberately much smaller than the full playCrowdSwell used at the
+  // curtain reveal, since this fires often and shouldn't compete with the
+  // duel's own music and tension cues.
+  playTone(1046.50 + Math.random() * 200, 0, 0.12, 'sine', 0.05);
+}
+
+// Real-time reaction to a single duel turn: a chance at a short audience
+// exclamation, and a smaller chance at a catty aside from another player
+// watching from the sidelines. Deliberately not on every turn -- constant
+// chatter would just become noise -- and correct answers/upsets lean
+// toward the audience reacting, since that's the more "ooh"-worthy beat.
+async function maybeReactToTurn(d) {
+  const audienceChance = d.outcome === 'correct' ? 0.55 : (d.outcome === 'passed' ? 0.2 : 0.4);
+  if (Math.random() < audienceChance) {
+    addChatterLine(REACTION_EXCLAIM[Math.floor(Math.random() * REACTION_EXCLAIM.length)], 'audience', 'Crowd');
+    bounceAmphitheater();
+    playCrowdBlip();
+  }
+  if (Math.random() < 0.18) {
+    const otherId = pickOtherPlayer([stageChallengerId, stageDefenderId]);
+    if (otherId !== null) {
+      const template = GOSSIP_TEMPLATES[Math.floor(Math.random() * GOSSIP_TEMPLATES.length)];
+      addChatterLine(template(playerLabel(otherId)), 'gossip');
+    }
+  }
+}
+
+// Between-duels reaction beat, capped at 5 seconds total per Scott's
+// request: the host may or may not have much to say (a real host doesn't
+// always fill the silence), and the crowd gets one short beat to react
+// before the show moves on to whatever comes next.
+async function interDuelReactionBeat() {
+  if (Math.random() < 0.6) sayHost('postduel');
+  bounceAmphitheater(6);
+  if (Math.random() < 0.7) {
+    addChatterLine(REACTION_EXCLAIM[Math.floor(Math.random() * REACTION_EXCLAIM.length)], 'audience', 'Crowd');
+  }
+  if (Math.random() < 0.35) {
+    const otherId = pickOtherPlayer([stageChallengerId, stageDefenderId]);
+    if (otherId !== null) {
+      const template = GOSSIP_TEMPLATES[Math.floor(Math.random() * GOSSIP_TEMPLATES.length)];
+      addChatterLine(template(playerLabel(otherId)), 'gossip');
+    }
+  }
+  await sleep(2000 + Math.random() * 3000); // total hold never exceeds 5s
+}
+
+createAmphitheater();
+
+// --- Backstage interview tidbit: audiences want to know a little about
+// who they're rooting for, not just play-by-play. Built entirely from
+// data already on hand in the frontend (profession and kingdom_name,
+// both already emitted per player on draw_assignment) rather than adding
+// new engine plumbing, so this stays a lightweight, purely cosmetic beat.
+// One contestant from the upcoming duel is picked at random each time so
+// the flavor varies duel to duel instead of always covering the same side.
+const INTERVIEW_TEMPLATES = [
+  (name, prof, king) => `Backstage, ${name} — a ${prof} repping the ${king} — tells us: "I've got this one."`,
+  (name, prof, king) => `"${cap(prof)} by day, board conqueror by night," jokes ${name} of the ${king}.`,
+  (name, prof, king) => `${name} tells the host: "The ${king} isn't just a name — it's a promise."`,
+  (name, prof, king) => `"I didn't expect to still be standing," admits ${name}, the ${king}'s own ${prof}.`,
+  (name, prof, king) => `${name}, ${king}'s ${prof}, flashes a grin backstage: "Bring it on."`,
+  (name, prof, king) => `"Whatever they throw at me, I've survived worse as a ${prof}," ${name} shrugs.`,
+  (name, prof, king) => `A quick word from ${name}: "Representing the ${king} means everything to me tonight."`,
+];
+function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+// Professions in the data are plain lowercase ("night-shift security
+// guard"); title-cased for display anywhere it reads as a label/field
+// rather than mid-sentence prose (the player badge, the finale card).
+function titleCase(s) {
+  if (!s) return s;
+  return s.split(' ').map(w => w.split('-').map(cap).join('-')).join(' ');
+}
+
+// Profession + temperament on one line, e.g. "HVAC Technician · Aggressive".
+// Falls back to just the profession if a temperament label hasn't landed
+// yet (shouldn't happen post-draft, but draw_assignment ordering is not
+// guaranteed relative to when this first gets called).
+function formatExpertiseLine(playerId) {
+  const prof = titleCase(playerProfession[playerId]) || '';
+  const temperament = playerTemperament[playerId];
+  return temperament ? `${prof} · ${temperament}` : prof;
+}
+
+function buildInterviewLine(playerId) {
+  const prof = playerProfession[playerId];
+  const king = playerKingdom[playerId];
+  if (!prof || !king) return '';
+  const name = playerLabel(playerId);
+  const template = INTERVIEW_TEMPLATES[Math.floor(Math.random() * INTERVIEW_TEMPLATES.length)];
+  return template(name, prof, king);
+}
+
+async function showInterviewTidbit(playerId) {
+  const line = buildInterviewLine(playerId);
+  if (!line) return;
+  interviewEl.textContent = line;
+  interviewEl.classList.add('show');
+  await sleep(1250);
+  interviewEl.classList.remove('show');
+  await sleep(150);
+}
+
+let newGamePopupTimer = null;
+function scheduleNewGamePopup() {
+  clearTimeout(newGamePopupTimer);
+  // A few seconds to let the winner banner and confetti land, then offer
+  // a clear way to kick off another round without hunting for the
+  // original Start Show button.
+  newGamePopupTimer = setTimeout(() => { newGameOverlay.classList.add('show'); }, 6000);
+}
+
+// --- Show-open sound design: a game-show fanfare and a crowd-excitement
+// swell, both synthesized in-browser with the Web Audio API. No external
+// audio files are available in this environment, so every sound here is
+// built from oscillators (the fanfare's chime notes) and filtered noise
+// (the crowd swell), rather than a real recorded sting or applause clip.
+let audioCtx = null;
+function getAudioCtx() {
+  // Created lazily, and only ever from inside a click-triggered call stack
+  // (startShow, below), since browsers block audio from starting without
+  // a user gesture behind it.
+  if (!audioCtx) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (Ctx) audioCtx = new Ctx();
+  }
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+
+function playTone(freq, startDelay, duration, type = 'triangle', peak = 0.22) {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const t0 = ctx.currentTime + startDelay;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t0);
+  gain.gain.setValueAtTime(0, t0);
+  gain.gain.linearRampToValueAtTime(peak, t0 + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.001, t0 + duration);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + duration + 0.05);
+}
+
+function playFanfare() {
+  // A bright, ascending "ta-da" style game-show sting: a quick arpeggio
+  // climbing to a held bright top note.
+  const notes = [523.25, 659.25, 783.99, 1046.50]; // C5 E5 G5 C6
+  notes.forEach((freq, i) => playTone(freq, i * 0.11, 0.5, 'triangle', 0.2));
+  playTone(1046.50, 0.44, 0.9, 'square', 0.12); // a little shimmer under the held top note
+}
+
+function playChime() {
+  playTone(1318.51, 0, 0.35, 'sine', 0.15); // a light "ding" for each title beat
+}
+
+function playTileDing() {
+  // A light, quick tick as each domain name lands on its tile during the
+  // board-building phase, so that stretch has some audible ringing rather
+  // than playing out in silence.
+  playTone(1567.98, 0, 0.18, 'sine', 0.12); // G6, short and soft
+}
+
+function playDraftChime() {
+  // A slightly warmer two-note chime as a contestant claims a tile in the
+  // draft phase, a small step up from the plainer board-seeding tick above.
+  playTone(987.77, 0, 0.22, 'triangle', 0.16);   // B5
+  playTone(1318.51, 0.09, 0.3, 'triangle', 0.16); // E6
+}
+
+function playCrowdSwell(durationSec = 1.6) {
+  // Filtered noise standing in for an audience murmur/applause swell: no
+  // recorded crowd sample is available, so this shapes white noise through
+  // a bandpass filter and an amplitude envelope that rises then falls,
+  // which reads as excitement rather than a raw white-noise hiss.
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const bufferSize = Math.floor(ctx.sampleRate * durationSec);
+  const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+  const noise = ctx.createBufferSource();
+  noise.buffer = buffer;
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.frequency.value = 1400;
+  filter.Q.value = 0.6;
+  const gain = ctx.createGain();
+  const t0 = ctx.currentTime;
+  gain.gain.setValueAtTime(0, t0);
+  gain.gain.linearRampToValueAtTime(0.35, t0 + durationSec * 0.35);
+  gain.gain.linearRampToValueAtTime(0, t0 + durationSec);
+  noise.connect(filter);
+  filter.connect(gain);
+  gain.connect(ctx.destination);
+  noise.start(t0);
+  noise.stop(t0 + durationSec + 0.05);
+}
+
+// --- Per-duel audio: a tension build into a literal 3-2-1 countdown right
+// before the first question, a quiet looping "drama" bed while the duel
+// plays out, a bright crescendo when a banked bonus gets spent, and a
+// distinct resolution sting when the duel ends. All but the bonus
+// crescendo happen once per duel, not per turn, so this adds atmosphere
+// without slowing pacing back down after the Revision 25 speed pass. ---
+function playTensionRiser(durationSec = 1.3) {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const t0 = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  const filter = ctx.createBiquadFilter();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(110, t0);
+  osc.frequency.exponentialRampToValueAtTime(220, t0 + durationSec);
+  filter.type = 'lowpass';
+  filter.frequency.setValueAtTime(350, t0);
+  filter.frequency.exponentialRampToValueAtTime(1800, t0 + durationSec);
+  gain.gain.setValueAtTime(0.0001, t0);
+  gain.gain.exponentialRampToValueAtTime(0.16, t0 + durationSec * 0.85);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + durationSec + 0.12);
+  osc.connect(filter);
+  filter.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + durationSec + 0.2);
+}
+
+function playCountdownBeep(bright) {
+  playTone(bright ? 880 : 440, 0, 0.16, 'square', 0.18);
+}
+
+// A brief tension build then a literal 3-2-1 countdown shown big and bold
+// right in the question field, once per duel, right before the first
+// question appears, an "and... we're live" beat for the audience.
+async function playCountdownIntro() {
+  playTensionRiser(1.3);
+  duelImage.classList.add('countdown');
+  await sleep(950);
+  for (const n of ['3', '2', '1']) {
+    duelImage.textContent = n;
+    playCountdownBeep(n !== '1');
+    await sleep(420);
+  }
+  duelImage.classList.remove('countdown');
+}
+
+// A real looping underscore for the duration of a duel. Revision: the old
+// slow, soft Am-F-C-G chord pad read as "lulling" per Scott's direct note
+// -- calm chords a beat and a half apart just isn't tense. Replaced with a
+// fast, driving carousel/calliope-style ostinato: a short up-down melodic
+// motif in A minor, played bright and short (square wave, quick attack/
+// decay, like a music box or circus organ) at a brisk lilting tempo, plus a
+// low sawtooth pulse under the top of every repeat of the motif for weight.
+// The whole thing also builds -- each pass through the motif nudges the
+// volume up for 4 cycles running (an actual crescendo, not a flat loop),
+// then drops back down and climbs again, so a long duel gets a repeated
+// "epic build" rather than one swell that plateaus and goes flat. Still
+// entirely synthesized (no audio files available in this environment).
+// Started once per duel (after the countdown); stopping it just stops
+// scheduling new notes, whatever's already sounding finishes its own
+// short decay rather than being cut off hard.
+const CAROUSEL_MOTIF = [440.00, 523.25, 659.25, 523.25, 440.00, 329.63]; // A4 C5 E5 C5 A4 E4 -- up-and-down lilt
+const CAROUSEL_BASS = 110.00; // A2, one low pulse per lap of the motif
+let dramaLoopTimer = null;
+let dramaNoteIndex = 0;
+let dramaCycleCount = 0;
+
+function playCarouselNote(freq, intensity) {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const t0 = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(freq, t0);
+  gain.gain.setValueAtTime(0, t0);
+  gain.gain.linearRampToValueAtTime(0.085 * intensity, t0 + 0.015);
+  gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.16);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + 0.2);
+}
+
+function playCarouselBassPulse(intensity) {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const t0 = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(CAROUSEL_BASS, t0);
+  gain.gain.setValueAtTime(0, t0);
+  gain.gain.linearRampToValueAtTime(0.11 * intensity, t0 + 0.03);
+  gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.5);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + 0.55);
+}
+
+function startDramaMusic() {
+  stopDramaMusic();
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  dramaNoteIndex = 0;
+  dramaCycleCount = 0;
+  const noteMs = 165; // brisk, driving tempo -- the "merry go round" lilt
+  const playStep = () => {
+    const step = dramaNoteIndex % CAROUSEL_MOTIF.length;
+    if (step === 0) dramaCycleCount++;
+    // Crescendo across 4 laps of the motif, then reset and build again --
+    // a repeated swell instead of one long flat loop or a single build
+    // that plateaus for the rest of a longer duel.
+    const cycleInBuild = ((dramaCycleCount - 1) % 4) + 1;
+    const intensity = 0.6 + cycleInBuild * 0.28; // ranges roughly 0.9 to 1.7
+    playCarouselNote(CAROUSEL_MOTIF[step], intensity);
+    if (step === 0) playCarouselBassPulse(intensity);
+    dramaNoteIndex++;
+  };
+  playStep();
+  dramaLoopTimer = setInterval(playStep, noteMs);
+}
+
+function stopDramaMusic() {
+  if (dramaLoopTimer) { clearInterval(dramaLoopTimer); dramaLoopTimer = null; }
+  // No hard cutoff needed: whatever note/pulse the last playStep() already
+  // scheduled carries its own short fade-out and stop time, so stopping the
+  // timer just means no further notes get queued.
+}
+
+function playDuelCompleteSound() {
+  // A short resolution sting marking a duel's end, distinct from the
+  // whole-show fanfare: a quick bright chime settling onto a held low
+  // note underneath, like a chapter closing.
+  playTone(880, 0, 0.3, 'triangle', 0.2);
+  playTone(659.25, 0.12, 0.35, 'triangle', 0.18);
+  playTone(220, 0.05, 0.6, 'sine', 0.16);
+}
+
+function playTimeUpBuzzer() {
+  // A flat, blunt buzzer marking a clock hitting zero -- deliberately
+  // plain and low, the opposite of the bright fanfare that follows a beat
+  // later, so "time's up" reads as its own distinct moment rather than
+  // getting swallowed by the win celebration that immediately follows it.
+  playTone(196.00, 0, 0.45, 'sawtooth', 0.18); // G3, low and blunt
+}
+
+function playBonusCrescendo() {
+  // A rising, triumphant swell marking a banked time bonus being cashed
+  // in for this duel -- distinct from the plain tension riser, brighter
+  // and more "ta-da" leaning since spending a saved-up bonus is good news
+  // for that player, not a spooky build.
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const t0 = ctx.currentTime;
+  const dur = 1.1;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(220, t0);
+  osc.frequency.exponentialRampToValueAtTime(880, t0 + dur);
+  gain.gain.setValueAtTime(0.0001, t0);
+  gain.gain.exponentialRampToValueAtTime(0.22, t0 + dur * 0.9);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur + 0.15);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + dur + 0.2);
+  playTone(1046.50, dur * 0.85, 0.35, 'triangle', 0.2); // bright accent at the peak
+}
+
+function playUpsetFanfare() {
+  // A bigger, brighter burst than the ordinary duel-complete sting, reserved
+  // for when a player wins on a domain outside their own chosen expertise
+  // -- a real underdog moment deserves more than the routine resolution
+  // sound every duel already gets.
+  const notes = [659.25, 830.61, 1046.50, 1318.51]; // E5 G#5 C6 E6, bright and climbing
+  notes.forEach((freq, i) => playTone(freq, i * 0.09, 0.5, 'square', 0.22));
+  playTone(1567.98, 0.4, 0.7, 'triangle', 0.18);
+}
+
+function playTerritoryCaptureSound() {
+  // A satisfying "claimed!" sound the instant new territory changes color
+  // on the board, distinct from the duel-complete sting a moment earlier.
+  playTone(392.0, 0, 0.14, 'square', 0.16);    // G4
+  playTone(587.33, 0.08, 0.22, 'square', 0.18); // D5
+  playTone(783.99, 0.16, 0.4, 'triangle', 0.2); // G5 shimmer
+}
+
+function spawnSparkles(count = 26) {
+  curtainSparkles.innerHTML = '';
+  for (let i = 0; i < count; i++) {
+    const dot = document.createElement('div');
+    dot.className = 'sparkle-dot';
+    dot.style.left = (Math.random() * 100) + '%';
+    dot.style.top = (Math.random() * 100) + '%';
+    dot.style.animationDelay = (Math.random() * 1.6) + 's';
+    curtainSparkles.appendChild(dot);
+  }
+}
+
+// A few little "pre-production" stagehands, flying around the curtain
+// while it's up getting the show ready -- purely a whimsical touch, no
+// in-universe explanation for the flying, they just can. Each one
+// periodically retargets to a new random spot and CSS handles the smooth
+// glide plus a constant little wing-flap wiggle.
+let stagehandTimers = [];
+function spawnStagehands(count = 5) {
+  clearStagehands();
+  const emoji = ['\u{1F477}', '\u{1F477}\u{200D}\u{2642}️', '\u{1F477}\u{200D}\u{2640}️'];
+  for (let i = 0; i < count; i++) {
+    const el = document.createElement('div');
+    el.className = 'stagehand';
+    el.textContent = emoji[i % emoji.length];
+    const retarget = () => {
+      el.style.left = (6 + Math.random() * 88) + '%';
+      el.style.top = (6 + Math.random() * 78) + '%';
+    };
+    retarget();
+    stagehandLayerEl.appendChild(el);
+    stagehandTimers.push(setInterval(retarget, 650 + Math.random() * 500));
+  }
+}
+function clearStagehands() {
+  stagehandTimers.forEach(t => clearInterval(t));
+  stagehandTimers = [];
+  stagehandLayerEl.innerHTML = '';
+}
+
+// --- Pre-production curtain intro: a full Hollywood-style open -- sweeping
+// spotlight beams, twinkling lights, a synthesized fanfare, a couple of
+// quick title cards, then a dramatic curtain pull-back with a light flash
+// and a crowd-excitement swell right as the board is revealed mid-fill. ---
+async function playCurtainIntro() {
+  curtainOverlay.classList.remove('open', 'flash');
+  curtainOverlay.classList.add('active');
+  curtainText.classList.remove('show');
+  spawnSparkles();
+  spawnStagehands();
+  void curtainOverlay.offsetWidth; // force reflow so panels reset closed instantly
+  playFanfare();
+  // The old permanent caption under the board explaining the two-phase
+  // draw (domains staked out first, then drafted) now lives here instead,
+  // as a couple of title beats shown once during setup rather than text
+  // that sat under the board for the entire rest of the game.
+  const beats = ['Pre-Production', 'Domains Take The Board', 'Now The Draft Begins'];
+  for (const line of beats) {
+    curtainText.textContent = line;
+    curtainText.classList.add('show');
+    playChime();
+    await sleep(950);
+    curtainText.classList.remove('show');
+    await sleep(220);
+  }
+  curtainOverlay.classList.add('open', 'flash');
+  playCrowdSwell(1.6);
+  clearStagehands(); // off to their seats once the curtain actually opens
+  await sleep(950);
+  curtainOverlay.classList.remove('active', 'flash');
+}
+
+function cardFor(ev) {
+  const d = ev.data;
+  switch (ev.type) {
+    case 'show_start':
+    case 'domain_seeded':
+    case 'board_seeded':
+    case 'draw_assignment':
+    case 'draw_complete':
+      // The draw ceremony now plays out entirely through the curtain intro
+      // and the board itself filling in, no scrolling text alongside it.
+      return null;
+    case 'spotlight_chosen':
+      return card('challenge', 'Spotlight', `RNGG spotlights <b>${playerLabel(d.player_id)}</b>.`);
+    case 'duel_result':
+      return card('result prize-highlight', 'Duel Result',
+        `<b>${playerLabel(d.winner_id)}</b> defeats ${playerLabel(d.loser_id)} (${d.reason.replace('_',' ')}). New domain: <b>${d.winner_domain_after}</b>.`, '&#127942;');
+    case 'advantage_earned':
+      return card('advantage prize-highlight', 'Advantage Earned',
+        `${playerLabel(d.player_id)} is riding a <b>${d.streak}-win streak</b> and earns a bonus to spend.`, '&#128293;');
+    case 'domain_tax_applied':
+      return card('advantage prize-highlight', 'Domain Tax Used',
+        `${playerLabel(d.from_id)} taxes ${playerLabel(d.to_id)}. Domains swap.`, '&#128260;');
+    case 'time_bonus_banked':
+      return card('advantage prize-highlight', 'Time Bonus Banked', `${playerLabel(d.player_id)} banks a +5s bonus.`, '&#9889;');
+    case 'burst_prize':
+      return card('burst prize-highlight', 'Burst Prize', `After duel ${d.duel_count}: ${playerLabel(d.leader_id)} leads with <b>${d.territory}</b> region(s) (${d.leader_domain}).`, '&#127942;');
+    case 'scramble':
+      return card('scramble', 'The Scramble', `The board redraws around ${d.active_players} remaining players.`);
+    case 'continues':
+      return card('challenge', 'Pushing On', `${playerLabel(d.player_id)} keeps the spotlight and continues.`);
+    case 'retreats':
+      return card('challenge', 'Falling Back', `${playerLabel(d.player_id)} retreats to defend.`);
+    default:
+      return null;
+  }
+}
+
+function card(cls, kicker, line, emoji) {
+  const el = document.createElement('div');
+  el.className = 'card ' + cls;
+  const prefix = emoji ? `<span class="card-emoji">${emoji}</span>` : '';
+  el.innerHTML = `<div class="kicker">${prefix}${kicker}</div><div class="body-line">${line}</div>`;
+  return el;
+}
+
+function spawnConfetti(count = 60) {
+  for (let i = 0; i < count; i++) {
+    const piece = document.createElement('div');
+    piece.className = 'confetti-piece';
+    piece.style.background = '#' + PLAYER_COLORS[i % PLAYER_COLORS.length];
+    piece.style.left = (Math.random() * 100) + 'vw';
+    piece.style.setProperty('--drift', (Math.random() * 200 - 100) + 'px');
+    piece.style.setProperty('--spin', (Math.random() * 720 - 360) + 'deg');
+    const duration = 2.6 + Math.random() * 1.4;
+    piece.style.animationDuration = duration + 's';
+    piece.style.animationDelay = (Math.random() * 0.4) + 's';
+    document.body.appendChild(piece);
+    setTimeout(() => piece.remove(), (duration + 0.5) * 1000);
+  }
+}
+
+function finaleCard(d, extra) {
+  const el = document.createElement('div');
+  el.className = 'card finale';
+  let startLine = '';
+  if (extra.startingDomain && extra.startingDomain !== d.champion_domain) {
+    startLine = `<div class="body-line dim">Drafted <b>${extra.startingDomain}</b> at the start${extra.startedOnStage ? ', right onto the Challenge Stage' : ''}, before the board carried them here.</div>`;
+  } else if (extra.startingDomain) {
+    startLine = `<div class="body-line dim">Defended <b>${extra.startingDomain}</b> the entire show, start to finish${extra.startedOnStage ? ', from the Challenge Stage on down' : ''}.</div>`;
+  }
+  el.innerHTML = `
+    <div class="sphere"></div>
+    <h2>SOLE OWNER OF THE BOARD</h2>
+    <div class="champion-number">${playerLabel(d.champion_id)}</div>
+    <div class="body-line">${d.champion_kingdom} &middot; ${titleCase(d.champion_profession)}</div>
+    <div class="body-line">Reigning domain: <b>${d.champion_domain}</b></div>
+    ${startLine}
+    <div class="body-line dim">${extra.personalWins} personal duel win(s) &middot; longest streak: ${extra.longestStreak}</div>
+    <div class="prize">${fmtMoney(d.prize)}</div>
+    <div class="dim">${d.total_duels} duels fought, show-wide</div>
+    <div class="title-card">DOMINION</div>
+  `;
+  return el;
+}
+
+// --- The board: a real hex pyramid that fills in during the draw ---
+const PLAYER_COLORS = [
+  "FBBF24", "E6194B", "3CB44B", "4363D8", "F58231", "911EB4",
+  "42D4F4", "F032E6", "BFEF45", "469990", "9A6324", "800000", "000075",
+];
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function hexPoints(cx, cy, r) {
+  const pts = [];
+  for (let i = 0; i < 6; i++) {
+    const angle = Math.PI / 180 * (60 * i);
+    pts.push([cx + r * Math.sin(angle), cy - r * Math.cos(angle)]);
+  }
+  return pts.map(p => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+}
+
+function pyramidPositions() {
+  // Sized at 76 (grown again from 60, which itself grew from an original
+  // 46; the viewBox grew to match, 700x520 to 700x620) since the tiles
+  // themselves were still reading as small even once the text on them hit
+  // a good size -- this bump grows the hex shape itself while leaving the
+  // font-size constants in fontSizeForLabel untouched, so the label text
+  // doesn't grow further, just has visibly more tile around it.
+  const size = 76, dx = Math.sqrt(3) * size, dy = 1.5 * size;
+  const rows = [1, 2, 3, 4, 3];
+  const cx = 350, cy = 92;
+  const positions = [];
+  rows.forEach((w, r) => {
+    const y = cy + r * dy;
+    for (let i = 0; i < w; i++) {
+      const x = cx + (i - (w - 1) / 2) * dx;
+      positions.push([x, y]);
+    }
+  });
+  return { positions, size };
+}
+
+// Real touching hex-flower geometry for the consolidated (post-Scramble)
+// board: a center hub plus up to six petals, each placed exactly one
+// hex-width away so it visibly shares an edge with the hub, and
+// consecutive petals share an edge with each other too, one connected,
+// gapless mosaic rather than a sparse ring. Petal angles are the six true
+// edge-touching directions for our pointy-top hex orientation (offset 30
+// degrees from the tile's own vertex-at-top angle convention).
+const SLOT_ANGLES_DEG = [270, 330, 30, 90, 150, 210];
+
+function circularPositions(n) {
+  // cy and the margins grew along with the taller 700x640 viewBox (up from
+  // 700x520) that came with the bigger pyramid hex size, so the
+  // consolidated board keeps using the full available height rather than
+  // sitting small in the upper portion of a now-taller board area.
+  const cx = 350, cy = 320;
+  const petalCount = Math.max(0, Math.min(6, n - 1));
+  const slots = SLOT_ANGLES_DEG.slice(0, petalCount);
+
+  // Find the largest hex size that keeps every tile fully inside the
+  // board's drawable area, so a consolidated board with fewer tiles grows
+  // to fill the same space rather than shrinking into a small cluster.
+  const marginX = 40, marginY = 30;
+  const maxHalfW = 350 - marginX, maxHalfH = cy - marginY;
+  let maxSize = 150; // a generous ceiling; a lone tile shouldn't dominate everything
+  slots.forEach(deg => {
+    const rad = deg * Math.PI / 180;
+    const ux = Math.sin(rad) * Math.sqrt(3);
+    const uy = -Math.cos(rad) * Math.sqrt(3);
+    const halfWNeeded = Math.abs(ux) + 1;
+    const halfHNeeded = Math.abs(uy) + 1;
+    maxSize = Math.min(maxSize, maxHalfW / halfWNeeded, maxHalfH / halfHNeeded);
+  });
+  const size = Math.max(58, Math.floor(maxSize));
+
+  const positions = [[cx, cy]];
+  const neighborDist = Math.sqrt(3) * size;
+  slots.forEach(deg => {
+    const rad = deg * Math.PI / 180;
+    positions.push([cx + neighborDist * Math.sin(rad), cy - neighborDist * Math.cos(rad)]);
+  });
+  return { positions, size };
+}
+
+let tileEls = [];
+let tileLabelEls = [];
+let tileOwner = {};        // node -> current owner player_id
+let playerDomain = {};     // player_id -> current domain name (changes with conquest/tax)
+let playerProfession = {}; // player_id -> real-world job, fixed for the run
+let playerKingdom = {};    // player_id -> flavor kingdom name, fixed for the run
+// The domain a player was originally drafted into, Section 8's "chosen
+// expertise" -- distinct from playerDomain above, which tracks whatever
+// they currently hold and can drift away from this as the show goes on.
+// Set once on draw_assignment and never touched again.
+let playerStartDomain = {};
+// player_id -> current consecutive-win count, from duel_result's
+// winner_streak field. Only meaningful for whoever most recently won as
+// the winner; not cleared for eliminated players, but they're never shown
+// again so that's harmless.
+let playerStreak = {};
+// player_id -> temperament_label ("Cautious"/"Balanced"/"Aggressive"), from
+// draw_assignment. Fixed for the whole run, folded into the expertise line
+// in the duel badge so the audience can see a contestant's playing style
+// alongside their profession, not just their win/loss record.
+let playerTemperament = {};
+// player_id -> the local Ollama model backing this player's live decisions
+// (see engine/ollama_agent.py). Fixed for the whole run, from draw_assignment.
+let playerModel = {};
+
+// Board display width grew to 1100px (from 860) while the SVG's internal
+// viewBox stayed 700x520, so everything drawn in it -- tiles and text
+// alike -- already renders about 1.27x bigger just from that change. These
+// base sizes are tuned on top of that so the smallest (longest-name) tile
+// label still renders at least as large as the "Player N" name text in a
+// duel badge (~1.25em / ~20px) once the viewBox-to-screen scale is applied.
+function fontSizeForLabel(text) {
+  if (!text) return 17;
+  if (text.length <= 6) return 17;
+  if (text.length <= 10) return 15;
+  if (text.length <= 14) return 13.5;
+  return 12.5;
+}
+
+function renderBoard(layout) {
+  tileLayerEl.innerHTML = '';
+  tileOwner = {};
+  tileLabelEls = [];
+  tileEls = layout.positions.map((pos, idx) => {
+    const poly = document.createElementNS(SVG_NS, 'polygon');
+    poly.setAttribute('points', hexPoints(pos[0], pos[1], layout.size));
+    poly.setAttribute('class', 'board-tile empty');
+    poly.dataset.node = idx;
+    tileLayerEl.appendChild(poly);
+
+    const domainEl = document.createElementNS(SVG_NS, 'text');
+    domainEl.setAttribute('x', pos[0]);
+    domainEl.setAttribute('y', pos[1] - 6);
+    domainEl.setAttribute('text-anchor', 'middle');
+    domainEl.setAttribute('class', 'tile-label');
+    domainEl.setAttribute('font-size', '17');
+    tileLayerEl.appendChild(domainEl);
+
+    const ownerEl = document.createElementNS(SVG_NS, 'text');
+    ownerEl.setAttribute('x', pos[0]);
+    ownerEl.setAttribute('y', pos[1] + 9);
+    ownerEl.setAttribute('text-anchor', 'middle');
+    ownerEl.setAttribute('class', 'tile-label owner');
+    ownerEl.setAttribute('font-size', '14');
+    tileLayerEl.appendChild(ownerEl);
+
+    // A small 8-bit face, hidden until a player actually claims this tile
+    // (fillTile/captureTiles populate and reveal it).
+    const faceSize = Math.max(16, Math.min(26, layout.size * 0.34));
+    const faceObj = document.createElementNS(SVG_NS, 'foreignObject');
+    faceObj.setAttribute('x', pos[0] - faceSize / 2);
+    faceObj.setAttribute('y', pos[1] + 14);
+    faceObj.setAttribute('width', faceSize);
+    faceObj.setAttribute('height', faceSize);
+    faceObj.setAttribute('class', 'tile-face-obj');
+    faceObj.style.display = 'none';
+    const faceDiv = document.createElement('div');
+    faceObj.appendChild(faceDiv);
+    tileLayerEl.appendChild(faceObj);
+
+    tileLabelEls[idx] = { domainEl, ownerEl, faceObj, faceDiv };
+    return poly;
+  });
+}
+
+// Phase 1 of the draw: the domain is named and "waits" on its tile before
+// anyone is placed there. No color, no owner tag yet.
+function revealDomainOnTile(node, domainName) {
+  const el = tileEls[node];
+  const labels = tileLabelEls[node];
+  if (!el || !labels) return;
+  labels.domainEl.textContent = domainName;
+  labels.domainEl.setAttribute('font-size', fontSizeForLabel(domainName));
+  el.classList.add('pending');
+  void el.getBBox();
+}
+
+function labelTile(node, playerId) {
+  const labels = tileLabelEls[node];
+  if (!labels) return;
+  const domainName = playerDomain[playerId] || '';
+  labels.domainEl.textContent = domainName;
+  labels.domainEl.setAttribute('font-size', fontSizeForLabel(domainName));
+  labels.ownerEl.textContent = 'P' + (playerId + 1);
+  if (labels.faceDiv) {
+    labels.faceDiv.innerHTML = buildPixelFace(playerId);
+    labels.faceObj.style.display = '';
+  }
+}
+
+// A player's domain can change without their territory changing at all
+// (inheriting a conquered domain, or a domain tax swap), so every tile
+// they already hold needs its label refreshed too, not just a newly won one.
+function relabelPlayerTiles(playerId) {
+  Object.keys(tileOwner).forEach(nodeStr => {
+    const node = parseInt(nodeStr, 10);
+    if (tileOwner[node] === playerId) labelTile(node, playerId);
+  });
+}
+
+// Phase 2 of the draw (and every later capture): a player is placed on
+// the tile and takes on whatever domain is already named there.
+function fillTile(node, playerId) {
+  const el = tileEls[node];
+  if (!el) return;
+  tileOwner[node] = playerId;
+  el.classList.remove('pending');
+  el.setAttribute('fill', '#' + PLAYER_COLORS[playerId % PLAYER_COLORS.length]);
+  el.classList.remove('empty');
+  el.classList.remove('pop');
+  void el.getBBox();
+  el.classList.add('pop');
+  labelTile(node, playerId);
+}
+
+function captureTiles(nodes, playerId) {
+  const color = '#' + PLAYER_COLORS[playerId % PLAYER_COLORS.length];
+  nodes.forEach(node => {
+    const el = tileEls[node];
+    if (!el) return;
+    tileOwner[node] = playerId;
+    el.setAttribute('fill', color);
+    el.classList.remove('capture');
+    void el.getBBox();
+    el.classList.add('capture');
+    labelTile(node, playerId);
+  });
+}
+
+async function rebuildBoardAfterScramble(d) {
+  boardSvg.style.transition = 'opacity .4s ease';
+  boardSvg.style.opacity = '0';
+  await sleep(420);
+  renderBoard(circularPositions(d.board_size));
+  Object.keys(d.new_owner).forEach(nodeStr => {
+    fillTile(parseInt(nodeStr, 10), d.new_owner[nodeStr]);
+  });
+  boardSvg.style.opacity = '1';
+  await sleep(300);
+}
+
+renderBoard(pyramidPositions());
+
+// --- 8-bit generated faces: a small, blocky retro portrait built at
+// runtime per player, deterministic from their id, so the same player
+// always looks the same across a whole show and different players
+// reliably look different from each other. No real art asset exists for
+// any of these personas (they're generated fresh every show), so this is
+// entirely procedural: a fixed handful of chunky rectangles, colored and
+// arranged by a seeded pseudo-random pick from small feature palettes. ---
+function mulberry32(seed) {
+  return function () {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const FACE_SKIN = ['#f4c9a0', '#e0ac69', '#c68642', '#8d5524', '#ffdbac', '#f0b088'];
+const FACE_HAIR = ['#2b1b0e', '#5a3825', '#8b5a2b', '#d4af37', '#1a1a1a', '#7a2e2e', '#e8e8e8'];
+const FACE_EYE = ['#2a2a2a', '#2a5a8a', '#3a7a4a', '#6b3fa0'];
+const FACE_ACCENT = ['#e05fb0', '#4fa3d1', '#58d18f', '#f5c542', '#e0555f', '#a996c9'];
+
+function buildPixelFace(playerId) {
+  const rnd = mulberry32(playerId * 7919 + 104729);
+  const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
+  const skin = pick(FACE_SKIN);
+  const hair = pick(FACE_HAIR);
+  const eye = pick(FACE_EYE);
+  const accent = pick(FACE_ACCENT);
+  const hairStyle = Math.floor(rnd() * 4);  // 0 short crop, 1 mohawk, 2 side-swept, 3 capped
+  const mouthStyle = Math.floor(rnd() * 3); // 0 smile, 1 flat, 2 open/surprised
+  const hasGlasses = rnd() < 0.32;
+
+  const S = 8; // each grid unit is an 8x8 square in a 64x64 viewBox
+  const rects = [];
+  const add = (col, row, w, h, fill, cls, extraStyle) =>
+    rects.push(`<rect x="${col * S}" y="${row * S}" width="${w * S}" height="${h * S}" fill="${fill}"${cls ? ` class="${cls}"` : ''}${extraStyle ? ` style="${extraStyle}"` : ''}/>`);
+
+  add(1, 1, 6, 6, skin); // head block
+
+  if (hairStyle === 0) add(1, 0, 6, 1.5, hair);
+  else if (hairStyle === 1) add(3, 0, 2, 2, hair);
+  else if (hairStyle === 2) { add(1, 0, 6, 1, hair); add(1, 1, 1.5, 3, hair); }
+  else { add(1, 0.5, 6, 1.5, hair); add(0.5, 1.5, 7, 0.8, accent); }
+
+  // Eyes and mouth get their own class plus a randomized (but stable per
+  // player) blink timing, so faces aren't frozen -- Section 4/8: "faces
+  // sell" reads better with a little life in them, and de-synced timing
+  // across the two players on stage keeps it from looking robotic.
+  const blinkDelay = (rnd() * 4).toFixed(2);
+  const blinkDur = (3.4 + rnd() * 2).toFixed(2);
+  const eyeStyle = `animation-delay:${blinkDelay}s;animation-duration:${blinkDur}s;`;
+  add(2, 3.2, 1, 1, eye, 'face-eye', eyeStyle);
+  add(5, 3.2, 1, 1, eye, 'face-eye', eyeStyle);
+
+  if (mouthStyle === 0) add(2.5, 5, 3, 0.6, '#7a2e2e', 'face-mouth');
+  else if (mouthStyle === 1) add(2.5, 5, 3, 0.5, '#5a2020', 'face-mouth');
+  else add(3, 4.8, 2, 1.2, '#3a1414', 'face-mouth');
+
+  if (hasGlasses) {
+    rects.push(`<rect x="${1.6 * S}" y="${3 * S}" width="${1.8 * S}" height="${1.6 * S}" fill="none" stroke="#222" stroke-width="2"/>`);
+    rects.push(`<rect x="${4.6 * S}" y="${3 * S}" width="${1.8 * S}" height="${1.6 * S}" fill="none" stroke="#222" stroke-width="2"/>`);
+    rects.push(`<rect x="${3.4 * S}" y="${3.6 * S}" width="${1.2 * S}" height="${0.3 * S}" fill="#222"/>`);
+  }
+
+  return `<svg viewBox="0 0 64 64" width="100%" height="100%" shape-rendering="crispEdges">${rects.join('')}</svg>`;
+}
+
+// --- The Challenge Stage: live duel animation ---
+// Turns are pre-simulated, but the on-screen clock now counts down in real
+// time: one real second of animation per one simulated clock second, so
+// what the audience watches tick by actually matches the seconds_used the
+// engine recorded, not a compressed or stretched stand-in for it. Display
+// is whole seconds only, ticking down integer by integer.
+// One real second of animation per simulated second, per Scott's original
+// real-time request -- but capped at 2.5s so a single slow turn (the
+// engine's own range tops out at 4.5s for an answer) never visibly drags;
+// the relative fast/slow feel between turns is preserved, just the worst
+// case is bounded.
+function tickDuration(secondsUsed) {
+  return Math.min(2500, Math.max(120, secondsUsed * 1000));
+}
+
+// Countdown display always rounds UP (ceil), never to nearest and never
+// down: with plain rounding, a true remaining value like 0.3s displayed as
+// "0" while the player is still legitimately alive (the engine's own
+// elimination check uses the real, unrounded value and only fires at or
+// below true zero) -- that mismatch made a correct answer "at 0" look like
+// it should have ended the duel when the real clock hadn't actually
+// reached zero yet. Ceiling means the display can only ever read 0 once
+// the true value truly has hit zero (or below).
+function displaySeconds(val) {
+  return Math.ceil(Math.max(0, val));
+}
+
+async function animateClock(clockEl, fromVal, toVal, ms) {
+  const start = performance.now();
+  const clampedTo = Math.max(0, toVal);
+  const clampedFrom = Math.max(0, fromVal);
+  const span = clampedFrom - clampedTo;
+  return new Promise(resolve => {
+    function frame(now) {
+      const t = Math.min(1, (now - start) / ms);
+      const val = Math.max(0, clampedFrom - span * t);
+      clockEl.textContent = String(displaySeconds(val));
+      if (t < 1) requestAnimationFrame(frame);
+      else { clockEl.textContent = String(displaySeconds(clampedTo)); resolve(); }
+    }
+    requestAnimationFrame(frame);
+  });
+}
+
+let stageChallengerId = null;
+let stageDefenderId = null;
+let stageTestedDomain = null;
+let clockState = { left: BASE_CLOCK, right: BASE_CLOCK };
+// Tracks whatever prompt is currently on screen so the reveal animation
+// only replays when the image actually changes (a fresh question after a
+// pass, or the fresh image the other player gets after a correct answer),
+// never on a plain wrong answer, which by design keeps the same image up
+// for the same player to try again, Section 4.
+let lastDuelPrompt = null;
+
+async function openStage(d) {
+  stageChallengerId = d.challenger_id;
+  stageDefenderId = d.defender_id;
+  nameLeft.textContent = playerLabel(d.challenger_id);
+  nameRight.textContent = playerLabel(d.defender_id);
+  faceLeft.innerHTML = buildPixelFace(d.challenger_id);
+  faceRight.innerHTML = buildPixelFace(d.defender_id);
+  // Profession plus playing-style temperament (Cautious/Balanced/Aggressive),
+  // folded onto one line so the audience sees who someone IS (job) right
+  // alongside how they PLAY (style) at a glance, not just their win/loss
+  // record via the streak badge further down.
+  expertiseLeft.textContent = formatExpertiseLine(d.challenger_id);
+  expertiseRight.textContent = formatExpertiseLine(d.defender_id);
+  modelLeft.textContent = playerModel[d.challenger_id] ? '\u{1F9E0} ' + playerModel[d.challenger_id] : '';
+  modelRight.textContent = playerModel[d.defender_id] ? '\u{1F9E0} ' + playerModel[d.defender_id] : '';
+  startDomainLeft.textContent = playerStartDomain[d.challenger_id] ? 'Expertise: ' + playerStartDomain[d.challenger_id] : '';
+  startDomainRight.textContent = playerStartDomain[d.defender_id] ? 'Expertise: ' + playerStartDomain[d.defender_id] : '';
+  domainLeft.textContent = playerDomain[d.challenger_id] ? 'Holds: ' + playerDomain[d.challenger_id] : '';
+  domainRight.textContent = playerDomain[d.defender_id] ? 'Holds: ' + playerDomain[d.defender_id] : '';
+  // Consecutive-win streak: only worth showing once it's 2+ in a row, per
+  // Scott's ask to actually surface this stat on the badge rather than
+  // only implying it via the (less frequent) advantage/bonus events.
+  const leftStreak = playerStreak[d.challenger_id] || 0;
+  const rightStreak = playerStreak[d.defender_id] || 0;
+  streakLeft.textContent = leftStreak >= 2 ? `\u{1F525} ${leftStreak}-win streak` : '';
+  streakLeft.classList.toggle('show', leftStreak >= 2);
+  streakRight.textContent = rightStreak >= 2 ? `\u{1F525} ${rightStreak}-win streak` : '';
+  streakRight.classList.toggle('show', rightStreak >= 2);
+  duelDomainTag.textContent = 'Domain on the line: ' + d.tested_domain;
+  // Kept for the upset check in celebrateDuelWinner: was the winner
+  // fighting on a domain outside their own personal chosen expertise?
+  stageTestedDomain = d.tested_domain;
+  // Left blank rather than a placeholder line: the countdown should be the
+  // first thing that appears in this panel, not a "the image comes up
+  // first" caption that then gets replaced by the countdown a moment later.
+  duelImage.textContent = '';
+  lastDuelPrompt = null; // a fresh duel always reveals its first image as new
+  duelGuess.classList.remove('show', 'correct', 'wrong', 'passed');
+  duelSayLabel.textContent = 'They say:';
+  duelGuessText.textContent = '—';
+  duelAnswerText.textContent = '—';
+  // Each side's clock actually starts at 25s, +5 if a banked bonus is
+  // being spent this duel, matching the engine exactly rather than
+  // assuming a flat number for the very first tick.
+  const leftStart = BASE_CLOCK + (d.challenger_using_bonus ? BONUS_SECONDS : 0);
+  const rightStart = BASE_CLOCK + (d.defender_using_bonus ? BONUS_SECONDS : 0);
+  clockState = { left: leftStart, right: rightStart };
+  clockLeft.textContent = String(leftStart);
+  clockRight.textContent = String(rightStart);
+  playerLeft.classList.remove('active', 'flash-correct', 'flash-wrong', 'flash-pass', 'victory');
+  playerRight.classList.remove('active', 'flash-correct', 'flash-wrong', 'flash-pass', 'victory');
+  // Tint each duel box to match that player's own board territory color,
+  // so the audience can tell at a glance who's who without reading names.
+  playerLeft.style.background = hexToRgba(PLAYER_COLORS[d.challenger_id % PLAYER_COLORS.length], 0.22);
+  playerRight.style.background = hexToRgba(PLAYER_COLORS[d.defender_id % PLAYER_COLORS.length], 0.22);
+  bonusLeft.classList.toggle('show', !!d.challenger_using_bonus);
+  bonusRight.classList.toggle('show', !!d.defender_using_bonus);
+  duelStage.classList.add('active');
+  duelStage.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  sayHost('preduel');
+  const spotlightPid = Math.random() < 0.5 ? d.challenger_id : d.defender_id;
+  await showInterviewTidbit(spotlightPid);
+  await sleep(200);
+  await playCountdownIntro();
+  startDramaMusic();
+}
+
+// A quick burst of plausible-but-wrong guesses, flashing by while the clock
+// ticks -- replaces the old static "is thinking..." placeholder per Scott's
+// note that a real contestant blurts out guesses rather than sitting there
+// quietly. Purely cosmetic: cycles through the engine-supplied distractor
+// pool for this exact question (duel.py's _pick_distractors, real other
+// answers from the same domain, never the actual answer or the eventual
+// real guess), retriggering a quick pop animation on each flip so it reads
+// as rapid-fire rather than a slow crossfade. Falls back to the old calm
+// "is thinking..." beat if a question genuinely has no distractors to draw
+// from (a domain with only one question, essentially never in practice).
+function startRapidFireGuesses(playerId, distractors) {
+  if (!distractors || !distractors.length) {
+    duelSayLabel.textContent = '';
+    duelGuessText.textContent = playerLabel(playerId) + ' is thinking…';
+    duelGuess.classList.add('thinking');
+    return null;
+  }
+  duelSayLabel.textContent = playerLabel(playerId) + ' blurts:';
+  duelGuess.classList.add('rapidfire');
+  let i = 0;
+  const flick = () => {
+    duelGuessText.textContent = distractors[i % distractors.length] + '?';
+    duelGuessText.style.animation = 'none';
+    void duelGuessText.offsetWidth; // force reflow so the pop replays every flick
+    duelGuessText.style.animation = '';
+    i++;
+  };
+  flick();
+  return setInterval(flick, 150);
+}
+
+function stopRapidFireGuesses(timerId) {
+  if (timerId) clearInterval(timerId);
+  duelGuess.classList.remove('rapidfire', 'thinking');
+}
+
+async function playDuelTurn(d) {
+  const isChallenger = d.player_id === stageChallengerId;
+  const activeEl = isChallenger ? playerLeft : playerRight;
+  const idleEl = isChallenger ? playerRight : playerLeft;
+  const clockEl = isChallenger ? clockLeft : clockRight;
+  const clockKey = isChallenger ? 'left' : 'right';
+
+  activeEl.classList.add('active');
+  idleEl.classList.remove('active');
+
+  // A plain wrong answer keeps the exact same image up for the same player
+  // to try again, Section 4, so the reveal animation should only replay
+  // when the prompt actually changed (a pass discarding it for a new one,
+  // or a fresh image handed to the other player after a correct answer),
+  // never on every single turn regardless of whether anything changed.
+  if (d.prompt !== lastDuelPrompt) {
+    duelImage.style.animation = 'none';
+    // Force reflow so the reveal animation replays for the new image.
+    void duelImage.offsetWidth;
+    duelImage.style.animation = '';
+  }
+  duelImage.textContent = d.prompt;
+  lastDuelPrompt = d.prompt;
+  // The answer sought reveals right alongside the image, same moment,
+  // ahead of the clock tick: the audience gets to know it before the
+  // player answers, not after.
+  duelAnswerText.textContent = d.answer;
+
+  // A burst of rapid-fire guesses flashing by while the clock ticks,
+  // rather than a static "is thinking..." label sitting there for the
+  // whole stretch -- Scott's note that a real contestant blurts out
+  // guesses instead of quietly waiting. Runs concurrently with the clock
+  // animation below (started first, stopped once the clock catches up),
+  // cycling through the engine's per-question distractor pool; falls back
+  // to the old calm "is thinking..." beat if this question has no real
+  // distractors to draw from.
+  duelGuess.classList.remove('correct', 'wrong', 'passed');
+  duelGuess.classList.add('show');
+  const rapidFireTimer = startRapidFireGuesses(d.player_id, d.distractors);
+
+  const fromVal = clockState[clockKey];
+  const toVal = d.clock_remaining;
+  await animateClock(clockEl, fromVal, toVal, tickDuration(d.seconds_used));
+  clockState[clockKey] = toVal;
+
+  stopRapidFireGuesses(rapidFireTimer);
+  duelSayLabel.textContent = playerLabel(d.player_id) + ' says:';
+
+  if (d.outcome === 'passed') {
+    duelGuessText.textContent = 'passes…';
+    duelGuess.classList.add('show', 'passed');
+    await sleep(300);
+    activeEl.classList.add('flash-pass');
+    await sleep(360);
+    activeEl.classList.remove('flash-pass');
+  } else {
+    duelGuessText.textContent = d.guess;
+    duelGuess.classList.add('show', d.correct ? 'correct' : 'wrong');
+    await sleep(250);
+
+    activeEl.classList.add(d.correct ? 'flash-correct' : 'flash-wrong');
+    await sleep(d.correct ? 420 : 320);
+    activeEl.classList.remove('flash-correct', 'flash-wrong');
+  }
+
+  // Real-time audience texture: a chance for a short crowd reaction (and,
+  // less often, a catty aside from another player watching) right after
+  // this turn resolves, matching Scott's request that onlookers react in
+  // the moment rather than only between duels.
+  maybeReactToTurn(d);
+}
+
+// A brief victory beat on the Challenge Stage itself, before it closes,
+// so the moment a duel resolves gets its own visible celebration rather
+// than jumping straight from the last answer to the next card. An "upset"
+// -- the winner's own chosen expertise domain isn't the one they just
+// fought and won on -- gets extra treatment: a brighter fanfare, a quick
+// confetti burst, an "UPSET WIN!" tag instead of the plain one, and a
+// longer hold, since an underdog moment is worth more than a routine win.
+//
+// Takes the whole duel_result payload now (not just winnerId), since a
+// timeout ending gets its own held beat first -- Scott's note that the cut
+// from "clock hits zero" straight to "WINS!" happened too fast to actually
+// register. The previous turn's own reveal/flash sleeps (playDuelTurn)
+// only added ~570-670ms before this function even started, and this
+// function used to jump straight to the winner tag with no pause of its
+// own, so the elimination and the celebration were basically simultaneous.
+// Now, on a real timeout, the loser's clock/box gets its own flash and a
+// low buzzer tone and a genuine ~950ms hold, so "time's up" is a beat the
+// audience actually sees before the win banner takes over. The
+// question-cap tiebreak (the rare fallback ending) skips this beat since
+// there's no dramatic "hit zero" moment to hold on for that case.
+async function celebrateDuelWinner(d) {
+  stopDramaMusic();
+  const winnerId = d.winner_id;
+  const isChallenger = winnerId === stageChallengerId;
+  const winEl = isChallenger ? playerLeft : playerRight;
+  const loseEl = isChallenger ? playerRight : playerLeft;
+  const loserClockEl = isChallenger ? clockRight : clockLeft;
+  const winnerTagEl = isChallenger ? winnerTagLeft : winnerTagRight;
+
+  if (d.reason === 'timeout') {
+    loserClockEl.textContent = '0';
+    loseEl.classList.add('flash-wrong');
+    playTimeUpBuzzer();
+    await sleep(750);
+    loseEl.classList.remove('flash-wrong');
+    await sleep(200);
+  }
+
+  const isUpset = !!stageTestedDomain && playerStartDomain[winnerId] && playerStartDomain[winnerId] !== stageTestedDomain;
+
+  if (isUpset) {
+    winnerTagEl.innerHTML = '&#127881; UPSET WIN!';
+    playUpsetFanfare();
+    spawnConfetti(40);
+    sayHost('win');
+  } else {
+    winnerTagEl.innerHTML = '&#127942; WINS!';
+    playDuelCompleteSound();
+    sayHost('win');
+  }
+
+  winEl.classList.add('victory');
+  await sleep(isUpset ? 2500 : 1900); // upsets get an even longer beat
+  winEl.classList.remove('victory');
+}
+
+async function closeStage() {
+  await sleep(300);
+  duelStage.classList.remove('active');
+  await sleep(350);
+}
+
+const THINKING_LABEL = { target: 'choosing a target', continue: 'deciding whether to push on', tax: 'choosing a domain tax target' };
+
+// A growing queue fed by the streaming /api/run-show response (see
+// startShow) -- events can now take real, variable time to produce (a
+// player's live Ollama call), so the frontend can no longer just fetch one
+// finished array and iterate it. items is the same array runShowPlayback
+// reads by index, so it doubles as the accumulated history the finale event
+// searches back over (events.find/.filter below), exactly like the old
+// pre-fetched array did.
+class EventQueue {
+  constructor() { this.items = []; this.done = false; this._resolvers = []; }
+  push(item) { this.items.push(item); this._flush(); }
+  finish() { this.done = true; this._flush(); }
+  _flush() { const r = this._resolvers; this._resolvers = []; r.forEach(fn => fn()); }
+  async waitFor(i) {
+    while (this.items.length <= i && !this.done) {
+      await new Promise(resolve => this._resolvers.push(resolve));
+    }
+  }
+}
+
+async function runShowPlayback(queue) {
+  const events = queue.items;
+  for (let i = 0; ; i++) {
+    await queue.waitFor(i);
+    if (i >= events.length) break; // stream finished, nothing left to play
+    const ev = events[i];
+    if (ev.type === 'agent_thinking') {
+      // The real wait is however long the NEXT event takes to arrive over
+      // the stream -- nothing to sleep for here, just surface who's live.
+      agentThinkingEl.textContent = `\u{1F9E0} ${ev.data.model} is ${THINKING_LABEL[ev.data.decision] || 'deciding'}…`;
+      agentThinkingEl.classList.add('show');
+      continue;
+    }
+    if (agentThinkingEl.classList.contains('show')) {
+      agentThinkingEl.classList.remove('show');
+    }
+    if (ev.type === 'show_start') {
+      // Don't reveal a count yet -- no one has actually been placed on
+      // the board at this point, so a "players remaining" figure would
+      // be describing a cast that doesn't exist on screen yet.
+      playersRemainingCount = ev.data.players;
+      continue;
+    }
+    if (ev.type === 'domain_seeded') {
+      // Phase 1: the board is set with domains first, one tile at a time,
+      // completely independent of who will end up standing where.
+      revealDomainOnTile(ev.data.node, ev.data.domain);
+      playTileDing();
+      await sleep(220);
+      continue;
+    }
+    if (ev.type === 'board_seeded') {
+      // A held beat: the board is fully set, before the first contestant
+      // drafts a tile. No card, the curtain intro already carried the
+      // ceremony framing.
+      await sleep(600);
+      continue;
+    }
+    if (ev.type === 'draw_assignment') {
+      // Phase 2, Revision 21: a player drafts one of the still-unclaimed
+      // tiles and takes on whatever domain is already sitting there.
+      // Ceremony pacing is deliberately slower than ordinary events, so
+      // each contestant claiming a territory is a beat the audience
+      // actually gets to watch, not a blur, with no accompanying text card.
+      playerDomain[ev.data.player_id] = ev.data.domain;
+      playerProfession[ev.data.player_id] = ev.data.profession;
+      playerKingdom[ev.data.player_id] = ev.data.kingdom_name;
+      playerStartDomain[ev.data.player_id] = ev.data.domain;
+      playerTemperament[ev.data.player_id] = ev.data.temperament_label;
+      playerModel[ev.data.player_id] = ev.data.model;
+      fillTile(ev.data.node, ev.data.player_id);
+      playDraftChime();
+      await sleep(480);
+      if (ev.data.remaining_after === 0) {
+        // The full cast is now on the board -- first moment a "players
+        // remaining" count actually describes something real.
+        updatePlayersRemaining(playersRemainingCount);
+      }
+      continue;
+    }
+    if (ev.type === 'challenge_declared') {
+      if (ev.data.challenger_using_bonus) {
+        // Told to the host, ahead of the duel: an explicit, held beat so
+        // the audience clearly sees this was a pre-committed choice, not
+        // something invoked mid-turn.
+        const el = card('advantage prize-highlight', 'Bonus Cashed In',
+          `${playerLabel(ev.data.challenger_id)} tells the host: cashing in the banked bonus for this duel.`, '&#9889;');
+        stage.appendChild(el);
+        el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        playBonusCrescendo();
+        sayHost('bonus');
+        await sleep(800);
+      }
+      await openStage(ev.data);
+      continue;
+    }
+    if (ev.type === 'duel_turn') {
+      await playDuelTurn(ev.data);
+      continue;
+    }
+    if (ev.type === 'duel_result') {
+      await celebrateDuelWinner(ev.data);
+      await closeStage();
+      playerDomain[ev.data.winner_id] = ev.data.winner_domain_after;
+      playerStreak[ev.data.winner_id] = ev.data.winner_streak;
+      captureTiles(ev.data.territory_gained, ev.data.winner_id);
+      playTerritoryCaptureSound();
+      relabelPlayerTiles(ev.data.winner_id);
+      updatePlayersRemaining(playersRemainingCount - 1);
+      // A brief, capped pause between duels for the host and the crowd to
+      // react, per Scott's request -- never more than 5 seconds, and not
+      // every beat gets a full host line (see interDuelReactionBeat).
+      await interDuelReactionBeat();
+    }
+    if (ev.type === 'territory_reassigned') {
+      // A leftover, disconnected piece of the loser's old territory that
+      // didn't actually touch the winner -- reassigned engine-side to
+      // whichever other active player borders it instead, so nobody ends
+      // up holding a stray "exclave." Quiet and low-key on purpose: this
+      // is bookkeeping, not a duel result, so no fanfare or held pause.
+      captureTiles(ev.data.tiles, ev.data.to_id);
+      relabelPlayerTiles(ev.data.to_id);
+      continue;
+    }
+    if (ev.type === 'territory_milestone') {
+      const el = card('advantage prize-highlight', 'Territory Milestone',
+        `${playerLabel(ev.data.player_id)} reaches <b>${ev.data.territory} tiles</b> and banks a <b>${fmtMoney(ev.data.bonus)}</b> milestone bonus.`, '&#128176;');
+      stage.appendChild(el);
+      el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      playBonusCrescendo();
+      sayHost('milestone');
+      await sleep(700);
+      continue;
+    }
+    if (ev.type === 'advantage_earned') {
+      // A held beat: the audience needs a moment to register that this
+      // player has just earned a real advantage, before seeing which one
+      // they choose to spend it on.
+      const el = cardFor(ev);
+      if (el) { stage.appendChild(el); el.scrollIntoView({ behavior: 'smooth', block: 'end' }); }
+      sayHost('advantage');
+      await sleep(850);
+      continue;
+    }
+    if (ev.type === 'domain_tax_applied') {
+      playerDomain[ev.data.from_id] = ev.data.winner_new_domain;
+      playerDomain[ev.data.to_id] = ev.data.target_new_domain;
+      relabelPlayerTiles(ev.data.from_id);
+      relabelPlayerTiles(ev.data.to_id);
+      const el = cardFor(ev);
+      if (el) { stage.appendChild(el); el.scrollIntoView({ behavior: 'smooth', block: 'end' }); }
+      await sleep(700);
+      continue;
+    }
+    if (ev.type === 'time_bonus_banked') {
+      const el = cardFor(ev);
+      if (el) { stage.appendChild(el); el.scrollIntoView({ behavior: 'smooth', block: 'end' }); }
+      sayHost('tax');
+      await sleep(700);
+      continue;
+    }
+    if (ev.type === 'burst_prize') {
+      const el = cardFor(ev);
+      if (el) { stage.appendChild(el); el.scrollIntoView({ behavior: 'smooth', block: 'end' }); }
+      sayHost('burst');
+      await sleep(700);
+      continue;
+    }
+    if (ev.type === 'scramble') {
+      const el = cardFor(ev);
+      if (el) { stage.appendChild(el); el.scrollIntoView({ behavior: 'smooth', block: 'end' }); }
+      sayHost('scramble');
+      await rebuildBoardAfterScramble(ev.data);
+      continue;
+    }
+    if (ev.type === 'finale') {
+      const champId = ev.data.champion_id;
+      const startAssignment = events.find(e => e.type === 'draw_assignment' && e.data.player_id === champId);
+      const personalWins = events.filter(e => e.type === 'duel_result' && e.data.winner_id === champId).length;
+      const streaks = events
+        .filter(e => e.type === 'advantage_earned' && e.data.player_id === champId)
+        .map(e => e.data.streak);
+      const extra = {
+        startingDomain: startAssignment ? startAssignment.data.domain : null,
+        startedOnStage: startAssignment ? startAssignment.data.on_stage : false,
+        personalWins,
+        longestStreak: streaks.length ? Math.max(...streaks) : 0,
+      };
+      const el = finaleCard(ev.data, extra);
+      stage.appendChild(el);
+      el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      sayHost('finale');
+      spawnConfetti();
+      scheduleNewGamePopup();
+      continue;
+    }
+    const el = cardFor(ev);
+    if (el) {
+      stage.appendChild(el);
+      el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+    await sleep(el ? 160 : 20);
+  }
+}
+
+async function startShow() {
+  clearTimeout(newGamePopupTimer);
+  stopDramaMusic(); // defensive: never carry a lingering loop into a new game
+  newGameOverlay.classList.remove('show');
+  startBtn.disabled = true;
+  startBtn.style.display = 'none'; // hidden for the whole run; New Game brings it back via the end-of-show popup
+  stage.innerHTML = '';
+  duelStage.classList.remove('active');
+  boardSvg.style.opacity = '1';
+  renderBoard(pyramidPositions());
+  playerDomain = {};
+  playerProfession = {};
+  playerKingdom = {};
+  playerStartDomain = {};
+  playerStreak = {};
+  playerTemperament = {};
+  playerModel = {};
+  interviewEl.classList.remove('show');
+  interviewEl.textContent = '';
+  chatterFeedEl.innerHTML = '';
+  // Reset the count silently -- it isn't shown again until the draft
+  // actually finishes and a real cast exists on the board.
+  playersRemainingCount = 13;
+  playersRemainingEl.textContent = '';
+  sayHost('intro');
+  statusEl.textContent = 'Running the draw and simulating the show...';
+  agentThinkingEl.classList.remove('show');
+  try {
+    const queue = new EventQueue();
+    // Receiving runs in the background the whole time -- events (including
+    // ones that took real, variable time behind a live Ollama call) queue
+    // up as they arrive. Kept separate from playback below so events that
+    // land during the curtain intro are buffered, not skipped or animated
+    // early; queue.waitFor() is what actually paces the playback loop.
+    const receiving = (async () => {
+      const res = await fetch('/api/run-show', { method: 'POST' });
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, idx).trim();
+          buf = buf.slice(idx + 1);
+          if (line) queue.push(JSON.parse(line));
+        }
+      }
+      queue.finish();
+    })();
+    await playCurtainIntro();
+    statusEl.textContent = '';
+    await runShowPlayback(queue);
+    await receiving; // surface a network/parse error even if playback already drained the queue
+  } catch (err) {
+    statusEl.textContent = 'Could not reach the show engine: ' + err;
+  } finally {
+    startBtn.disabled = false;
+  }
+}
+
+startBtn.addEventListener('click', startShow);
+newGameBtn.addEventListener('click', () => {
+  startBtn.style.display = '';
+  startShow();
+});
+</script>
+</body>
+</html>

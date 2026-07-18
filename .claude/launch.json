@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dominion-server",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["prototype/server.py"],
+      "port": 8765
+    }
+  ]
+}
