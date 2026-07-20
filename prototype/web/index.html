@@ -474,6 +474,22 @@
   }
   .duel-player.flash-correct .player-face .face-mouth { transform: scaleY(1.7); filter: brightness(1.4) saturate(1.3); }
   .duel-player.flash-wrong .player-face .face-mouth { transform: scaleY(0.45) translateY(1px); filter: brightness(0.55) saturate(0.6); }
+  /* RNGG calling up a genuinely NEW challenger (spotlight_chosen actually
+     fired -- not a winner continuing, who's already on stage and doesn't
+     need to walk up again): the face toddles a short distance forward into
+     its badge spot, rocking side to side like a real little waddle,
+     instead of just appearing already in place. */
+  .player-face.toddle-in { animation: faceToddleIn 0.9s ease-out both; }
+  @keyframes faceToddleIn {
+    0%   { transform: translateX(-26px) rotate(0deg); }
+    12%  { transform: translateX(-21px) rotate(-9deg); }
+    26%  { transform: translateX(-16px) rotate(7deg); }
+    40%  { transform: translateX(-11px) rotate(-8deg); }
+    54%  { transform: translateX(-7px)  rotate(6deg); }
+    68%  { transform: translateX(-4px)  rotate(-5deg); }
+    82%  { transform: translateX(-1px)  rotate(3deg); }
+    100% { transform: translateX(0)     rotate(0deg); }
+  }
   /* Three distinct facts about the player, deliberately kept visually
      separate: real-world profession (job), chosen expertise (the domain
      they were originally drafted into and personally identify with, fixed
@@ -2224,6 +2240,14 @@ let stageDefenderId = null;
 // Read by hostPreduelQuestion (see the pre_duel_intro handler) to name the
 // domain in the host's directed question -- set fresh each duel in openStage.
 let stageTestedDomain = null;
+// Set by the spotlight_chosen handler whenever RNGG actually picks a NEW
+// challenger, consumed (and cleared) by openStage's challenger-face setup
+// right after -- spotlight_chosen only fires for a genuine new pick, never
+// when a winner just continues pushing (they're already on stage, already
+// spotlighted, no walk-up needed), so this is exactly how openStage tells
+// the two cases apart despite challenge_declared's payload looking
+// identical either way.
+let pendingSpotlightToddlePid = null;
 // Territory each side holds the moment this duel STARTS, captured before
 // any tiles can change hands -- lets celebrateDuelWinner recognize a real
 // underdog win (see isUpset there) instead of the old domain-based
@@ -2261,6 +2285,18 @@ async function openStage(d) {
   nameRight.textContent = playerLabel(d.defender_id);
   faceLeft.innerHTML = buildPixelFace(d.challenger_id);
   faceRight.innerHTML = buildPixelFace(d.defender_id);
+  // Toddle-in only for a challenger RNGG genuinely just called up fresh
+  // (pendingSpotlightToddlePid was set by the spotlight_chosen handler and
+  // matches THIS challenger) -- a winner who's continuing to push is
+  // already standing there and shouldn't visibly "walk up" a second time.
+  // Consumed here, once, so it can never accidentally replay on a later
+  // duel this same player continues into.
+  faceLeft.classList.remove('toddle-in');
+  if (pendingSpotlightToddlePid === d.challenger_id) {
+    void faceLeft.offsetWidth; // force reflow so the animation replays
+    faceLeft.classList.add('toddle-in');
+  }
+  pendingSpotlightToddlePid = null;
   // Profession plus playing-style temperament (Cautious/Balanced/Aggressive),
   // folded onto one line so the audience sees who someone IS (job) right
   // alongside how they PLAY (style) at a glance, not just their win/loss
@@ -2659,6 +2695,20 @@ async function runShowPlayback(queue) {
         // The full cast is now on the board -- first moment a "players
         // remaining" count actually describes something real.
         updatePlayersRemaining(playersRemainingCount);
+      }
+      continue;
+    }
+    if (ev.type === 'spotlight_chosen') {
+      // RNGG picking a genuinely NEW challenger -- flagged here so
+      // openStage's challenger-face setup knows to play the toddle-in
+      // walk-up (see pendingSpotlightToddlePid) instead of just having the
+      // face already sitting there. Still shows the existing "Spotlight"
+      // card too (cardFor below), this doesn't replace that.
+      pendingSpotlightToddlePid = ev.data.player_id;
+      const spotlightEl = cardFor(ev);
+      if (spotlightEl) {
+        stage.appendChild(spotlightEl);
+        spotlightEl.scrollIntoView({ behavior: 'smooth', block: 'end' });
       }
       continue;
     }
