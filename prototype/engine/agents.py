@@ -93,7 +93,12 @@ class ScriptedAgent:
         temperament_adjust = (0.5 - player.temperament) * 0.12
         pass_chance = min(0.45, max(0.02, self.base_pass_chance + temperament_adjust + 0.07 * miss_streak))
         if self.rng.random() < pass_chance:
-            seconds = round(self.rng.uniform(0.6, 2.2), 1)
+            # Floor of 1.0s, matching OllamaAgent's MIN_CHARGED_SECONDS --
+            # Scott's rule that no turn, scripted or live, should read as
+            # having taken less than a beat. Passing quickly is still
+            # allowed to read as quicker than working through a real guess
+            # (that range starts at 1.2s below), just never under a second.
+            seconds = round(self.rng.uniform(1.0, 2.2), 1)
             return AnswerAttempt(outcome="passed", correct=False, seconds_used=seconds, guess="")
 
         seconds = round(self.rng.uniform(1.2, 4.5), 1)

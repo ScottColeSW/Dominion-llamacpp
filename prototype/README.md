@@ -71,6 +71,18 @@ of both clocks still unspent. Scripted play is unaffected by either change
 (still `QUESTION_CAP = 30`, still full wall-clock charged, since scripted
 seconds_used was never real elapsed time to begin with).
 
+**Every turn costs at least a beat, never less.** A live re-verification
+after the above fixes measured charged think_seconds averaging under 0.1s
+per attempt on this machine's small local models -- fast enough that the
+clock barely moved no matter how many attempts happened, so the question
+cap (not the clock) ended up deciding almost every duel regardless of how
+high it was set. `MIN_CHARGED_SECONDS` (`ollama_agent.py`) floors
+`attempt_question`'s charged time at 1.0s -- a floor under real latency,
+never an addition on top of it, so a genuinely slow call still costs its
+real time. `duel.py`'s forced-pass fallback and `agents.py`'s scripted pass
+timing were bumped to the same 1.0s floor for consistency: no turn, live or
+scripted, forced or genuine, should read as having taken less than a beat.
+
 **Both sides get a warm-up, not just the challenger.** Right as a duel opens
 (before either clock starts), the host now gets a one-line in-character
 reaction from *both* players about the domain on the line

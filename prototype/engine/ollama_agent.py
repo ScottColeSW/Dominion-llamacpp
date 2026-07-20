@@ -50,6 +50,13 @@ OLLAMA_TIMEOUT = 90.0
 # once that's resolved upstream.
 TEXT_MODELS = ["llama3.2:latest", "qwen2.5:3b", "gemma2:2b", "phi3:mini"]
 
+# A floor under attempt_question's charged clock time, not an addition on
+# top of real latency -- Scott's rule: no turn should read as having taken
+# less than a beat, since a real contestant (however sharp) still takes a
+# moment to read a question and answer, and an instant answer reads as
+# implausible on screen regardless of how fast the underlying model is.
+MIN_CHARGED_SECONDS = 1.0
+
 
 def _ask_ollama(model: str, prompt: str, timeout: float = OLLAMA_TIMEOUT) -> "tuple[Optional[str], Optional[float]]":
     """Returns (reply_text, think_seconds). think_seconds is Ollama's own
@@ -205,7 +212,17 @@ class OllamaAgent(ScriptedAgent):
         # same infrastructure cost just because their model was already
         # resident. Falls back to wall-clock elapsed only if Ollama's
         # response is missing the duration fields entirely.
-        charged_seconds = round(think_seconds, 1) if think_seconds is not None else round(elapsed, 1)
+        raw_seconds = think_seconds if think_seconds is not None else elapsed
+        # Floored at MIN_CHARGED_SECONDS -- Scott's rule: a turn should never
+        # read as having taken less than a beat, on top of whatever real
+        # latency it already cost. Measured live, small local models were
+        # answering in well under a tenth of a second, which is why the
+        # question cap kept needing readjustment (README/duel.py docstring):
+        # the clock barely moved no matter how many attempts happened, so
+        # the cap -- not the clock -- ended up deciding almost every duel.
+        # This is a floor, not an addition -- a genuinely slow call still
+        # gets charged its real time, never less.
+        charged_seconds = round(max(MIN_CHARGED_SECONDS, raw_seconds), 1)
         if not reply:
             return super().attempt_question(player, question, domain, miss_streak=miss_streak,
                                              distractors=distractors)

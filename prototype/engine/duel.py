@@ -148,11 +148,13 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
         if miss_streak >= FORCED_PASS_MISS_STREAK:
             # The agent doesn't get asked at all this turn -- forced past
             # the point where a stubborn live model would otherwise keep
-            # guessing the same image wrong forever. A flat, small time
-            # cost (a quick on-air "I'll come back to that") rather than a
-            # real Ollama call, since the point is to guarantee progress,
-            # not to spend more real latency on the question we're skipping.
-            attempt = AnswerAttempt(outcome="passed", correct=False, seconds_used=0.5, guess="")
+            # guessing the same image wrong forever. A flat time cost (a
+            # quick on-air "I'll come back to that") rather than a real
+            # Ollama call, since the point is to guarantee progress, not to
+            # spend more real latency on the question we're skipping -- but
+            # still at least a full second, same floor as every other turn
+            # (Scott's rule: no turn reads as having taken less than a beat).
+            attempt = AnswerAttempt(outcome="passed", correct=False, seconds_used=1.0, guess="")
         else:
             # time_remaining lets a live agent (OllamaAgent) cap how long
             # it'll wait for a reply to roughly what's actually left on THIS
