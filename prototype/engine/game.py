@@ -187,7 +187,7 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
                  answer=turn["answer"], guess=turn["guess"], outcome=turn["outcome"],
                  correct=turn["correct"], seconds_used=turn["seconds_used"],
                  clock_remaining=turn["clock_remaining"],
-                 distractors=turn["distractors"])
+                 distractors=turn["distractors"], live=turn["live"])
             turn_count[0] += 1
 
         result = run_duel(active_player, defender, DOMAINS_BY_NAME[defender.domain],

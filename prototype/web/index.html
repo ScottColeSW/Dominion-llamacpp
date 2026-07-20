@@ -1989,6 +1989,12 @@ function tickDuration(secondsUsed) {
   const ms = Math.min(2500, Math.max(120, secondsUsed * 1000));
   return ms / FF_LEVELS[ffLevelIndex];
 }
+// A live turn's seconds_used is real time a live Ollama call already spent
+// server-side -- the audience already "watched" that wait in the form of
+// the gap before this event arrived (same principle as agent_thinking).
+// This is just a short, fixed flourish for the clock to visibly land on
+// its new value, not a real-time replay of the wait -- see playDuelTurn.
+const LIVE_TURN_ANIM_MS = 400;
 
 // Countdown display always rounds UP (ceil), never to nearest and never
 // down: with plain rounding, a true remaining value like 0.3s displayed as
@@ -2218,7 +2224,14 @@ async function playDuelTurn(d) {
 
   const fromVal = clockState[clockKey];
   const toVal = d.clock_remaining;
-  await animateClock(clockEl, fromVal, toVal, tickDuration(d.seconds_used));
+  // d.live means d.seconds_used is REAL wall-clock time a live Ollama call
+  // already spent server-side, before this event ever streamed out --
+  // re-animating the clock over that same duration here would double the
+  // real wait the audience just sat through. Scripted turns don't have
+  // that problem (seconds_used there is simulated, never real elapsed
+  // time), so they keep the full tickDuration animation exactly as before.
+  const animMs = d.live ? LIVE_TURN_ANIM_MS / FF_LEVELS[ffLevelIndex] : tickDuration(d.seconds_used);
+  await animateClock(clockEl, fromVal, toVal, animMs);
   clockState[clockKey] = toVal;
 
   stopRapidFireGuesses(rapidFireTimer);

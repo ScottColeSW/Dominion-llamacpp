@@ -130,7 +130,7 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
             "player_id": pid, "domain": domain.name, "prompt": question.image_prompt,
             "answer": question.answer, "guess": attempt.guess, "outcome": attempt.outcome,
             "correct": attempt.correct, "seconds_used": attempt.seconds_used,
-            "distractors": distractors,
+            "distractors": distractors, "live": attempt.live,
             # Clamped to 0 for display: the real clock can dip slightly
             # negative the instant it crosses zero, but the audience should
             # never see a negative number on screen. Elimination logic
