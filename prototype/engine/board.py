@@ -83,7 +83,25 @@ def build_hub_ring(n: int) -> Dict[int, Set[int]]:
     guarantees the whole graph stays connected (it borders every ring tile),
     so dropping the offset-2 chords costs some matchup variety but not
     connectivity, and the logical graph now means exactly what it looks
-    like on screen."""
+    like on screen.
+
+    The ring only wraps into a closed cycle when ALL SIX slots are in use
+    (ring_size == 6, i.e. n == 7 -- the only size the Scramble actually
+    produces today, game.py's SCRAMBLE_MAX_ACTIVE). circularPositions'
+    SLOT_ANGLES_DEG is six FIXED 60-degree positions used in order; for
+    fewer active players, the occupied slots are a contiguous ARC of that
+    circle, not the whole thing -- the first and last occupied petals sit
+    on opposite ends of that arc with real, unused angular space (the
+    remaining slots) between them, not touching. Treating the ring as
+    always-a-cycle regardless of size (an earlier version of this
+    function, and the plain modular-arithmetic way to write the loop) drew
+    a phantom edge between those two end petals for any n < 7 -- caught by
+    engine/test_board_geometry.py, which mirrors circularPositions in
+    Python and checks board_adj against actual hex-edge coincidence rather
+    than trusting this docstring's reasoning alone. Not reachable in a
+    real show today (the Scramble only ever fires at n == 7), but a latent
+    bug all the same, and the exact kind this test exists to catch before
+    it becomes a live one."""
     if n <= 1:
         return {0: set()}
     if n == 2:
@@ -97,11 +115,16 @@ def build_hub_ring(n: int) -> Dict[int, Set[int]]:
         adj[0].add(i)
         adj[i].add(0)
 
-    for idx, i in enumerate(ring):
-        j = ring[(idx + 1) % ring_size]
-        if j != i:
-            adj[i].add(j)
-            adj[j].add(i)
+    for idx in range(ring_size - 1):
+        i, j = ring[idx], ring[idx + 1]
+        adj[i].add(j)
+        adj[j].add(i)
+    if ring_size == 6:
+        # Only now does the occupied arc actually close into a full circle
+        # -- the first and last petals are true 60-degree neighbors too.
+        i, j = ring[0], ring[-1]
+        adj[i].add(j)
+        adj[j].add(i)
 
     return adj
 

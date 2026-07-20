@@ -158,6 +158,9 @@ hundreds of duels?) without re-running anything.
 
 - `engine/board.py` — the hub-and-ring board formula, sized to any player
   count, verified connected at every size the Scramble can produce.
+- `engine/test_board_geometry.py` — checks board.py's declared adjacency
+  against the actual drawn hex geometry (`web/index.html`'s own layout
+  math, mirrored in Python); see "Verified" below.
 - `engine/content.py` — the domain library (a working subset of the
   full fifty; same shape, just add more entries to grow it).
 - `engine/models.py` — Player and GameState.
@@ -202,3 +205,30 @@ and every reassignment recipient's territory forms one connected piece
 after every transfer) still comes back clean. The hub alone already
 guarantees the whole graph stays connected regardless (it borders every
 ring tile), so this costs a little matchup variety, not connectivity.
+
+**That fix is now a permanent test, not a one-off verification.**
+[`engine/test_board_geometry.py`](engine/test_board_geometry.py) mirrors
+`hexPoints`/`pyramidPositions`/`circularPositions` (`web/index.html`) in
+Python, derives "true" adjacency directly from which hexagons' edges
+actually coincide (the same fact a viewer would see on screen), and asserts
+`board.py`'s declared `board_adj` equals it -- for the pyramid AND for
+every ring size the Scramble can produce (2 through 7 active players, not
+just the 7 it happens to fire at today). A plain internal-consistency check
+on `board_adj` would never have caught the offset-2 bug above, since that
+graph was always self-consistent; only the picture disagreed with it. This
+test would have failed immediately. Run it with:
+
+```
+python -m unittest engine.test_board_geometry -v
+```
+
+It already earned its keep once, on the very first run: it caught a
+second, latent version of the same class of bug -- the ring-closing logic
+treated the occupied slots as always wrapping into a full circle, but
+`circularPositions`' six slots only close into one once ALL SIX are in use
+(ring_size 6, i.e. exactly 7 active players). For any smaller ring
+(reachable if `SCRAMBLE_MAX_ACTIVE` or the Scramble threshold ever change,
+not reachable in a show today), the occupied slots are a contiguous arc
+with real empty angular space at each end, and the old code drew a phantom
+edge connecting them anyway. Not live yet, but exactly the kind of thing
+this test exists to catch before it becomes a real bug in the wild.
