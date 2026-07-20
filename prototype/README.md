@@ -90,6 +90,26 @@ can rack up a genuinely large integer total across those attempts, which
 reads as real, escalating tension rather than a suspiciously precise
 fraction.
 
+**A blurt can genuinely win the question, not just decorate the wait.** The
+rapid-fire "blurt" guesses flashing by on screen while the clock ticks
+(`startRapidFireGuesses`, `web/index.html`) used to be purely cosmetic --
+real other answers from the same domain, cycled for flavor, but never
+connected to the actual outcome. Scott: "a blurt could be a right answer and
+counts if it is" -- a real mechanic, not just flavor. `duel.py`'s
+`LUCKY_BLURT_CHANCE` (6%) is now rolled once per attempt (skipped during a
+forced pass, and only when there's an actual blurt to land on); a hit
+resolves the turn correct immediately and skips the real agent call
+entirely -- live or scripted -- since the blurt already got there first,
+charging a short 1-2s "fast, lucky beat" instead of a considered answer's
+timing. The new `lucky_blurt` flag rides along on the `duel_turn` event so
+the frontend can make that turn's blurt burst actually land on the true
+answer (as the final flick, with its own gold glow -- see the CSS comment
+above `.say-text.lucky-hit`) instead of only ever cycling distractors, plus
+a dedicated crowd reaction pool (`REACTION_LUCKY_BLURT`) that always fires
+for it rather than rolling against the ordinary reaction chance. Applies
+identically to both players every turn, so it's neutral with respect to the
+challenger/defender split documented under "Long-running history" below.
+
 **Both sides get a warm-up, not just the challenger.** Right as a duel opens
 (before either clock starts), the host now gets a one-line in-character
 reaction from *both* players about the domain on the line
@@ -154,6 +174,21 @@ questions across many shows later (does the challenger-bias fix above
 actually hold at scale? does any one model out-perform the others over
 hundreds of duels?) without re-running anything.
 
+**The defender really does have a structural edge, not just bad luck.**
+`get_stats()` (`engine/history.py`) aggregates `player_stats`/`duels` by
+model (the only identity that actually persists across shows -- player_id,
+kingdom name, and profession are all redrawn fresh every run) for the new
+Standings page (`web/stats.html`, served at `/stats.html`, backed by the new
+`GET /api/stats` in `server.py`). Across the first 18 recorded shows (216
+duels), the defender won 56.5% of the time vs the challenger's 43.5% --
+`duel.py` tests "the DEFENDER's domain only" by design (Section 4), so the
+defender is answering a domain they already hold while the challenger is
+attacking into potentially unfamiliar territory. That's a real home-turf
+advantage baked into the rules as written, not an engine bug -- surfaced on
+the Standings page itself (a "home-turf" panel with the live split) so it
+stays visible as more shows get recorded, rather than something only
+discoverable by querying the db by hand.
+
 ## Layout
 
 - `engine/board.py` — the hub-and-ring board formula, sized to any player
@@ -172,11 +207,14 @@ hundreds of duels?) without re-running anything.
 - `engine/fetch_images.py` — pre-production image fetch/vision-verification
   script; see "Vision-assisted image fetch" below.
 - `engine/game.py` — orchestrates the full show and emits every event.
-- `engine/history.py` — passive SQLite recorder for cross-show analysis;
-  see "Long-running history" above.
+- `engine/history.py` — passive SQLite recorder for cross-show analysis,
+  plus `get_stats()`, the aggregation query behind the Standings page; see
+  "Long-running history" above.
 - `server.py` — a dependency-free local server streaming the show as
-  newline-delimited JSON over HTTP.
+  newline-delimited JSON over HTTP, plus `GET /api/stats`.
 - `web/index.html` — the Start button and broadcast-style display.
+- `web/stats.html` — the Standings page: a leaderboard and one
+  "baseball card" per model, aggregated across every recorded show.
 
 ## Verified
 
@@ -232,3 +270,36 @@ not reachable in a show today), the occupied slots are a contiguous arc
 with real empty angular space at each end, and the old code drew a phantom
 edge connecting them anyway. Not live yet, but exactly the kind of thing
 this test exists to catch before it becomes a real bug in the wild.
+
+**The board redraw is now its own mini-intermission.** `rebuildBoardAfterScramble`
+(`web/index.html`) used to just fade the board's opacity out and back in.
+It now reuses the same curtain assets as the pre-production open
+(`curtainOverlay`/`curtainText`/`spawnSparkles`): closes the curtain, shows
+"Board Scramble", rebuilds the board entirely behind it (the audience never
+sees the swap itself), then reopens with the same flash + crowd swell as
+the real open. Verified directly (not through a full throttled show replay
+-- see below): called with fabricated `board_size`/`new_owner` data against
+a live page, confirmed the curtain classes transition correctly end to end
+and the rebuilt board's tile fills matched the supplied ownership exactly.
+
+**A disconnected client no longer crashes the server.** `server.py`'s
+`write_event` calls `self.wfile.write(...)`, which raises
+`ConnectionAbortedError`/`ConnectionResetError`/`BrokenPipeError` the moment
+a browser tab closes or navigates away mid-show -- previously this
+propagated all the way up through `emit()` to socketserver's default error
+handler, printing a full traceback for a completely ordinary occurrence
+(Scott hit this from the terminal). `do_POST` now catches those three
+specifically around `run_show(...)` and just stops quietly: nothing to
+recover, there's simply nobody left listening.
+
+**A note on testing this in an automated/headless browser:** the Browser
+pane used to verify the above kept reporting `document.hidden === true`
+even when fronted, and the whole show-playback loop leans on
+`setTimeout`-based `sleep()` for its pacing throughout (not just the duel
+clock, which was already hardened against exactly this -- see "Both sides
+get a warm-up" above) -- Chrome throttles timers hard in hidden/backgrounded
+documents, so a full show can appear to hang for tens of seconds at a time
+in that environment specifically. Confirmed this wasn't an engine or
+frontend bug by hitting `/api/run-show` directly with `curl`: the full
+12-duel show, `finale` event included, comes back in well under a second
+server-side every time.

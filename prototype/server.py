@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from engine.events import EventLog
 from engine.game import run_show, SCRIPTED_ONLY
-from engine.history import HistoryRecorder, init_db
+from engine.history import HistoryRecorder, init_db, get_stats
 
 WEB_DIR = Path(__file__).parent / "web"
 PORT = 8765
@@ -33,6 +33,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = self.path.split("?")[0]
+        if path == "/api/stats":
+            # Aggregated across every show ever recorded to
+            # engine/dominion_history.db, not just whatever's currently on
+            # screen -- backs the Standings page (web/stats.html).
+            body = json.dumps(get_stats()).encode("utf-8")
+            self._send(200, body, "application/json")
+            return
         if path == "/":
             path = "/index.html"
         file_path = (WEB_DIR / path.lstrip("/")).resolve()
@@ -77,7 +84,17 @@ class Handler(BaseHTTPRequestHandler):
                 recorder.on_event(ev)
 
             log = EventLog(on_emit=write_event)
-            run_show(seed=seed, log=log)
+            try:
+                run_show(seed=seed, log=log)
+            except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+                # The browser tab closed or navigated away mid-show: write_event's
+                # wfile.write raises here (via emit()), and without this it
+                # propagates all the way up to socketserver's default handler,
+                # which both prints a full traceback for a completely normal
+                # occurrence AND lets run_show keep burning real Ollama calls
+                # for a client that's no longer listening. Nothing to recover --
+                # just stop the show quietly, same as if it had finished.
+                pass
             return
         self._send(404, b"not found", "text/plain")
 

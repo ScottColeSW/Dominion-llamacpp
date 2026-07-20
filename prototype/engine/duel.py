@@ -81,6 +81,18 @@ BASE_CLOCK = 25
 # ScriptedAgent's own escalating pass_chance already self-resolves well
 # before this in practice, so it's a live-only safety net in effect.
 FORCED_PASS_MISS_STREAK = 4
+# A real contestant rattling off rapid-fire guesses (the frontend's "blurt"
+# animation, web/index.html's startRapidFireGuesses) can genuinely land on
+# the right answer by accident, before their actual considered answer would
+# even come back -- Scott: "a blurt could be a right answer and counts if it
+# is," an explicit real mechanic, not just a cosmetic flourish. Rolled once
+# per attempt (same granularity as agent.attempt_question), and only when
+# there's an actual blurt to land on (a question with distractors) -- a hit
+# skips the real agent call entirely (live or scripted), since the blurt
+# already got there first. Applies equally to both players every turn, so
+# it doesn't touch the challenger/defender win-rate split (see history.py's
+# get_stats and README's "home-turf" note) one way or the other.
+LUCKY_BLURT_CHANCE = 0.06
 
 
 @dataclass
@@ -173,6 +185,7 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
         agent = agents[pid]
         player = players_by_id[pid]
 
+        lucky_blurt = False
         if miss_streak >= FORCED_PASS_MISS_STREAK:
             # The agent doesn't get asked at all this turn -- forced past
             # the point where a stubborn live model would otherwise keep
@@ -185,6 +198,15 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
             # beat, and every seconds_used is a whole number, never a
             # fraction).
             attempt = AnswerAttempt(outcome="passed", correct=False, seconds_used=1, guess="")
+        elif distractors and rng.random() < LUCKY_BLURT_CHANCE:
+            # The blurt itself got there first -- see LUCKY_BLURT_CHANCE.
+            # Skips the real agent call entirely (no live Ollama round trip
+            # spent on a question that's already been won by accident), and
+            # charges a short, fast time -- a lucky blurt is a quick beat,
+            # not a considered answer.
+            lucky_blurt = True
+            attempt = AnswerAttempt(outcome="correct", correct=True,
+                                     seconds_used=rng.randint(1, 2), guess=question.answer)
         else:
             # time_remaining lets a live agent (OllamaAgent) cap how long
             # it'll wait for a reply to roughly what's actually left on THIS
@@ -203,7 +225,7 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
             "player_id": pid, "domain": domain.name, "prompt": question.image_prompt,
             "answer": question.answer, "guess": attempt.guess, "outcome": attempt.outcome,
             "correct": attempt.correct, "seconds_used": attempt.seconds_used,
-            "distractors": distractors, "live": attempt.live,
+            "distractors": distractors, "live": attempt.live, "lucky_blurt": lucky_blurt,
             # Clamped to 0 for display: the real clock can dip negative the
             # instant it crosses zero (an int charge subtracted from an int
             # clock, so still a clean negative int, e.g. -2), but the

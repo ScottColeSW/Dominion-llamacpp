@@ -89,6 +89,114 @@ def init_db(db_path: str = DB_PATH) -> None:
         conn.close()
 
 
+def get_stats(db_path: str = DB_PATH) -> Dict[str, Any]:
+    """Aggregate per-model stats across every recorded show, for the
+    Standings page (web/stats.html). Aggregated by MODEL, not player_id or
+    kingdom/profession -- those are redrawn fresh every show (13 random
+    player_ids, random flavor names), so the only identity that actually
+    persists across shows is which Ollama model was playing.
+
+    Includes a challenger-vs-defender win-rate split per model: duel.py
+    tests "the DEFENDER's domain only" (see its own docstring), so a
+    defender is answering questions in a domain they already hold --
+    effectively home-turf advantage -- while a challenger is attacking into
+    domain that may be unfamiliar. Surfacing the split here makes that
+    asymmetry visible over time instead of only discoverable by directly
+    querying the db by hand."""
+    conn = sqlite3.connect(db_path, timeout=5)
+    conn.row_factory = sqlite3.Row
+    try:
+        totals = conn.execute("SELECT COUNT(*) AS n FROM shows").fetchone()["n"]
+        duel_totals = conn.execute("SELECT COUNT(*) AS n FROM duels").fetchone()["n"]
+
+        by_reason = {
+            row["reason"]: {
+                "total": row["total"],
+                "challenger_wins": row["challenger_wins"],
+                "defender_wins": row["defender_wins"],
+            }
+            for row in conn.execute(
+                "SELECT reason, COUNT(*) AS total, "
+                "SUM(winner_id = challenger_id) AS challenger_wins, "
+                "SUM(winner_id = defender_id) AS defender_wins "
+                "FROM duels GROUP BY reason"
+            )
+        }
+
+        models: Dict[str, Dict[str, Any]] = {}
+
+        def ensure(model: str) -> Dict[str, Any]:
+            return models.setdefault(model, {
+                "model": model, "games_played": 0, "wins": 0, "correct": 0,
+                "incorrect": 0, "passed": 0, "total_correct_seconds": 0.0,
+                "championships": 0, "as_challenger": 0, "challenger_wins": 0,
+                "as_defender": 0, "defender_wins": 0,
+            })
+
+        for row in conn.execute(
+            "SELECT model, COUNT(*) AS games_played, SUM(wins) AS wins, "
+            "SUM(correct) AS correct, SUM(incorrect) AS incorrect, "
+            "SUM(passed) AS passed, SUM(total_correct_seconds) AS total_correct_seconds, "
+            "SUM(is_champion) AS championships FROM player_stats "
+            "WHERE model IS NOT NULL GROUP BY model"
+        ):
+            m = ensure(row["model"])
+            m.update({
+                "games_played": row["games_played"], "wins": row["wins"] or 0,
+                "correct": row["correct"] or 0, "incorrect": row["incorrect"] or 0,
+                "passed": row["passed"] or 0,
+                "total_correct_seconds": row["total_correct_seconds"] or 0.0,
+                "championships": row["championships"] or 0,
+            })
+
+        for row in conn.execute(
+            "SELECT challenger_model AS model, COUNT(*) AS n, "
+            "SUM(winner_id = challenger_id) AS w FROM duels "
+            "WHERE challenger_model IS NOT NULL GROUP BY challenger_model"
+        ):
+            m = ensure(row["model"])
+            m["as_challenger"] = row["n"]
+            m["challenger_wins"] = row["w"] or 0
+
+        for row in conn.execute(
+            "SELECT defender_model AS model, COUNT(*) AS n, "
+            "SUM(winner_id = defender_id) AS w FROM duels "
+            "WHERE defender_model IS NOT NULL GROUP BY defender_model"
+        ):
+            m = ensure(row["model"])
+            m["as_defender"] = row["n"]
+            m["defender_wins"] = row["w"] or 0
+
+        for m in models.values():
+            answered = m["correct"] + m["incorrect"]
+            m["accuracy"] = round(m["correct"] / answered, 3) if answered else None
+            m["avg_correct_seconds"] = (
+                round(m["total_correct_seconds"] / m["correct"], 2) if m["correct"] else None
+            )
+            # Wins / duels PLAYED (challenger + defender appearances), not
+            # wins / shows played -- a model can win several duels in one
+            # show (it keeps getting spotlit as long as it keeps winning),
+            # so wins/games_played isn't a bounded percentage at all (it hit
+            # 132% for the top model on the very first real dataset here).
+            duels_played = m["as_challenger"] + m["as_defender"]
+            m["win_rate"] = round(m["wins"] / duels_played, 3) if duels_played else None
+            m["challenger_win_rate"] = (
+                round(m["challenger_wins"] / m["as_challenger"], 3) if m["as_challenger"] else None
+            )
+            m["defender_win_rate"] = (
+                round(m["defender_wins"] / m["as_defender"], 3) if m["as_defender"] else None
+            )
+
+        return {
+            "shows_recorded": totals,
+            "duels_recorded": duel_totals,
+            "by_reason": by_reason,
+            "models": sorted(models.values(), key=lambda m: m["wins"], reverse=True),
+        }
+    finally:
+        conn.close()
+
+
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 

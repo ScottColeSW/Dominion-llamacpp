@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Dominion — Standings</title>
+<style>
+  :root {
+    --gold: #f5c542; --purple: #6b3fa0; --bg: #0b0714; --card: #17102a;
+    --text: #f2ecff; --dim: #a996c9; --green: #58d18f; --red: #e0555f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: 'Segoe UI', system-ui, sans-serif;
+    background: radial-gradient(circle at 50% 0%, #241640 0%, var(--bg) 60%);
+    color: var(--text); min-height: 100vh; padding: 32px 16px 80px; font-size: 17px;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+  h1 {
+    font-size: 2.6em; margin: 0; letter-spacing: 3px; text-align: center;
+    background: linear-gradient(90deg, var(--gold), #fff6d8, var(--gold));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    text-shadow: 0 0 40px rgba(245,197,66,0.35);
+  }
+  .subtitle { color: var(--dim); letter-spacing: 2px; text-align: center; margin-top: 4px; margin-bottom: 8px; }
+  .backlink { display: block; text-align: center; color: var(--dim); margin-bottom: 28px; text-decoration: none; }
+  .backlink:hover { color: var(--gold); }
+
+  .summary-bar {
+    display: flex; justify-content: center; gap: 28px; flex-wrap: wrap;
+    background: var(--card); border: 1px solid #35234f; border-radius: 14px;
+    padding: 16px 24px; margin-bottom: 28px;
+  }
+  .summary-stat { text-align: center; }
+  .summary-stat .num { font-size: 1.6em; font-weight: 700; color: var(--gold); }
+  .summary-stat .label { font-size: 0.8em; color: var(--dim); letter-spacing: 0.5px; }
+
+  /* Defender-vs-challenger home-turf note: duel.py tests the DEFENDER's own
+     held domain, so a defender is more likely to be answering something
+     they already hold territory in -- this panel makes that asymmetry
+     visible across every recorded show, not just discoverable by querying
+     the db by hand. */
+  .home-turf {
+    background: var(--card); border: 1px solid #35234f; border-radius: 14px;
+    padding: 16px 24px; margin-bottom: 28px; font-size: 0.92em; color: var(--dim);
+  }
+  .home-turf b { color: var(--text); }
+  .home-turf .bar-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .home-turf .bar-track { flex: 1; height: 14px; border-radius: 7px; background: #241634; overflow: hidden; display: flex; }
+  .home-turf .bar-challenger { background: linear-gradient(90deg, #4fa3d1, #6bc3f1); height: 100%; }
+  .home-turf .bar-defender { background: linear-gradient(90deg, var(--gold), #ffd76b); height: 100%; }
+
+  h2 { letter-spacing: 2px; color: var(--gold); border-bottom: 1px solid #35234f; padding-bottom: 8px; margin-top: 36px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+  th, td { padding: 8px 10px; text-align: right; border-bottom: 1px solid #241634; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--dim); font-weight: 600; letter-spacing: 0.5px; font-size: 0.85em; }
+  tr:hover td { background: rgba(107,63,160,0.15); }
+  .rank-1 { color: var(--gold); font-weight: 700; }
+
+  /* The "baseball cards" -- one per model, a compact stat-block grid. */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 18px; margin-top: 18px; }
+  .card {
+    background: linear-gradient(180deg, #1d1436, #140d26); border: 1px solid #35234f;
+    border-radius: 14px; padding: 18px 20px; position: relative; overflow: hidden;
+  }
+  .card::before {
+    content: ""; position: absolute; top: -30%; right: -30%; width: 120px; height: 120px;
+    background: radial-gradient(circle, rgba(245,197,66,0.18), transparent 70%);
+  }
+  .card .model-name { font-size: 1.15em; font-weight: 700; color: var(--gold); letter-spacing: 0.5px; }
+  .card .champ-badge { font-size: 0.8em; color: var(--dim); margin-top: 2px; }
+  .card .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin-top: 14px; }
+  .card .stat { }
+  .card .stat .v { font-size: 1.2em; font-weight: 700; }
+  .card .stat .l { font-size: 0.72em; color: var(--dim); letter-spacing: 0.5px; text-transform: uppercase; }
+  .card .role-split { margin-top: 14px; font-size: 0.8em; color: var(--dim); display: flex; justify-content: space-between; }
+
+  .empty { text-align: center; color: var(--dim); margin-top: 60px; font-size: 1.1em; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>STANDINGS</h1>
+  <div class="subtitle">Every recorded show, aggregated by model</div>
+  <a class="backlink" href="/">&larr; Back to Dominion</a>
+
+  <div id="content"></div>
+</div>
+
+<script>
+function pct(x) { return x === null || x === undefined ? '—' : Math.round(x * 100) + '%'; }
+function num(x, digits = 0) { return x === null || x === undefined ? '—' : Number(x).toFixed(digits); }
+
+async function load() {
+  const content = document.getElementById('content');
+  let data;
+  try {
+    const res = await fetch('/api/stats');
+    data = await res.json();
+  } catch (e) {
+    content.innerHTML = '<div class="empty">Could not reach the Dominion server. Is it running?</div>';
+    return;
+  }
+  if (!data.shows_recorded) {
+    content.innerHTML = '<div class="empty">No shows recorded yet — play at least one full show, then check back here.</div>';
+    return;
+  }
+
+  const timeoutRow = data.by_reason.timeout || { total: 0, challenger_wins: 0, defender_wins: 0 };
+  const capRow = data.by_reason.question_cap || { total: 0, challenger_wins: 0, defender_wins: 0 };
+  const allDuels = data.duels_recorded || 1;
+  const totalChallengerWins = (timeoutRow.challenger_wins || 0) + (capRow.challenger_wins || 0);
+  const totalDefenderWins = (timeoutRow.defender_wins || 0) + (capRow.defender_wins || 0);
+
+  let html = '';
+  html += `<div class="summary-bar">
+    <div class="summary-stat"><div class="num">${data.shows_recorded}</div><div class="label">Shows Recorded</div></div>
+    <div class="summary-stat"><div class="num">${data.duels_recorded}</div><div class="label">Duels Recorded</div></div>
+    <div class="summary-stat"><div class="num">${data.models.length}</div><div class="label">Models Tracked</div></div>
+  </div>`;
+
+  html += `<div class="home-turf">
+    <div><b>Home-turf note:</b> every duel tests the <b>defender's own held domain</b> —
+    the defender is more likely to already know it, the challenger is the one
+    attacking into unfamiliar territory. Across all recorded duels, the
+    defender has won <b>${pct(totalDefenderWins / allDuels)}</b> of the time
+    vs the challenger's <b>${pct(totalChallengerWins / allDuels)}</b>.</div>
+    <div class="bar-row">
+      <div style="width:70px; font-size:0.8em;">Challenger</div>
+      <div class="bar-track">
+        <div class="bar-challenger" style="width:${(totalChallengerWins / allDuels) * 100}%"></div>
+        <div class="bar-defender" style="width:${(totalDefenderWins / allDuels) * 100}%"></div>
+      </div>
+      <div style="width:70px; font-size:0.8em; text-align:right;">Defender</div>
+    </div>
+  </div>`;
+
+  html += `<h2>Leaderboard</h2>`;
+  html += `<table><thead><tr>
+    <th>Model</th><th>Shows</th><th>Duels</th><th>Wins</th><th>Win %</th><th>Accuracy</th>
+    <th>Avg Correct (s)</th><th>Champs</th>
+  </tr></thead><tbody>`;
+  data.models.forEach((m, i) => {
+    html += `<tr class="${i === 0 ? 'rank-1' : ''}">
+      <td>${i === 0 ? '\u{1F451} ' : ''}${m.model}</td>
+      <td>${m.games_played}</td>
+      <td>${m.as_challenger + m.as_defender}</td>
+      <td>${m.wins}</td>
+      <td>${pct(m.win_rate)}</td>
+      <td>${pct(m.accuracy)}</td>
+      <td>${num(m.avg_correct_seconds, 2)}</td>
+      <td>${m.championships}</td>
+    </tr>`;
+  });
+  html += `</tbody></table>`;
+
+  html += `<h2>Player Cards</h2><div class="cards">`;
+  data.models.forEach(m => {
+    html += `<div class="card">
+      <div class="model-name">${m.model}</div>
+      <div class="champ-badge">${m.championships} championship${m.championships === 1 ? '' : 's'} &middot; ${m.games_played} games played</div>
+      <div class="stat-grid">
+        <div class="stat"><div class="v">${m.wins}</div><div class="l">Duel Wins</div></div>
+        <div class="stat"><div class="v">${pct(m.win_rate)}</div><div class="l">Win Rate</div></div>
+        <div class="stat"><div class="v">${pct(m.accuracy)}</div><div class="l">Accuracy</div></div>
+        <div class="stat"><div class="v">${num(m.avg_correct_seconds, 2)}s</div><div class="l">Avg Correct Time</div></div>
+      </div>
+      <div class="role-split">
+        <span>As challenger: ${pct(m.challenger_win_rate)} (${m.as_challenger})</span>
+        <span>As defender: ${pct(m.defender_win_rate)} (${m.as_defender})</span>
+      </div>
+    </div>`;
+  });
+  html += `</div>`;
+
+  content.innerHTML = html;
+}
+
+load();
+</script>
+</body>
+</html>
