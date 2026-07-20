@@ -385,18 +385,22 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
         if game.sole_owner() is not None:
             break
 
-        # Winner's choice: continue pushing or retreat.
+        # Winner's choice: continue pushing or retreat. Now carries a
+        # spoken reason (Scott: this "is being lost in the action" -- the
+        # host announces it live, with the player briefly explaining their
+        # choice, a side effect being a bit more model warm-up too) --
+        # decide_continue returns (keep_going, reason) for every agent now.
         winner_agent = agents[winner_id]
         emit("agent_thinking", player_id=winner_id, model=winner.model, decision="continue")
-        keep_going = winner_agent.decide_continue(winner, game)
+        keep_going, continue_reason = winner_agent.decide_continue(winner, game)
         if keep_going and game.adjacent_opponents(winner_id):
             game.spotlight = winner_id
-            emit("continues", player_id=winner_id)
+            emit("continues", player_id=winner_id, model=winner.model, reason=continue_reason)
         else:
             winner.push_streak = 0
             game.spotlight = None
             game.excluded_from_pick = winner_id
-            emit("retreats", player_id=winner_id)
+            emit("retreats", player_id=winner_id, model=winner.model, reason=continue_reason)
 
     champion_id = game.sole_owner()
     champion = players[champion_id]

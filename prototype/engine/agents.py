@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import random
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from .content import Question, Domain
 from .models import Player, GameState
@@ -126,7 +126,7 @@ class ScriptedAgent:
         guess = self.rng.choice(others) if others else question.answer
         return AnswerAttempt(outcome="incorrect", correct=False, seconds_used=seconds, guess=guess)
 
-    def decide_continue(self, player: Player, game: GameState) -> bool:
+    def decide_continue(self, player: Player, game: GameState) -> Tuple[bool, str]:
         # More willing to keep pushing early, more cautious as the streak
         # builds, since more is on the line the longer a chain runs. The
         # base rate and the decay-per-win are both temperament-scaled:
@@ -135,8 +135,14 @@ class ScriptedAgent:
         # players (-> 0.0) start lower and back off faster on each win.
         # temperament 0.5 reproduces the old fixed 0.75 base / 0.15 decay
         # exactly, so a Balanced player's behavior is unchanged.
+        #
+        # Returns (keep_going, reason) now, not just a bool -- Scott's ask:
+        # this choice was "being lost in the action," and the host needs a
+        # real line to announce, not just a silent decision. Fallback text
+        # here also covers OllamaAgent whenever its live reply doesn't
+        # parse cleanly, so it has to work standalone, not just as filler.
         if not game.adjacent_opponents(player.id):
-            return False
+            return False, "no one left in range to challenge -- holding position."
         base_rate = 0.65 + 0.20 * player.temperament       # 0.5 -> 0.75
         decay_rate = 0.23 - 0.16 * player.temperament      # 0.5 -> 0.15
         floor = 0.15 + 0.20 * player.temperament           # 0.5 -> 0.25
@@ -148,7 +154,10 @@ class ScriptedAgent:
         # instead of retreating while holding one unspent.
         if player.time_bonus_banked:
             continue_chance = min(0.95, continue_chance + 0.25)
-        return self.rng.random() < continue_chance
+        keep_going = self.rng.random() < continue_chance
+        if keep_going:
+            return True, "riding the momentum -- pushing on for more."
+        return False, "content to hold this ground and let someone else take the spotlight."
 
     def choose_tax_target(self, player: Player, game: GameState) -> Optional[int]:
         candidates = [pid for pid in game.active_ids if pid != player.id]

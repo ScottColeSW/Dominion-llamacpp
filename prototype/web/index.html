@@ -1003,6 +1003,30 @@ function hostPreduelQuestion(playerId, role, phase, domain, opponentName) {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
+// The winner's push/retreat choice, announced as a real host<->player beat
+// instead of a quiet card easy to miss in the scroll -- Scott's report.
+function hostContinueBuildup(playerId) {
+  const name = playerLabel(playerId);
+  const templates = [
+    `${name}, big decision time -- push on, or pull back?`,
+    `${name}, you're on a roll -- what's the move?`,
+    `${name}, the board's watching -- keep going, or hold what you've got?`,
+    `${name}, what'll it be?`,
+  ];
+  return templates[Math.floor(Math.random() * templates.length)];
+}
+function hostContinueReaction(playerId, keepGoing) {
+  const name = playerLabel(playerId);
+  const pushTemplates = [
+    `${name} pushes on!`, `${name} is not done yet!`, `${name} stays in it!`, `Onward for ${name}!`,
+  ];
+  const retreatTemplates = [
+    `${name} pulls back to defend!`, `${name} plays it safe!`, `${name} holds the line!`, `${name} calls it there!`,
+  ];
+  const pool = keepGoing ? pushTemplates : retreatTemplates;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
 // A short, fixed explainer that plays once automatically when the page
 // loads, before anyone touches Start -- viewers were getting dropped
 // straight into "click the button" with no framing for what they were
@@ -1589,6 +1613,20 @@ function playTerritoryCaptureSound() {
   playTone(392.0, 0, 0.14, 'square', 0.16);    // G4
   playTone(587.33, 0.08, 0.22, 'square', 0.18); // D5
   playTone(783.99, 0.16, 0.4, 'triangle', 0.2); // G5 shimmer
+}
+
+// A quick sting for the push/retreat announcement -- distinct shape per
+// outcome so the sound itself telegraphs the decision a beat before the
+// host's line does: pushing on climbs (confident), retreating falls
+// (cautious). Deliberately short -- this whole beat is meant to move fast.
+function playContinueDecisionSting(keepGoing) {
+  if (keepGoing) {
+    playTone(440.0, 0, 0.14, 'square', 0.18);    // A4
+    playTone(659.25, 0.1, 0.3, 'triangle', 0.2); // E5, rising and holding
+  } else {
+    playTone(392.0, 0, 0.16, 'triangle', 0.16);  // G4
+    playTone(261.63, 0.12, 0.35, 'sine', 0.16);  // C4, settling down
+  }
 }
 
 function spawnSparkles(count = 26) {
@@ -2778,6 +2816,33 @@ async function runShowPlayback(queue) {
       sayHost('finale');
       spawnConfetti();
       scheduleNewGamePopup();
+      continue;
+    }
+    if (ev.type === 'continues' || ev.type === 'retreats') {
+      // The winner's push/retreat choice, announced as a real beat instead
+      // of the quiet card it used to just fall through to below -- Scott:
+      // this "is being lost in the action... this part of the game build
+      // anticipation for the next bout." Fast on purpose: their actual
+      // decision is capped at 15s server-side (CONTINUE_DECISION_TIMEOUT
+      // in ollama_agent.py, already elapsed before this event streamed),
+      // so what's left here is pure display pacing -- host builds it up,
+      // the player explains their choice in the same interview-banner
+      // treatment used for the pre-duel interview, host reacts, done.
+      const keepGoing = ev.type === 'continues';
+      sayHostText(hostContinueBuildup(ev.data.player_id));
+      await sleep(1100);
+      interviewEl.textContent = `${playerLabel(ev.data.player_id)}: ${ev.data.reason}`;
+      interviewBannerEl.classList.add('show');
+      await sleep(2200);
+      playContinueDecisionSting(keepGoing);
+      sayHostText(hostContinueReaction(ev.data.player_id, keepGoing));
+      await sleep(1300);
+      interviewBannerEl.classList.remove('show');
+      const decisionEl = cardFor(ev);
+      if (decisionEl) {
+        stage.appendChild(decisionEl);
+        decisionEl.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      }
       continue;
     }
     const el = cardFor(ev);

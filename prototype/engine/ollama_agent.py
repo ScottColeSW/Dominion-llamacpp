@@ -27,7 +27,7 @@ import re
 import time
 import urllib.error
 import urllib.request
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from .agents import AnswerAttempt, ScriptedAgent
 from .content import Question, Domain
@@ -50,6 +50,14 @@ OLLAMA_TIMEOUT = 90.0
 # 8GB-VRAM combination, consistently, not a transient failure. Re-add it
 # once that's resolved upstream.
 TEXT_MODELS = ["llama3.2:latest", "qwen2.5:3b", "gemma2:2b", "phi3:mini"]
+
+# decide_continue's push/retreat announcement is a live, on-air moment the
+# audience is actively watching and waiting on (Scott: "they have to decide
+# in 15 seconds or less") -- nothing like intro_line's long leash before the
+# timed clock even starts. A much tighter timeout than OLLAMA_TIMEOUT keeps
+# the whole announcement beat (host build-up + this call + the reaction)
+# comfortably inside that budget even in the worst case.
+CONTINUE_DECISION_TIMEOUT = 6.0
 
 # A floor under attempt_question's charged clock time, not an addition on
 # top of real latency -- Scott's rule: no turn should read as having taken
@@ -128,22 +136,39 @@ class OllamaAgent(ScriptedAgent):
         idx = _parse_index(reply, len(options))
         return options[idx] if idx is not None else super().choose_target(player, game)
 
-    def decide_continue(self, player: Player, game: GameState) -> bool:
+    def decide_continue(self, player: Player, game: GameState) -> Tuple[bool, str]:
+        # Returns (keep_going, reason) now -- the host announces this choice
+        # live (Scott: it "is being lost in the action," needs real drama),
+        # and the reason is what gets said, not just a silent bool. One
+        # combined call/parse, not two, to stay inside the 15-second budget
+        # for the whole beat (see CONTINUE_DECISION_TIMEOUT above) -- a
+        # separate follow-up call for "now explain yourself" would double
+        # the real latency this fast-paced moment can afford.
         if not game.adjacent_opponents(player.id):
-            return False
+            return super().decide_continue(player, game)
         prompt = (
             f"You are {player.kingdom_name}, a {player.profession}, playing style: "
             f"{player.temperament_label()}. You are on a {player.push_streak}-win streak. "
-            f"Do you keep pushing for more territory, or retreat to defend what you have?\n"
-            f"Reply with ONLY the word PUSH or RETREAT."
+            f"Do you keep pushing for more territory, or retreat to defend what you have? "
+            f"The host and the live audience are waiting on your answer right now -- "
+            f"keep it quick.\n"
+            f"Reply on ONE line in EXACTLY this format: PUSH or RETREAT, then a colon, "
+            f"then one short in-character reason. Example: PUSH: I can feel it, one more!"
         )
-        reply, _ = _ask_ollama(self.model, prompt)
+        reply, _ = _ask_ollama(self.model, prompt, timeout=CONTINUE_DECISION_TIMEOUT)
         if reply:
             upper = reply.upper()
-            if "PUSH" in upper:
-                return True
-            if "RETREAT" in upper:
-                return False
+            verdict_part = upper.split(":", 1)[0]
+            keep_going = None
+            if "PUSH" in verdict_part:
+                keep_going = True
+            elif "RETREAT" in verdict_part:
+                keep_going = False
+            if keep_going is not None:
+                reason = reply.split(":", 1)[1].strip() if ":" in reply else ""
+                if not reason:
+                    reason = "pushing on." if keep_going else "retreating to defend."
+                return keep_going, reason
         return super().decide_continue(player, game)
 
     def choose_tax_target(self, player: Player, game: GameState) -> Optional[int]:
