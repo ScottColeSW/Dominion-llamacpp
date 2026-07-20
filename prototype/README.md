@@ -71,17 +71,24 @@ of both clocks still unspent. Scripted play is unaffected by either change
 (still `QUESTION_CAP = 30`, still full wall-clock charged, since scripted
 seconds_used was never real elapsed time to begin with).
 
-**Every turn costs at least a beat, never less.** A live re-verification
-after the above fixes measured charged think_seconds averaging under 0.1s
-per attempt on this machine's small local models -- fast enough that the
-clock barely moved no matter how many attempts happened, so the question
-cap (not the clock) ended up deciding almost every duel regardless of how
-high it was set. `MIN_CHARGED_SECONDS` (`ollama_agent.py`) floors
-`attempt_question`'s charged time at 1.0s -- a floor under real latency,
-never an addition on top of it, so a genuinely slow call still costs its
-real time. `duel.py`'s forced-pass fallback and `agents.py`'s scripted pass
-timing were bumped to the same 1.0s floor for consistency: no turn, live or
-scripted, forced or genuine, should read as having taken less than a beat.
+**Every turn costs a whole second, always rounded up, never a fraction.** A
+live re-verification after the above fixes measured charged think_seconds
+averaging under 0.1s per attempt on this machine's small local models --
+fast enough that the clock barely moved no matter how many attempts
+happened, so the question cap (not the clock) ended up deciding almost
+every duel regardless of how high it was set. `attempt_question`
+(`ollama_agent.py`) now charges `math.ceil()` of the real thinking time --
+0.6s costs a full 1, 3.1s costs 4 -- with `MIN_CHARGED_SECONDS` (1) as a
+defensive backstop for the edge case where measured think time is exactly
+0.0. `duel.py`'s forced-pass fallback and `agents.py`'s scripted pass/answer
+timing were moved to the same whole-integer-seconds scheme for consistency.
+`AnswerAttempt.seconds_used` (`agents.py`) is typed `int`, not `float`, and
+`duel.py`'s per-turn `clock_remaining` is a plain `int` too -- every value
+on the clock's path is a whole number end to end. This also means a player
+stuck missing, missing, passing, missing before finally landing an answer
+can rack up a genuinely large integer total across those attempts, which
+reads as real, escalating tension rather than a suspiciously precise
+fraction.
 
 **Both sides get a warm-up, not just the challenger.** Right as a duel opens
 (before either clock starts), the host now gets a one-line in-character

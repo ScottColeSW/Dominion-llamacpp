@@ -153,8 +153,10 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
             # Ollama call, since the point is to guarantee progress, not to
             # spend more real latency on the question we're skipping -- but
             # still at least a full second, same floor as every other turn
-            # (Scott's rule: no turn reads as having taken less than a beat).
-            attempt = AnswerAttempt(outcome="passed", correct=False, seconds_used=1.0, guess="")
+            # (Scott's rule: no turn reads as having taken less than a
+            # beat, and every seconds_used is a whole number, never a
+            # fraction).
+            attempt = AnswerAttempt(outcome="passed", correct=False, seconds_used=1, guess="")
         else:
             # time_remaining lets a live agent (OllamaAgent) cap how long
             # it'll wait for a reply to roughly what's actually left on THIS
@@ -177,8 +179,12 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
             # Clamped to 0 for display: the real clock can dip slightly
             # negative the instant it crosses zero, but the audience should
             # never see a negative number on screen. Elimination logic
-            # below still uses the real, unclamped clocks[pid] value.
-            "clock_remaining": round(max(0.0, clocks[pid]), 1),
+            # below still uses the real, unclamped clocks[pid] value. A
+            # clean int, not a rounded float -- every seconds_used charged
+            # against it is already a whole number (Scott's rule), so the
+            # running total is always whole too; no fractional remainder
+            # is possible to round away here.
+            "clock_remaining": int(max(0.0, clocks[pid])),
         })
         # Fire as each turn is actually computed, not just appended to
         # turns_log for the caller to replay after the whole duel finishes.

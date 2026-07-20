@@ -5,6 +5,7 @@ replace later without touching the engine itself.
 """
 from __future__ import annotations
 from dataclasses import dataclass
+import math
 import random
 from typing import List, Optional
 
@@ -16,7 +17,13 @@ from .models import Player, GameState
 class AnswerAttempt:
     outcome: str        # "correct" | "incorrect" | "passed"
     correct: bool        # convenience flag, True iff outcome == "correct"
-    seconds_used: float
+    # Always a whole number of seconds, always rounded UP (never down and
+    # never fractional) -- Scott's rule: a turn that took 0.6s of real or
+    # simulated time still costs a full second off the clock, not a
+    # fraction of one. A player who misses, misses, passes, misses, then
+    # finally hits can rack up a genuinely large integer here across
+    # several attempts on the same question; see duel.py's per-attempt loop.
+    seconds_used: int
     guess: str           # the stated answer; empty when passed
     # True only for a genuine live Ollama reply (OllamaAgent.attempt_question's
     # success path) -- always False here, since a scripted attempt's
@@ -93,15 +100,17 @@ class ScriptedAgent:
         temperament_adjust = (0.5 - player.temperament) * 0.12
         pass_chance = min(0.45, max(0.02, self.base_pass_chance + temperament_adjust + 0.07 * miss_streak))
         if self.rng.random() < pass_chance:
-            # Floor of 1.0s, matching OllamaAgent's MIN_CHARGED_SECONDS --
-            # Scott's rule that no turn, scripted or live, should read as
-            # having taken less than a beat. Passing quickly is still
-            # allowed to read as quicker than working through a real guess
-            # (that range starts at 1.2s below), just never under a second.
-            seconds = round(self.rng.uniform(1.0, 2.2), 1)
+            # Whole seconds only, always rounded UP -- Scott's rule: a turn
+            # that took 0.6s (simulated or real) still costs a full second,
+            # never a fraction of one. Sampled from a range that starts
+            # below 1.0 specifically so ceil() can still land on a genuine
+            # 1 sometimes -- a quick pass reads as quicker than working
+            # through a real guess (that range starts higher, below), just
+            # never a fractional/zero second.
+            seconds = max(1, math.ceil(self.rng.uniform(0.4, 2.4)))
             return AnswerAttempt(outcome="passed", correct=False, seconds_used=seconds, guess="")
 
-        seconds = round(self.rng.uniform(1.2, 4.5), 1)
+        seconds = max(1, math.ceil(self.rng.uniform(0.4, 4.4)))
         correct = self.rng.random() < self.base_accuracy
         if correct:
             return AnswerAttempt(outcome="correct", correct=True, seconds_used=seconds, guess=question.answer)

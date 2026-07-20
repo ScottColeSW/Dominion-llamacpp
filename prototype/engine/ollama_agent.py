@@ -21,6 +21,7 @@ server can never stall or crash the show.
 """
 from __future__ import annotations
 import json
+import math
 import random
 import re
 import time
@@ -55,7 +56,13 @@ TEXT_MODELS = ["llama3.2:latest", "qwen2.5:3b", "gemma2:2b", "phi3:mini"]
 # less than a beat, since a real contestant (however sharp) still takes a
 # moment to read a question and answer, and an instant answer reads as
 # implausible on screen regardless of how fast the underlying model is.
-MIN_CHARGED_SECONDS = 1.0
+# Whole seconds only, always rounded UP: 0.6s charges a full 1, not 0.6 --
+# see the max(MIN_CHARGED_SECONDS, math.ceil(...)) call site below. The
+# max() is a defensive backstop, not the normal case: ceil() of any
+# positive value already returns at least 1 on its own, this only matters
+# if raw_seconds is ever exactly 0.0 (Ollama's total_duration and
+# load_duration reported equal -- a real if rare possibility).
+MIN_CHARGED_SECONDS = 1
 
 
 def _ask_ollama(model: str, prompt: str, timeout: float = OLLAMA_TIMEOUT) -> "tuple[Optional[str], Optional[float]]":
@@ -213,16 +220,16 @@ class OllamaAgent(ScriptedAgent):
         # resident. Falls back to wall-clock elapsed only if Ollama's
         # response is missing the duration fields entirely.
         raw_seconds = think_seconds if think_seconds is not None else elapsed
-        # Floored at MIN_CHARGED_SECONDS -- Scott's rule: a turn should never
-        # read as having taken less than a beat, on top of whatever real
-        # latency it already cost. Measured live, small local models were
+        # Whole seconds only, always rounded UP -- Scott's rule: 0.6s of
+        # real thinking time still costs a full second off the clock, never
+        # a fraction of one. Measured live, small local models were
         # answering in well under a tenth of a second, which is why the
         # question cap kept needing readjustment (README/duel.py docstring):
         # the clock barely moved no matter how many attempts happened, so
         # the cap -- not the clock -- ended up deciding almost every duel.
-        # This is a floor, not an addition -- a genuinely slow call still
-        # gets charged its real time, never less.
-        charged_seconds = round(max(MIN_CHARGED_SECONDS, raw_seconds), 1)
+        # Rounding up is a floor, not an addition -- a genuinely slow call
+        # still gets charged its real time, ceiled, never truncated down.
+        charged_seconds = max(MIN_CHARGED_SECONDS, math.ceil(raw_seconds))
         if not reply:
             return super().attempt_question(player, question, domain, miss_streak=miss_streak,
                                              distractors=distractors)
