@@ -18,6 +18,14 @@ class AnswerAttempt:
     correct: bool        # convenience flag, True iff outcome == "correct"
     seconds_used: float
     guess: str           # the stated answer; empty when passed
+    # True only for a genuine live Ollama reply (OllamaAgent.attempt_question's
+    # success path) -- always False here, since a scripted attempt's
+    # seconds_used is fake/simulated time, not time that actually elapsed.
+    # The frontend uses this to tell the two apart: a live seconds_used is
+    # real wall-clock time that already passed server-side before this
+    # event ever streamed out, so re-animating it client-side would double
+    # the real wait rather than just replaying a simulated one.
+    live: bool = False
 
 
 class ScriptedAgent:
@@ -60,7 +68,16 @@ class ScriptedAgent:
         return self.rng.choices(options, weights=weights, k=1)[0]
 
     def attempt_question(self, player: Player, question: Question, domain: Domain,
-                          miss_streak: int = 0) -> AnswerAttempt:
+                          miss_streak: int = 0, distractors: Optional[List[str]] = None,
+                          time_remaining: Optional[float] = None) -> AnswerAttempt:
+        # distractors/time_remaining are accepted but unused here --
+        # ScriptedAgent already "cheats" via question.answer directly, and
+        # is never slow enough for time_remaining to matter. They exist on
+        # this signature so the shared call site (duel.py) can pass them
+        # uniformly to any agent; OllamaAgent (ollama_agent.py) is the one
+        # that actually uses them -- distractors as real multiple-choice
+        # options for a live model that must NOT be handed the answer, and
+        # time_remaining to cap how long it'll wait for a reply.
         # Revision 25: the frontend now animates each turn in genuine real
         # time (one real second per simulated second, per Scott's explicit
         # request), so how long a turn *feels* to watch is a direct,

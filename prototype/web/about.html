@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>About - Scott A. Cole</title>
+    <style>
+        :root {
+            --bg-color: #0d1117;
+            --container-bg: #161b22;
+            --border-color: #30363d;
+            --text-primary: #c9d1d9;
+            --text-secondary: #8b949e;
+            --accent-color: #58a6ff;
+            --font-stack: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            font-family: var(--font-stack);
+            margin: 0;
+            padding: 40px 20px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .profile-card {
+            background-color: var(--container-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            max-width: 650px;
+            width: 100%;
+            padding: 32px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+
+        h1 {
+            font-size: 24px;
+            margin-top: 0;
+            margin-bottom: 4px;
+        }
+
+        .subtitle {
+            color: var(--text-secondary);
+            font-size: 14px;
+            margin-bottom: 24px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        hr {
+            border: 0;
+            border-top: 1px solid var(--border-color);
+            margin: 24px 0;
+        }
+
+        h3 {
+            font-size: 16px;
+            color: var(--accent-color);
+            margin-bottom: 12px;
+        }
+
+        p, li {
+            font-size: 14px;
+            line-height: 1.6;
+            color: var(--text-primary);
+        }
+
+        ul {
+            padding-left: 20px;
+            margin-bottom: 20px;
+        }
+
+        li {
+            margin-bottom: 8px;
+        }
+
+        .book-item {
+            margin-bottom: 16px;
+        }
+
+        .book-title {
+            font-weight: 600;
+            display: block;
+        }
+
+        a {
+            color: var(--accent-color);
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        blockquote {
+            border-left: 3px solid var(--border-color);
+            padding-left: 16px;
+            color: var(--text-secondary);
+            font-style: italic;
+            margin: 20px 0 0 0;
+        }
+    </style>
+</head>
+<body>
+
+<div class="profile-card">
+    <h1>Scott A. Cole</h1>
+    <div class="subtitle">Computer Scientist &bull; AI Systems Architect &bull; Author</div>
+    
+    <p>
+        I focus deeply on the engineering and implementation layers of AI automation. Drawing on a background in secure systems, drivers, and custom orchestration, I design robust agentic systems that transform raw compute into predictable business value.
+    </p>
+
+    <hr>
+
+    <h3>🛠️ Technical Core</h3>
+    <ul>
+        <li><strong>Orchestration:</strong> Multi-agent systems, local runtime workflows (Ollama, Docker), and production deployment patterns.</li>
+        <li><strong>Automation:</strong> Advanced backend architectural pipelines with tools like n8n and LangChain.</li>
+    </ul>
+
+    <hr>
+
+    <h3>📚 Publications</h3>
+    <div class="book-item">
+        <span class="book-title"><a href="https://amzn.to/4wb8DdP" target="_blank">AI to ROI: Agentic Frameworks, Patterns, and Engrams (2nd Ed.)</a></span>
+        <span style="color: var(--text-secondary); font-size: 13px;">The strategic execution blueprint for enterprise multi-agent deployment.</span>
+    </div>
+    <div class="book-item">
+        <span class="book-title"><a href="https://amzn.to/4l9dHLe" target="_blank">The GenAI Business Solutions Series</a></span>
+        <span style="color: var(--text-secondary); font-size: 13px;">A 9-volume hand-on toolkit optimized for project leads and operational managers.</span>
+    </div>
+
+    <hr>
+
+    <blockquote>
+        "Profitable AI—not just competitive capability—is the only valid metric for enterprise deployment. Focus on the architecture, secure the infrastructure, and build for intent."
+    </blockquote>
+</div>
+
+</body>
+</html>

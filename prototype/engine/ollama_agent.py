@@ -1,13 +1,17 @@
-"""Live, Ollama-backed agent for the three lower-frequency player decisions:
-who to challenge (choose_target), whether to keep pushing (decide_continue),
-and who to domain-tax (choose_tax_target).
+"""Live, Ollama-backed agent for every player decision: who to challenge
+(choose_target), whether to keep pushing (decide_continue), who to
+domain-tax (choose_tax_target), and trivia answering (attempt_question).
 
-Trivia answering (attempt_question) deliberately stays on the inherited
-ScriptedAgent behavior: on this project's dev hardware a single Ollama call
-took 11s warm / 86s cold (CPU-only inference; see prototype/README.md), which
-would blow through the 25-second duel clock in one or two turns. The three
-decisions above happen only a few times per duel, so real latency there is
-tolerable in a way it isn't for the timed trivia exchange.
+With a working GPU (see prototype/README.md), warm calls run well under a
+second, which is why trivia answering can be live here -- on CPU-only
+inference a single call took 11s warm / 86s cold, which would have blown
+through the duel clock in one or two turns. game.py uses a longer 60s clock
+for live shows specifically to give real latency room.
+
+attempt_question turns each question into 4-way multiple choice using the
+same distractor pool duel.py already generates for the frontend's cosmetic
+blurt animation -- far more reliable than matching free-text guesses against
+the answer, and the model is never shown which option is correct.
 
 Every live call degrades to the scripted fallback on any failure -- timeout,
 connection error, unparseable reply -- so a slow, hung, or unreachable Ollama
@@ -17,28 +21,40 @@ from __future__ import annotations
 import json
 import random
 import re
+import time
 import urllib.error
 import urllib.request
-from typing import Optional
+from typing import List, Optional
 
-from .agents import ScriptedAgent
+from .agents import AnswerAttempt, ScriptedAgent
+from .content import Question, Domain
 from .models import Player, GameState
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
+# 127.0.0.1, not "localhost": on this machine "localhost" resolves to the
+# IPv6 loopback (::1) first, but Ollama only listens on IPv4 -- that connect
+# attempt doesn't fail fast, it hangs in SYN_SENT for minutes (observed
+# directly via netstat), silently defeating every timeout value below since
+# the hang happens at the TCP handshake, before any of this module's own
+# per-call timeout logic gets a real chance to matter. Skip the ambiguity.
+OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 # Generous given observed cold-start cost (86s on this dev machine); a slow
 # reply still beats a wrong/absent one, and the fallback below covers a
 # reply that never comes at all.
 OLLAMA_TIMEOUT = 90.0
 
-TEXT_MODELS = ["llama3.2:latest", "gpt-oss:20b", "qwen2.5:3b", "gemma2:2b", "phi3:mini"]
+# gpt-oss:20b was dropped from this pool: it hard-errors ("tensor
+# ...ffn_down_exps.weight size overflow") on this machine's Ollama version /
+# 8GB-VRAM combination, consistently, not a transient failure. Re-add it
+# once that's resolved upstream.
+TEXT_MODELS = ["llama3.2:latest", "qwen2.5:3b", "gemma2:2b", "phi3:mini"]
 
 
-def _ask_ollama(model: str, prompt: str) -> Optional[str]:
+def _ask_ollama(model: str, prompt: str, timeout: float = OLLAMA_TIMEOUT) -> Optional[str]:
     body = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode("utf-8")
     req = urllib.request.Request(
         OLLAMA_URL, data=body, headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         return (data.get("response") or "").strip()
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
@@ -115,3 +131,49 @@ class OllamaAgent(ScriptedAgent):
         )
         idx = _parse_index(_ask_ollama(self.model, prompt), len(candidates))
         return candidates[idx] if idx is not None else super().choose_tax_target(player, game)
+
+    def attempt_question(self, player: Player, question: Question, domain: Domain,
+                          miss_streak: int = 0, distractors: Optional[List[str]] = None,
+                          time_remaining: Optional[float] = None) -> AnswerAttempt:
+        options = list(distractors or [])
+        if not options:
+            return super().attempt_question(player, question, domain, miss_streak=miss_streak,
+                                             distractors=distractors)
+        choices = options + [question.answer]
+        self.rng.shuffle(choices)
+        letters = "ABCD"[:len(choices)]
+        lines = [f"{letters[i]}: {choice}" for i, choice in enumerate(choices)]
+        prompt = (
+            f"Trivia category: {domain.name}\nClue: {question.image_prompt}\n"
+            + "\n".join(lines)
+            + "\nReply with ONLY the single letter of your answer, or PASS if you don't know."
+        )
+        # Cap how long we'll wait for a reply to roughly what this player
+        # actually has left on their clock (plus a small grace), not the
+        # full OLLAMA_TIMEOUT -- a slow or cold-loading call otherwise keeps
+        # running well past the moment this player's clock would already
+        # have hit zero, and the duel visibly drags on longer than the
+        # audience is watching a countdown for. A 1.5s floor still gives a
+        # fast local model a fair shot even when time is nearly out.
+        call_timeout = OLLAMA_TIMEOUT
+        if time_remaining is not None:
+            call_timeout = max(1.5, min(OLLAMA_TIMEOUT, time_remaining + 1.5))
+        t0 = time.time()
+        reply = _ask_ollama(self.model, prompt, timeout=call_timeout)
+        elapsed = max(0.2, time.time() - t0)
+        if not reply:
+            return super().attempt_question(player, question, domain, miss_streak=miss_streak,
+                                             distractors=distractors)
+        upper = reply.strip().upper()
+        if upper.startswith("PASS"):
+            return AnswerAttempt(outcome="passed", correct=False, seconds_used=round(elapsed, 1),
+                                  guess="", live=True)
+        m = re.search(r"[A-D]", upper)
+        idx = letters.index(m.group()) if (m and m.group() in letters) else None
+        if idx is None:
+            return super().attempt_question(player, question, domain, miss_streak=miss_streak,
+                                             distractors=distractors)
+        chosen = choices[idx]
+        correct = (chosen == question.answer)
+        return AnswerAttempt(outcome="correct" if correct else "incorrect", correct=correct,
+                              seconds_used=round(elapsed, 1), guess=chosen, live=True)

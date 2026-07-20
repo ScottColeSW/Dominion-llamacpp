@@ -13,12 +13,21 @@ from .content import pick_domains, DOMAINS_BY_NAME, Domain
 from .models import Player, GameState, KINGDOM_NAME_PARTS_A, KINGDOM_NAME_PARTS_B, PROFESSIONS
 from .agents import ScriptedAgent
 from .ollama_agent import OllamaAgent, TEXT_MODELS
-from .duel import run_duel
+from .duel import run_duel, BASE_CLOCK
 
 # Set DOMINION_SCRIPTED_ONLY=1 to force plain ScriptedAgent for every player,
 # skipping all live Ollama calls -- useful for fast local iteration without
 # waiting on real model latency (see prototype/README.md).
 SCRIPTED_ONLY = bool(os.environ.get("DOMINION_SCRIPTED_ONLY"))
+
+# Live trivia used a longer 60s clock at first to give real per-turn latency
+# room to breathe, but that read as slow-paced/boring to actually watch, and
+# it was defensive anyway -- OllamaAgent.attempt_question now caps a live
+# call's own wait time to roughly what's left on the player's clock (see
+# ollama_agent.py), so a slow call can no longer drag a duel out past when
+# the audience already expects it to end. Both modes use the same,
+# snappier 25s clock (duel.py's BASE_CLOCK, Revision 18's original call:
+# "shortened from 60s to 25s specifically to burn through duels faster").
 
 PLAYER_COUNT = 13
 GRAND_PRIZE = 100_000_000
@@ -162,22 +171,31 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
         challenger_bonus = active_player.time_bonus_banked
         emit("challenge_declared", challenger_id=active_pid, defender_id=target_id,
              tested_domain=defender.domain, challenger_using_bonus=challenger_bonus,
-             defender_using_bonus=False)
+             defender_using_bonus=False, base_clock=BASE_CLOCK)
 
-        result = run_duel(active_player, defender, DOMAINS_BY_NAME[defender.domain],
-                           agents, rng, challenger_bonus=challenger_bonus,
-                           used_questions=used_questions)
-        if challenger_bonus:
-            active_player.time_bonus_banked = False
+        # Emitted live, turn by turn, as run_duel computes each one -- not
+        # batched up and replayed after the whole duel resolves. With a live
+        # agent a single turn can itself take real seconds, so the frontend
+        # needs to see each one land as it actually happens, the same way
+        # agent_thinking/decision events already do outside a duel.
+        turn_count = [0]
 
-        for turn_index, turn in enumerate(result.turns_log):
-            emit("duel_turn", turn_index=turn_index, challenger_id=active_pid,
+        def emit_turn(turn: dict) -> None:
+            emit("duel_turn", turn_index=turn_count[0], challenger_id=active_pid,
                  defender_id=target_id, player_id=turn["player_id"],
                  domain=turn["domain"], prompt=turn["prompt"],
                  answer=turn["answer"], guess=turn["guess"], outcome=turn["outcome"],
                  correct=turn["correct"], seconds_used=turn["seconds_used"],
                  clock_remaining=turn["clock_remaining"],
                  distractors=turn["distractors"])
+            turn_count[0] += 1
+
+        result = run_duel(active_player, defender, DOMAINS_BY_NAME[defender.domain],
+                           agents, rng, challenger_bonus=challenger_bonus,
+                           used_questions=used_questions, base_clock=BASE_CLOCK,
+                           on_turn=emit_turn)
+        if challenger_bonus:
+            active_player.time_bonus_banked = False
 
         game.duel_count += 1
         winner_id, loser_id = result.winner_id, result.loser_id

@@ -1,0 +1,9 @@
+# Dominion has no external Python package dependencies -- the entire
+# engine, server, and pre-production scripts use only the standard library
+# (see prototype/README.md). This file exists so `pip install -r
+# requirements.txt` is a safe, fast no-op rather than a missing file, not
+# because anything actually needs installing.
+#
+# The one real external dependency is Ollama itself (not a pip package) --
+# run `python setup.py` from the repo root to check for it and pull the
+# models the live agents use.

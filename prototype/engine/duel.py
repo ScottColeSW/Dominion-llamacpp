@@ -26,10 +26,16 @@ doc, implemented exactly to the corrected Revision 19 rules.
   the caller) so the same image/answer pair is avoided for the entire
   show, not just this duel, falling back to a repeat only once a domain's
   whole pool is genuinely exhausted.
+- on_turn, if given, fires immediately after each turn is computed (not
+  just appended to the returned DuelResult.turns_log) -- with a live agent
+  (engine/ollama_agent.py), computing a single turn can itself take real
+  seconds, so the caller needs per-turn events as they happen to stream
+  live, rather than the entire duel resolving silently before anything
+  reaches the frontend.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Set, Tuple
+from typing import Callable, List, Dict, Any, Optional, Set, Tuple
 import random
 
 from .content import Domain, Question
@@ -80,14 +86,16 @@ def _pick_distractors(domain: Domain, question: Question, rng: random.Random) ->
 def run_duel(challenger: Player, defender: Player, domain: Domain,
              agents: Dict[int, ScriptedAgent], rng: random.Random,
              challenger_bonus: bool = False, defender_bonus: bool = False,
-             used_questions: Optional[Set[Tuple[str, str]]] = None) -> DuelResult:
+             used_questions: Optional[Set[Tuple[str, str]]] = None,
+             base_clock: float = BASE_CLOCK,
+             on_turn: Optional[Callable[[Dict[str, Any]], None]] = None) -> DuelResult:
 
     if used_questions is None:
         used_questions = set()
 
     clocks = {
-        challenger.id: BASE_CLOCK + (5.0 if challenger_bonus else 0.0),
-        defender.id: BASE_CLOCK + (5.0 if defender_bonus else 0.0),
+        challenger.id: base_clock + (5.0 if challenger_bonus else 0.0),
+        defender.id: base_clock + (5.0 if defender_bonus else 0.0),
     }
     seen = {challenger.id: 0, defender.id: 0}
     turns_log: List[Dict[str, Any]] = []
@@ -106,7 +114,14 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
         agent = agents[pid]
         player = players_by_id[pid]
 
-        attempt = agent.attempt_question(player, question, domain, miss_streak=miss_streak)
+        # time_remaining lets a live agent (OllamaAgent) cap how long it'll
+        # wait for a reply to roughly what's actually left on THIS player's
+        # clock -- otherwise a slow/cold live call can run well past the
+        # moment this player's clock would have hit zero, and the duel
+        # visibly drags on past when the audience already expects it to
+        # end. ScriptedAgent ignores this; it's never slow enough to matter.
+        attempt = agent.attempt_question(player, question, domain, miss_streak=miss_streak,
+                                          distractors=distractors, time_remaining=clocks[pid])
 
         clocks[pid] -= attempt.seconds_used
         seen[pid] += 1
@@ -122,6 +137,15 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
             # below still uses the real, unclamped clocks[pid] value.
             "clock_remaining": round(max(0.0, clocks[pid]), 1),
         })
+        # Fire as each turn is actually computed, not just appended to
+        # turns_log for the caller to replay after the whole duel finishes.
+        # With a live agent, computing one turn can itself take real
+        # seconds; without this, game.py's caller would block silently
+        # through the entire duel before streaming any of it to the
+        # frontend, which is exactly the "plays longer than needed" feel a
+        # per-call timeout cap alone doesn't fix.
+        if on_turn is not None:
+            on_turn(turns_log[-1])
 
         if clocks[pid] <= 0:
             other = turn_order[1 - current]

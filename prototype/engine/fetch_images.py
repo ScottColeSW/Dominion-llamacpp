@@ -33,6 +33,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# Wikimedia file titles are frequently non-ASCII (accented names, non-Latin
+# scripts); Windows' default console codepage (cp1252) can't encode a lot of
+# that and crashes mid-run on a plain print(). Reconfigure stdout to UTF-8 so
+# a long --all run doesn't die partway through on a title Windows can't
+# print.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from engine.content import DOMAIN_LIBRARY, DOMAINS_BY_NAME  # noqa: E402
 
@@ -46,7 +54,11 @@ USER_AGENT = "TheAgentGameProto/1.0 (pre-production image research; contact: sco
 # alone (see _title_confirms_relevance below, which this supplements, not
 # replaces). Off by default -- the script works exactly as it always has
 # without llava pulled.
-OLLAMA_URL = "http://localhost:11434/api/generate"
+# 127.0.0.1, not "localhost" -- see ollama_agent.py for why: "localhost" can
+# resolve to the IPv6 loopback first on this machine, and Ollama only
+# listens on IPv4, so that connection hangs in SYN_SENT for minutes instead
+# of failing fast, defeating VISION_TIMEOUT below entirely.
+OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 VISION_MODEL = "llava:7b"
 VISION_TIMEOUT = 90.0
 
@@ -194,11 +206,16 @@ def _title_confirms_relevance(title: str, query: str) -> bool:
 
 def verify_with_vision(url: str, domain_name: str, answer: str) -> bool:
     """Downloads a candidate photo and asks a local vision model whether it
-    actually shows the answer. Any failure (download error, Ollama
-    unreachable, unparseable reply) counts as a rejection, not a pass --
-    here in pre-production, a false negative (falls back to the next
-    candidate, or the plain text prompt) is always safer than a false
-    positive (the wrong photo shown live on the board)."""
+    actually shows the answer -- AND whether it's simple and clear enough
+    for someone to recognize at a glance, not just technically on-topic.
+    This library is meant to be plain and easy to read during a live duel,
+    not an art-museum piece, so a cluttered, busy, or multi-subject photo
+    should fail this even if it does contain the right thing somewhere in
+    frame. Any failure (download error, Ollama unreachable, unparseable
+    reply) counts as a rejection, not a pass -- here in pre-production, a
+    false negative (falls back to the next candidate, or the plain text
+    prompt) is always safer than a false positive (a wrong or confusing
+    photo shown live on the board)."""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -207,7 +224,10 @@ def verify_with_vision(url: str, domain_name: str, answer: str) -> bool:
         return False
     body = json.dumps({
         "model": VISION_MODEL,
-        "prompt": f"Does this image clearly show '{answer}' ({domain_name} context)? "
+        "prompt": f"Does this image clearly and simply show '{answer}' ({domain_name} "
+                  f"context), in a way an average person could recognize at a glance? "
+                  f"Reject it if it's cluttered, busy, abstract, has multiple competing "
+                  f"subjects, or would take more than a second or two to make sense of. "
                   f"Reply with just YES or NO.",
         "images": [base64.b64encode(image_bytes).decode("ascii")],
         "stream": False,
