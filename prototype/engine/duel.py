@@ -65,7 +65,12 @@ from .models import Player
 
 
 QUESTION_CAP = 30  # total across BOTH players in one duel, not per-player
-BASE_CLOCK = 25.0
+# An int, not 25.0 -- every charge against this clock (attempt.seconds_used)
+# is now a whole number by construction (Scott's rule), so keeping the
+# clock itself an int end to end means clocks_remaining never drifts back
+# into "4.0"-looking float output despite every individual charge already
+# being a clean integer.
+BASE_CLOCK = 25
 # A live model's "pass" is entirely voluntary -- attempt_question only
 # registers one if the model's reply literally starts with "PASS" (see
 # ollama_agent.py). A model that never volunteers that word can otherwise
@@ -84,7 +89,7 @@ class DuelResult:
     loser_id: int
     reason: str                      # "timeout" or "question_cap"
     turns_log: List[Dict[str, Any]] = field(default_factory=list)
-    clocks_remaining: Dict[int, float] = field(default_factory=dict)
+    clocks_remaining: Dict[int, int] = field(default_factory=dict)
     questions_seen: Dict[int, int] = field(default_factory=dict)
 
 
@@ -118,15 +123,15 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
              agents: Dict[int, ScriptedAgent], rng: random.Random,
              challenger_bonus: bool = False, defender_bonus: bool = False,
              used_questions: Optional[Set[Tuple[str, str]]] = None,
-             base_clock: float = BASE_CLOCK, question_cap: int = QUESTION_CAP,
+             base_clock: int = BASE_CLOCK, question_cap: int = QUESTION_CAP,
              on_turn: Optional[Callable[[Dict[str, Any]], None]] = None) -> DuelResult:
 
     if used_questions is None:
         used_questions = set()
 
     clocks = {
-        challenger.id: base_clock + (5.0 if challenger_bonus else 0.0),
-        defender.id: base_clock + (5.0 if defender_bonus else 0.0),
+        challenger.id: base_clock + (5 if challenger_bonus else 0),
+        defender.id: base_clock + (5 if defender_bonus else 0),
     }
     seen = {challenger.id: 0, defender.id: 0}
     turns_log: List[Dict[str, Any]] = []
@@ -176,15 +181,16 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
             "answer": question.answer, "guess": attempt.guess, "outcome": attempt.outcome,
             "correct": attempt.correct, "seconds_used": attempt.seconds_used,
             "distractors": distractors, "live": attempt.live,
-            # Clamped to 0 for display: the real clock can dip slightly
-            # negative the instant it crosses zero, but the audience should
-            # never see a negative number on screen. Elimination logic
-            # below still uses the real, unclamped clocks[pid] value. A
-            # clean int, not a rounded float -- every seconds_used charged
-            # against it is already a whole number (Scott's rule), so the
-            # running total is always whole too; no fractional remainder
-            # is possible to round away here.
-            "clock_remaining": int(max(0.0, clocks[pid])),
+            # Clamped to 0 for display: the real clock can dip negative the
+            # instant it crosses zero (an int charge subtracted from an int
+            # clock, so still a clean negative int, e.g. -2), but the
+            # audience should never see a negative number on screen.
+            # Elimination logic below still uses the real, unclamped
+            # clocks[pid] value. base_clock and every seconds_used charged
+            # against it are ints by construction (Scott's rule), so this
+            # was always a whole number -- max(0, ...) just clamps the
+            # sign, nothing here rounds or truncates a fraction away.
+            "clock_remaining": max(0, clocks[pid]),
         })
         # Fire as each turn is actually computed, not just appended to
         # turns_log for the caller to replay after the whole duel finishes.
