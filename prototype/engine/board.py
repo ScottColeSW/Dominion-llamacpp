@@ -61,7 +61,29 @@ def build_pyramid_13() -> Dict[int, Set[int]]:
 
 
 def build_hub_ring(n: int) -> Dict[int, Set[int]]:
-    """Build a hub (node 0) + ring (nodes 1..n-1) adjacency map for n nodes."""
+    """Build a hub (node 0) + ring (nodes 1..n-1) adjacency map for n nodes --
+    the post-Scramble board (see game.py's _apply_scramble). The frontend
+    (web/index.html's circularPositions) lays this out as a real hex flower:
+    the hub at center, ring tiles at 60-degree intervals around it, each at
+    the exact hex-touching distance from the hub AND from their immediate
+    ring neighbors -- so ring node i geometrically touches only i-1 and i+1,
+    never anything farther around the ring.
+
+    Only ring OFFSET-1 edges here, not offset-2: an earlier version also
+    connected each ring node to the one TWO positions away (offset-2, 120
+    degrees apart), reasoning it'd give more matchup variety. It's a real
+    geometric gap, not a rendering nuance -- chord distance at 120 degrees
+    works out to about 1.7x the true hex-touching distance the 60-degree
+    neighbors sit at, so there's a visibly different-colored tile actually
+    sitting between two "adjacent" offset-2 tiles on screen. A player could
+    legitimately (per the graph) hold both without holding what's between
+    them, which reads as broken, split territory to anyone looking at the
+    board even though the game considered it one connected piece -- this is
+    what Scott's contiguity report turned out to be. The hub alone already
+    guarantees the whole graph stays connected (it borders every ring tile),
+    so dropping the offset-2 chords costs some matchup variety but not
+    connectivity, and the logical graph now means exactly what it looks
+    like on screen."""
     if n <= 1:
         return {0: set()}
     if n == 2:
@@ -75,13 +97,11 @@ def build_hub_ring(n: int) -> Dict[int, Set[int]]:
         adj[0].add(i)
         adj[i].add(0)
 
-    max_offset = min(2, ring_size // 2)
     for idx, i in enumerate(ring):
-        for offset in range(1, max_offset + 1):
-            j = ring[(idx + offset) % ring_size]
-            if j != i:
-                adj[i].add(j)
-                adj[j].add(i)
+        j = ring[(idx + 1) % ring_size]
+        if j != i:
+            adj[i].add(j)
+            adj[j].add(i)
 
     return adj
 

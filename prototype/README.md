@@ -181,3 +181,24 @@ hundreds of duels?) without re-running anything.
 duels, domain inheritance chains correctly across multiple hops, the
 Scramble triggers at the documented threshold. See the design document for
 the full rule set this implements.
+
+**The post-Scramble board's logical adjacency now matches what's actually
+drawn on screen.** `build_hub_ring` (`engine/board.py`) used to also connect
+each ring tile to the one TWO positions away ("offset-2"), on top of its
+immediate neighbor -- reasoning it'd give more matchup variety. But
+`circularPositions` (`web/index.html`) lays the post-Scramble board out as a
+real hex flower (hub at center, ring tiles at exact hex-touching distance
+from the hub and from their immediate neighbors, 60 degrees apart), and an
+offset-2 pair sits 120 degrees apart -- about 1.7x the true hex-touching
+distance, with a visibly different-colored tile actually sitting between
+them. A player could legitimately (per the graph) hold both without holding
+what's between them, which read as broken, split territory on screen even
+though the game considered it one connected piece (Scott's report: "the
+collapse game breaking contiguous territory ownership"). Fixed by dropping
+the offset-2 ring edges -- verified directly across 100 shows that the
+logical ring adjacency now exactly equals true hex-flower geometric
+adjacency, and a 300-show contiguity stress test (checking every winner's
+and every reassignment recipient's territory forms one connected piece
+after every transfer) still comes back clean. The hub alone already
+guarantees the whole graph stays connected regardless (it borders every
+ring tile), so this costs a little matchup variety, not connectivity.
