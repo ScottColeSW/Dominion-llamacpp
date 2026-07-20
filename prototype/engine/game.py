@@ -26,9 +26,22 @@ SCRIPTED_ONLY = bool(os.environ.get("DOMINION_SCRIPTED_ONLY"))
 # stopped being a rare safety-valve and became the ordinary way live duels
 # ended, usually with most of both 25s clocks still unspent (confirmed: 10
 # of 12 duels in one live show hit the cap, only 2 hit an actual timeout).
-# A much higher cap for live play keeps it a safety valve again, so clock
-# exhaustion is back to being the normal ending -- see duel.py's docstring.
-LIVE_QUESTION_CAP = 300
+#
+# First attempt at a fix raised this all the way to 300 to try to make
+# clock exhaustion the normal ending again. It didn't: a live re-verification
+# afterward measured charged think_seconds averaging under 0.1s/attempt, so
+# even 300 combined attempts barely dented a 25s clock (duels were still
+# ending via the cap, just after a much longer grind) -- and every one of
+# those 300 attempts still pays real Ollama round-trip latency independent
+# of the tiny charged time, so the fix mostly just made live shows take much
+# longer in real wall-clock terms (one full show measured at ~24 minutes)
+# without changing which reason duels ended for. Pulled back down to a
+# smaller, saner multiple of the scripted default -- see duel.py's docstring
+# for the reasoning and for FORCED_PASS_MISS_STREAK, the change that
+# actually addresses a duel feeling "stuck" (a live model that never
+# volunteers the word PASS could otherwise hammer the same question
+# forever; that's a real bug this cap alone never fixed).
+LIVE_QUESTION_CAP = 60
 EFFECTIVE_QUESTION_CAP = QUESTION_CAP if SCRIPTED_ONLY else LIVE_QUESTION_CAP
 
 # Live trivia used a longer 60s clock at first to give real per-turn latency

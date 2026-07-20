@@ -12,6 +12,13 @@ doc, implemented exactly to the corrected Revision 19 rules.
   gets another crack at the thing they just missed. Only a correct answer
   (control passes to the other player) or an explicit pass (a deliberate
   skip) brings up a new image.
+- After FORCED_PASS_MISS_STREAK consecutive misses on one question, a pass
+  is forced regardless of what the agent says. A live model's pass is
+  entirely voluntary (only registers if its reply literally starts with
+  "PASS"), so without this a model that never says that word could hammer
+  the exact same image indefinitely -- confirmed live: a duel visibly stuck
+  alternating between the same two distractor guesses, never passing, never
+  reaching a new question.
 - The only true elimination trigger is a clock reaching zero. The clock
   value recorded for display is clamped at 0: the real internal clock can
   dip slightly negative the instant it crosses zero (a slow final answer
@@ -24,12 +31,18 @@ doc, implemented exactly to the corrected Revision 19 rules.
   by comparing remaining time. That default assumes scripted-pace answers
   (roughly 1-4s each); with live Ollama answers -- especially once
   ollama_agent.py stopped charging model-load overhead against the clock --
-  a single question can cost well under a second, so 30 stops being a rare
-  safety-valve and becomes the ordinary way duels end, usually with most of
-  both clocks still unspent (confirmed: 10 of 12 duels in one live show hit
-  this cap, only 2 hit an actual clock timeout). game.py passes a much
-  higher cap for live play so clock exhaustion stays the normal ending,
-  matching the original intent; scripted play keeps this default.
+  a single question can cost well under a second, so game.py raises this
+  cap for live play (LIVE_QUESTION_CAP). It was first raised all the way to
+  300 to try to make clock exhaustion the normal ending again, but measured
+  live charged time turned out to average under 0.1s/attempt -- nowhere
+  close to what would take to actually drain a 25s+ clock even at 300
+  combined attempts, so raising the cap further only made real-world duels
+  (which pay real Ollama round-trip latency per attempt, independent of how
+  little clock time gets charged) take dramatically longer without fixing
+  anything. Pulled back down to a smaller multiple of the scripted default
+  instead -- see game.py for the current value and reasoning. The forced-
+  pass rule above is what actually prevents a duel from feeling stuck; this
+  cap is just the final backstop.
 - Questions are drawn from a show-wide used_questions set (threaded in by
   the caller) so the same image/answer pair is avoided for the entire
   show, not just this duel, falling back to a repeat only once a domain's
@@ -47,12 +60,22 @@ from typing import Callable, List, Dict, Any, Optional, Set, Tuple
 import random
 
 from .content import Domain, Question
-from .agents import ScriptedAgent
+from .agents import AnswerAttempt, ScriptedAgent
 from .models import Player
 
 
 QUESTION_CAP = 30  # total across BOTH players in one duel, not per-player
 BASE_CLOCK = 25.0
+# A live model's "pass" is entirely voluntary -- attempt_question only
+# registers one if the model's reply literally starts with "PASS" (see
+# ollama_agent.py). A model that never volunteers that word can otherwise
+# hammer the exact same image forever (a wrong answer keeps the same
+# question up for another try, by design), which reads to a viewer as the
+# show being stuck, not just an unlucky streak. After this many consecutive
+# misses on one question, force a pass regardless of what the agent says --
+# ScriptedAgent's own escalating pass_chance already self-resolves well
+# before this in practice, so it's a live-only safety net in effect.
+FORCED_PASS_MISS_STREAK = 4
 
 
 @dataclass
@@ -122,14 +145,24 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
         agent = agents[pid]
         player = players_by_id[pid]
 
-        # time_remaining lets a live agent (OllamaAgent) cap how long it'll
-        # wait for a reply to roughly what's actually left on THIS player's
-        # clock -- otherwise a slow/cold live call can run well past the
-        # moment this player's clock would have hit zero, and the duel
-        # visibly drags on past when the audience already expects it to
-        # end. ScriptedAgent ignores this; it's never slow enough to matter.
-        attempt = agent.attempt_question(player, question, domain, miss_streak=miss_streak,
-                                          distractors=distractors, time_remaining=clocks[pid])
+        if miss_streak >= FORCED_PASS_MISS_STREAK:
+            # The agent doesn't get asked at all this turn -- forced past
+            # the point where a stubborn live model would otherwise keep
+            # guessing the same image wrong forever. A flat, small time
+            # cost (a quick on-air "I'll come back to that") rather than a
+            # real Ollama call, since the point is to guarantee progress,
+            # not to spend more real latency on the question we're skipping.
+            attempt = AnswerAttempt(outcome="passed", correct=False, seconds_used=0.5, guess="")
+        else:
+            # time_remaining lets a live agent (OllamaAgent) cap how long
+            # it'll wait for a reply to roughly what's actually left on THIS
+            # player's clock -- otherwise a slow/cold live call can run well
+            # past the moment this player's clock would have hit zero, and
+            # the duel visibly drags on past when the audience already
+            # expects it to end. ScriptedAgent ignores this; it's never
+            # slow enough to matter.
+            attempt = agent.attempt_question(player, question, domain, miss_streak=miss_streak,
+                                              distractors=distractors, time_remaining=clocks[pid])
 
         clocks[pid] -= attempt.seconds_used
         seen[pid] += 1
