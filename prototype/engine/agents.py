@@ -88,29 +88,36 @@ class ScriptedAgent:
         # Revision 25: the frontend now animates each turn in genuine real
         # time (one real second per simulated second, per Scott's explicit
         # request), so how long a turn *feels* to watch is a direct,
-        # literal function of these ranges, not just a simulation detail
-        # anymore. The original 1.0-4.0s (pass) / 2.0-7.5s (answer) ranges
-        # read as sluggish once played back honestly. Tightened here so
-        # real-time playback stays snappy while keeping real variance, a
-        # player still visibly "thinks" for a beat, it's just a shorter one.
+        # literal function of seconds_used below, not just a simulation
+        # detail anymore -- see the blurt-count comment further down for
+        # how that value is actually derived now.
         # Temperament nudges pass_chance without touching base_accuracy --
         # aggressive players are less willing to bail on a guess (temperament
         # 1.0 -> -0.06), cautious players pass a bit more readily (0.0 ->
         # +0.06); this is a style difference, not a skill difference.
         temperament_adjust = (0.5 - player.temperament) * 0.12
         pass_chance = min(0.45, max(0.02, self.base_pass_chance + temperament_adjust + 0.07 * miss_streak))
+        # Charged time is driven by a blurt count, not a flat random roll --
+        # Scott's ask: "add .5 seconds per blurt, so 3 blurts is 2 seconds,
+        # etc." (ceil(3 * 0.5) == 2), so the frontend's rapid-fire guess
+        # animation (web/index.html's startRapidFireGuesses) actually means
+        # something instead of being pure decoration disconnected from the
+        # clock. This is also the fix for duels reading as "tit for tat":
+        # a flat range gave every turn roughly the same shape regardless of
+        # what's actually happening in the duel.
         if self.rng.random() < pass_chance:
-            # Whole seconds only, always rounded UP -- Scott's rule: a turn
-            # that took 0.6s (simulated or real) still costs a full second,
-            # never a fraction of one. Sampled from a range that starts
-            # below 1.0 specifically so ceil() can still land on a genuine
-            # 1 sometimes -- a quick pass reads as quicker than working
-            # through a real guess (that range starts higher, below), just
-            # never a fractional/zero second.
-            seconds = max(1, math.ceil(self.rng.uniform(0.4, 2.4)))
+            # Giving up is quick -- 1 to 3 rapid tries before bailing.
+            blurts = self.rng.randint(1, 3)
+            seconds = max(1, math.ceil(blurts * 0.5))
             return AnswerAttempt(outcome="passed", correct=False, seconds_used=seconds, guess="")
 
-        seconds = max(1, math.ceil(self.rng.uniform(0.4, 4.4)))
+        # More blurts possible the longer this exact question has already
+        # gone unanswered (miss_streak): a player who's already missed a
+        # few times on this image visibly hesitates and second-guesses more
+        # on their next try, a real escalating reason to take longer, not a
+        # uniform roll every time regardless of history.
+        blurts = self.rng.randint(1, min(7, 3 + miss_streak))
+        seconds = max(1, math.ceil(blurts * 0.5))
         correct = self.rng.random() < self.base_accuracy
         if correct:
             return AnswerAttempt(outcome="correct", correct=True, seconds_used=seconds, guess=question.answer)
