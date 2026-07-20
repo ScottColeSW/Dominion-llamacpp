@@ -958,13 +958,27 @@ function sayHost(category) {
 // The host directs a specific question at each player by name before they
 // answer -- makes the pre-duel beat read as an actual host<->player
 // dialogue (Scott: "has to be 2 ways") rather than a generic opening line
-// followed by two disconnected reactions. The defender's question
-// explicitly calls back to what the challenger just said, since
-// game.py/ollama_agent.py now feed the challenger's actual line into the
-// defender's live call too -- the whole exchange is meant to read as one
-// continuous conversation, not two separate ones.
-function hostPreduelQuestion(playerId, role, domain, opponentName) {
+// followed by two disconnected reactions. Two full rounds now, not one
+// (Scott: "several back and forth... so the models are warm to their own
+// domain and knowledge of the domain they are dueling on"): 'origin' asks
+// about the one domain this player actually drafted, 'challenge' is them
+// being told/reminded what's actually on the line tonight. The defender's
+// challenge-round question explicitly calls back to what the challenger
+// just said in THAT round, since game.py/ollama_agent.py feed the
+// challenger's actual challenge-round line into the defender's live call
+// too -- that round is meant to read as one continuous exchange, not two
+// separate monologues.
+function hostPreduelQuestion(playerId, role, phase, domain, opponentName) {
   const name = playerLabel(playerId);
+  if (phase === 'origin') {
+    const originTemplates = [
+      `${name}, before tonight's duel -- what's your specialty?`,
+      `${name}, tell the crowd: what are you actually known for?`,
+      `${name}, what's the one subject you'd call your own?`,
+      `${name}, what do you bring to this table?`,
+    ];
+    return originTemplates[Math.floor(Math.random() * originTemplates.length)];
+  }
   const challengerTemplates = [
     `${name}, ${domain} is on the line tonight -- how are you feeling?`,
     `${name}, tell us: how do you size up ${domain}?`,
@@ -1225,15 +1239,18 @@ const INTERVIEW_REACTIONS = [
 async function showDomainIntro(playerId, role, text) {
   interviewEl.textContent = `${playerLabel(playerId)}: ${text}`;
   interviewBannerEl.classList.add('show');
-  // Held noticeably longer than the first pass -- per Scott, this needs to
-  // be slow enough to actually read the response and react to it, not race
-  // by. Routed through sleep() so Fast Forward still compresses it like
+  // Held long enough to actually read and react to, but trimmed from the
+  // first pass's 4200ms now that there are four of these per duel instead
+  // of two (origin round + challenge round, each side) -- same total
+  // "read it, don't race by" goal, just budgeted across twice as many
+  // rounds so the whole interview doesn't balloon past half a minute.
+  // Routed through sleep() so Fast Forward still compresses it like
   // everything else in this pre-duel sequence.
-  await sleep(4200);
+  await sleep(3400);
   sayHostText(INTERVIEW_REACTIONS[Math.floor(Math.random() * INTERVIEW_REACTIONS.length)]);
-  await sleep(1300);
+  await sleep(1000);
   interviewBannerEl.classList.remove('show');
-  await sleep(500);
+  await sleep(400);
 }
 
 let newGamePopupTimer = null;
@@ -2588,16 +2605,17 @@ async function runShowPlayback(queue) {
       continue;
     }
     if (ev.type === 'pre_duel_intro') {
-      // Host intro for BOTH sides (challenger then defender), streamed as
-      // its own event per game.py -- shown before the countdown, which
-      // duel_turn below is responsible for kicking off once both have run.
-      // A directed host question comes first (see hostPreduelQuestion),
-      // held long enough to actually read, THEN the player's answer --
-      // together this is the real 2-way host<->player exchange Scott asked
-      // for, not a bare reaction line.
+      // Host intro for BOTH sides, TWO rounds each now (origin domain, then
+      // the domain actually being challenged), streamed as its own event
+      // per game.py -- shown before the countdown, which duel_turn below
+      // is responsible for kicking off once all four have run. A directed
+      // host question comes first (see hostPreduelQuestion), held long
+      // enough to actually read, THEN the player's answer -- together this
+      // is the real 2-way host<->player exchange Scott asked for, now with
+      // "several back and forth" per player instead of just one.
       const opponentName = ev.data.role === 'defender' ? playerLabel(stageChallengerId) : null;
-      sayHostText(hostPreduelQuestion(ev.data.player_id, ev.data.role, stageTestedDomain, opponentName));
-      await sleep(1500);
+      sayHostText(hostPreduelQuestion(ev.data.player_id, ev.data.role, ev.data.phase, stageTestedDomain, opponentName));
+      await sleep(1200);
       await showDomainIntro(ev.data.player_id, ev.data.role, ev.data.text);
       continue;
     }

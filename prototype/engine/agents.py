@@ -154,20 +154,30 @@ class ScriptedAgent:
         candidates = [pid for pid in game.active_ids if pid != player.id]
         return self.rng.choice(candidates) if candidates else None
 
-    def intro_line(self, player: Player, tested_domain: str,
-                    opponent_line: Optional[str] = None) -> str:
-        """A short line about what this player currently holds vs. what's
-        about to be tested, shown for BOTH sides right as a duel opens.
-        OllamaAgent overrides this with a live model reply (fed a fuller
-        character sheet -- profession, temperament, territory, streak --
-        plus, for the second speaker, what the first speaker just said, so
-        it's a real back-and-forth and not two disconnected monologues) and
-        falls back to this exact method on any failure -- so this also has
-        to work as a standalone, always-available line on its own, not
-        just filler. opponent_line is accepted but unused here -- a canned
-        fallback can't meaningfully react to arbitrary opponent text.
+    def intro_line_origin(self, player: Player) -> str:
+        """Round 1 of the pre-duel interview: a short line about the ONE
+        domain this player actually built a name on (origin_domain, set once
+        at the draft and never touched again -- see models.py). They're an
+        enthusiastic amateur there, nothing more, and nowhere else -- see
+        intro_line_challenge for why that distinction matters. OllamaAgent
+        overrides this with a live model reply and falls back to this exact
+        method on any failure, so it also has to work standalone.
         """
         streak = f", riding a {player.push_streak}-win streak" if player.push_streak >= 2 else ""
-        if player.domain == tested_domain:
-            return f"defending {tested_domain}{streak}, right where they've always been strongest."
-        return f"currently holds {player.domain}{streak}, but tonight it's {tested_domain} on the line."
+        return f"built a name on {player.origin_domain}{streak}, and stands by it."
+
+    def intro_line_challenge(self, player: Player, tested_domain: str,
+                              opponent_line: Optional[str] = None) -> str:
+        """Round 2: a short reaction to tonight's ACTUAL tested domain --
+        this is the player being told/reminded what they're up against, per
+        Scott's "they will be informed... of the domain to challenge."
+        Deliberately does NOT assume expertise here unless tested_domain
+        happens to equal their origin_domain -- a player is only a genuine
+        (if amateur) expert in the one domain they drafted; everywhere else
+        they're exactly as informed as an average person off the street, no
+        better. opponent_line is accepted but unused here -- a canned
+        fallback can't meaningfully react to arbitrary opponent text.
+        """
+        if player.origin_domain == tested_domain:
+            return f"tonight's {tested_domain} test is exactly their home turf."
+        return f"tonight tests {tested_domain} -- outside their home turf, just an amateur guess from here."

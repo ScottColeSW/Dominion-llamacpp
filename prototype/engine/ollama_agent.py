@@ -247,57 +247,66 @@ class OllamaAgent(ScriptedAgent):
         return AnswerAttempt(outcome="correct" if correct else "incorrect", correct=correct,
                               seconds_used=charged_seconds, guess=chosen, live=True)
 
-    def intro_line(self, player: Player, tested_domain: str,
-                    opponent_line: Optional[str] = None) -> str:
-        # Called for BOTH the challenger and defender right as a duel opens,
-        # before run_duel starts -- not just narration (Scott's ask: the
-        # host should talk about the domain owned and challenged, for every
-        # player, not just one side). It doubles as a fix for a real
-        # fairness bug: choose_target already warms the CHALLENGER's model
-        # for free (an untimed call right before the duel), but the
-        # defender never got an equivalent warm-up, so their first live
-        # trivia answer could eat a real cold-load cost their opponent
-        # never paid. Calling this for both sides here gives the defender
-        # the same head start, symmetrically, before the timed clock starts
-        # -- and since it's a real, full generation call (not a truncated
-        # one), it's a genuine warm-up, not a token gesture.
-        #
-        # The prompt below is deliberately fed a fuller character sheet
-        # (profession, playing style, territory held, any active streak),
-        # not just domain names -- a bare "you hold X, they're testing Y"
-        # prompt kept coming back flat/generic. This is the one moment per
-        # duel the audience hears a player "in their own words" before the
-        # clock starts, so it needs to actually carry some personality.
-        #
-        # opponent_line (set only for the second speaker -- game.py calls
-        # the challenger first, then passes their actual reply in here for
-        # the defender) makes this a real two-way exchange instead of two
-        # side-by-side monologues that happen to air back to back: the
-        # second player is genuinely responding to what the first one said,
-        # per Scott's "has to be 2 ways" ask.
-        defending = player.domain == tested_domain
-        stakes = (
-            f"Tonight's duel tests {tested_domain} -- your own strongest ground, "
-            f"you're defending home turf."
-            if defending else
-            f"You hold {player.domain}, but tonight's duel is on {tested_domain} instead."
-        )
+    def intro_line_origin(self, player: Player) -> str:
+        # Round 1 of the pre-duel interview, called for BOTH sides right as
+        # a duel opens, before run_duel starts. Split from the old single
+        # intro_line into two real rounds per Scott's ask: "several back
+        # and forth between host and player so the models are warm to
+        # their own domain and knowledge of the domain they are dueling
+        # on" -- this round is ONLY about origin_domain (the one domain
+        # this player actually drafted, fixed for the whole show, distinct
+        # from current holdings which drift via conquest/tax). It doubles
+        # as a fix for a real fairness bug: choose_target already warms the
+        # CHALLENGER's model for free (an untimed call), but the defender
+        # never got an equivalent warm-up -- calling this for both sides
+        # here gives the defender the same head start, symmetrically,
+        # before the timed clock starts. Two full generation calls per
+        # player now (this plus intro_line_challenge below), not one, so
+        # it's a more thorough warm-up too, not just a token gesture.
         streak_note = (
             f" You're riding a {player.push_streak}-duel win streak tonight."
             if player.push_streak >= 2 else ""
         )
-        # A stable identity anchor distinct from current holdings (which
-        # drift all show via conquest/tax): only surfaced when it's actually
-        # different from what they hold now, so it reads as "who they still
-        # are underneath" rather than a redundant restatement of `stakes`
-        # above. Scott's ask: give the model a quick memory of its own
-        # original domain specifically, not just whatever it happens to be
-        # standing on right now.
-        origin_note = (
-            f" You started this show as the {player.origin_domain} expert -- "
-            f"that's still core to who you are, whatever you hold now."
-            if player.origin_domain and player.origin_domain != player.domain
-            else ""
+        prompt = (
+            f"You are {player.kingdom_name}, a {player.profession} competing live "
+            f"on a trivia game show. Your playing style is {player.temperament_label()}. "
+            f"You currently control {len(player.territory)} tile(s) of the board.{streak_note} "
+            f"Your one real subject is {player.origin_domain} -- you're a genuine "
+            f"enthusiast there, an eager AMATEUR, not a world-class expert, but it's "
+            f"still the one thing you actually know.\n"
+            f"In ONE short, in-character sentence -- like a real contestant caught by "
+            f"a TV camera, not a narrator describing the scene -- talk about your own "
+            f"domain with some real personality."
+        )
+        reply, _ = _ask_ollama(self.model, prompt)
+        return reply.strip() if reply else super().intro_line_origin(player)
+
+    def intro_line_challenge(self, player: Player, tested_domain: str,
+                              opponent_line: Optional[str] = None) -> str:
+        # Round 2: the player being told/reminded what's actually on the
+        # line tonight -- Scott: "they will be informed... of the domain to
+        # challenge." Deliberately does NOT assume expertise here unless
+        # tested_domain happens to equal origin_domain: a player is only a
+        # genuine (if amateur) expert in the one domain they drafted, per
+        # Scott's "they can be amateur experts in their first domain only"
+        # -- everywhere else they're exactly as informed as an average
+        # person off the street, and the prompt says so explicitly rather
+        # than letting the model bluff confidence it has no basis for.
+        #
+        # opponent_line (set only for the second speaker -- game.py calls
+        # the challenger's full two rounds first, then passes their actual
+        # challenge-round reply in here for the defender) makes this a real
+        # two-way exchange instead of two side-by-side monologues that
+        # happen to air back to back.
+        is_home_turf = player.origin_domain == tested_domain
+        stakes = (
+            f"Tonight's duel tests {tested_domain} -- this genuinely IS your home "
+            f"turf, the one subject you actually know."
+            if is_home_turf else
+            f"Tonight's duel tests {tested_domain} -- NOT your subject. Outside "
+            f"{player.origin_domain}, you're no more informed than an average "
+            f"person off the street; a real contestant here wouldn't fake "
+            f"confidence they don't have."
         )
         reaction_note = (
             f' Your opponent just said, live, on air: "{opponent_line}" React to THEM '
@@ -307,14 +316,11 @@ class OllamaAgent(ScriptedAgent):
             ""
         )
         prompt = (
-            f"You are {player.kingdom_name}, a {player.profession} competing live "
-            f"on a trivia game show. Your playing style is {player.temperament_label()}. "
-            f"You currently control {len(player.territory)} tile(s) of the board.{streak_note}"
-            f"{origin_note} "
-            f"{stakes}{reaction_note}\n"
-            f"In ONE short, in-character sentence -- like a real contestant caught by "
-            f"a TV camera, not a narrator describing the scene -- react with some actual "
-            f"personality."
+            f"You are {player.kingdom_name}, a {player.profession}, playing style "
+            f"{player.temperament_label()}. {stakes}{reaction_note}\n"
+            f"In ONE short, in-character sentence, react to actually being told "
+            f"this is what tonight's duel is on -- like a real contestant hearing "
+            f"the category for the first time, not a narrator."
         )
         reply, _ = _ask_ollama(self.model, prompt)
-        return reply.strip() if reply else super().intro_line(player, tested_domain, opponent_line)
+        return reply.strip() if reply else super().intro_line_challenge(player, tested_domain, opponent_line)

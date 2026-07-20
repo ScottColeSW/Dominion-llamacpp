@@ -198,31 +198,51 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
              tested_domain=defender.domain, challenger_using_bonus=challenger_bonus,
              defender_using_bonus=False, base_clock=BASE_CLOCK)
 
-        # The host introduces BOTH sides before the clock starts -- what
-        # each currently holds vs. what's actually being tested tonight
-        # (always the defender's domain; Section 4). This doubles as a
-        # fairness fix: choose_target above already warms the CHALLENGER's
+        # The pre-duel interview: two full rounds per side, not one -- per
+        # Scott's ask for "several back and forth between host and player
+        # so the models are warm to their own domain and knowledge of the
+        # domain they are dueling on." Round 1 (intro_line_origin) is about
+        # the ONE domain this player actually drafted; round 2
+        # (intro_line_challenge) is them being informed what's actually on
+        # the line tonight, which may or may not be that same domain. Four
+        # full generation calls per duel now instead of two, so it's also a
+        # more thorough model warm-up -- this doubles as a fix for a real
+        # fairness bug: choose_target above already warms the CHALLENGER's
         # model for free (an untimed call), but the DEFENDER never got an
         # equivalent chance to warm up before their own first timed trivia
-        # turn -- this gives them the same head start, symmetrically,
-        # before run_duel's clock actually starts running.
+        # turn -- calling all this for both sides here gives the defender
+        # the same head start, symmetrically, before the timed clock starts.
         #
-        # Sequential, not simultaneous: the defender's call is given the
-        # challenger's actual reply text (opponent_line), so this is a real
-        # two-way exchange -- the defender is genuinely responding to what
-        # was just said, not delivering an isolated line that happens to
-        # air second.
-        emit("agent_thinking", player_id=active_pid, model=active_player.model, decision="intro")
-        challenger_intro = agent.intro_line(active_player, defender.domain)
-        emit("pre_duel_intro", player_id=active_pid, role="challenger",
-             model=active_player.model, text=challenger_intro)
-
+        # Sequential, not simultaneous, and grouped by PLAYER (challenger's
+        # full two rounds, then defender's) rather than interleaved by
+        # round -- reads as one contestant's mini-interview finishing before
+        # the next starts, not four disconnected lines in an odd order. The
+        # defender's challenge-round call is given the challenger's actual
+        # challenge-round reply text (opponent_line), so THAT round is a
+        # real two-way exchange, not just two isolated monologues that
+        # happen to air back to back.
         defender_agent = agents[target_id]
+
+        emit("agent_thinking", player_id=active_pid, model=active_player.model, decision="intro")
+        challenger_origin = agent.intro_line_origin(active_player)
+        emit("pre_duel_intro", player_id=active_pid, role="challenger", phase="origin",
+             model=active_player.model, text=challenger_origin)
+
+        emit("agent_thinking", player_id=active_pid, model=active_player.model, decision="intro")
+        challenger_challenge = agent.intro_line_challenge(active_player, defender.domain)
+        emit("pre_duel_intro", player_id=active_pid, role="challenger", phase="challenge",
+             model=active_player.model, text=challenger_challenge)
+
         emit("agent_thinking", player_id=target_id, model=defender.model, decision="intro")
-        defender_intro = defender_agent.intro_line(defender, defender.domain,
-                                                     opponent_line=challenger_intro)
-        emit("pre_duel_intro", player_id=target_id, role="defender",
-             model=defender.model, text=defender_intro)
+        defender_origin = defender_agent.intro_line_origin(defender)
+        emit("pre_duel_intro", player_id=target_id, role="defender", phase="origin",
+             model=defender.model, text=defender_origin)
+
+        emit("agent_thinking", player_id=target_id, model=defender.model, decision="intro")
+        defender_challenge = defender_agent.intro_line_challenge(defender, defender.domain,
+                                                                   opponent_line=challenger_challenge)
+        emit("pre_duel_intro", player_id=target_id, role="defender", phase="challenge",
+             model=defender.model, text=defender_challenge)
 
         # Emitted live, turn by turn, as run_duel computes each one -- not
         # batched up and replayed after the whole duel resolves. With a live
