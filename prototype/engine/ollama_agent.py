@@ -159,10 +159,30 @@ class OllamaAgent(ScriptedAgent):
         self.rng.shuffle(choices)
         letters = "ABCD"[:len(choices)]
         lines = [f"{letters[i]}: {choice}" for i, choice in enumerate(choices)]
+        # PASS is framed here as a legitimate, smart play -- not a last
+        # resort admission of failure -- specifically so a model doesn't
+        # default to guessing blindly just to avoid saying it. Missing the
+        # same question repeatedly (miss_streak) was the exact scenario
+        # that motivated duel.py's FORCED_PASS_MISS_STREAK backstop: a
+        # model that never volunteers PASS on its own can otherwise hammer
+        # the same wrong guess forever, since a wrong answer keeps the same
+        # image up for another try. That backstop still exists as a hard
+        # guarantee, but a model that understands passing is a real option
+        # should rarely need it.
+        pass_hint = (
+            " You've already missed this exact question before -- guessing "
+            "again without a real idea isn't a good look; passing to get a "
+            "fresh one is often the smarter play."
+            if miss_streak > 0 else ""
+        )
         prompt = (
             f"Trivia category: {domain.name}\nClue: {question.image_prompt}\n"
             + "\n".join(lines)
-            + "\nReply with ONLY the single letter of your answer, or PASS if you don't know."
+            + "\nReply with ONLY the single letter of your answer, or PASS."
+            + pass_hint
+            + " Passing when you're genuinely unsure is a legitimate, smart "
+              "move on this show, not a failure -- a sharp contestant "
+              "doesn't guess blindly just to avoid admitting they don't know."
         )
         # Cap how long we'll wait for a reply to roughly what this player
         # actually has left on their clock (plus a small grace), not the
@@ -242,6 +262,19 @@ class OllamaAgent(ScriptedAgent):
             f" You're riding a {player.push_streak}-duel win streak tonight."
             if player.push_streak >= 2 else ""
         )
+        # A stable identity anchor distinct from current holdings (which
+        # drift all show via conquest/tax): only surfaced when it's actually
+        # different from what they hold now, so it reads as "who they still
+        # are underneath" rather than a redundant restatement of `stakes`
+        # above. Scott's ask: give the model a quick memory of its own
+        # original domain specifically, not just whatever it happens to be
+        # standing on right now.
+        origin_note = (
+            f" You started this show as the {player.origin_domain} expert -- "
+            f"that's still core to who you are, whatever you hold now."
+            if player.origin_domain and player.origin_domain != player.domain
+            else ""
+        )
         reaction_note = (
             f' Your opponent just said, live, on air: "{opponent_line}" React to THEM '
             f"directly, not just to the domain -- agree, push back, needle them, whatever "
@@ -252,7 +285,8 @@ class OllamaAgent(ScriptedAgent):
         prompt = (
             f"You are {player.kingdom_name}, a {player.profession} competing live "
             f"on a trivia game show. Your playing style is {player.temperament_label()}. "
-            f"You currently control {len(player.territory)} tile(s) of the board.{streak_note} "
+            f"You currently control {len(player.territory)} tile(s) of the board.{streak_note}"
+            f"{origin_note} "
             f"{stakes}{reaction_note}\n"
             f"In ONE short, in-character sentence -- like a real contestant caught by "
             f"a TV camera, not a narrator describing the scene -- react with some actual "

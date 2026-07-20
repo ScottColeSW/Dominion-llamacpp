@@ -46,6 +46,14 @@ class Player:
     # choice, push/retreat, domain tax) -- see ollama_agent.py. Fixed for the
     # whole run, assigned at the draft, shown on the player's badge.
     model: str = ""
+    # The domain this player actually drafted, set once at the draw and
+    # never touched again -- domain (above) is CURRENT holdings, which
+    # drifts constantly over a show via conquest and domain tax, so it's
+    # not a stable enough anchor for a live model's own sense of identity.
+    # ollama_agent.py's intro_line prompt uses this as a fixed "this is
+    # where you started, this is who you are" reference point, separate
+    # from whatever domain happens to be on the line tonight.
+    origin_domain: str = ""
 
     def name_tag(self) -> str:
         return self.domain

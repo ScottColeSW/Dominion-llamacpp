@@ -121,16 +121,28 @@
   .host-line.pop { animation: hostPop .4s ease; }
   @keyframes hostPop { from { opacity: 0.2; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 
-  /* A quick backstage "get to know the contestant" tidbit, shown once per
-     duel just before the countdown -- personal color (profession, kingdom
-     name, the domain they're about to defend) rather than pure play-by-play,
-     since audiences like knowing a little about who they're rooting for. */
-  .interview-line {
-    width: 100%; max-width: 820px; margin-top: 6px; text-align: center;
-    font-size: 0.95em; color: var(--dim); font-style: italic; min-height: 1.3em;
-    opacity: 0; transition: opacity .3s ease;
+  /* The pre-duel interview: a host question directed at each player, then
+     their own live answer -- a real two-way beat, not backstage color,
+     so it gets its own card with real visual weight (matching
+     .host-banner's treatment) rather than a small dim italic caption
+     easy to miss underneath it. Hidden (0-height, not just transparent)
+     when empty so it doesn't leave a dead gap in the layout between duels. */
+  .interview-banner {
+    width: 100%; max-width: 820px; margin-top: 10px;
+    display: flex; align-items: center; gap: 12px;
+    background: rgba(58,30,10,0.55); border: 1px solid var(--gold); border-radius: 14px;
+    padding: 0 20px; max-height: 0; overflow: hidden; opacity: 0;
+    transition: max-height .3s ease, opacity .3s ease, padding .3s ease;
   }
-  .interview-line.show { opacity: 1; }
+  .interview-banner.show { max-height: 160px; opacity: 1; padding: 12px 20px; }
+  .interview-tag {
+    flex-shrink: 0; font-size: 0.72em; text-transform: uppercase; letter-spacing: 2px;
+    color: var(--gold); font-weight: 700; writing-mode: vertical-rl; text-orientation: mixed;
+  }
+  .interview-line {
+    flex: 1; text-align: left; font-size: 1.15em; font-style: italic; color: var(--text);
+    min-height: 1.3em;
+  }
 
   /* A live indicator while a player's assigned Ollama model is actually
      mid-call for a target/continue/tax decision -- these calls take real,
@@ -541,6 +553,13 @@
     font-size: 3.4em; font-weight: 900; color: var(--gold);
     text-shadow: 0 0 24px rgba(245,197,66,0.7);
   }
+  /* The brief "GET READY" lead-in before the numbers start: same box, but
+     the digits' 3.4em size would overflow "GET READY" past the badge
+     width, so this gets its own smaller size while still reading as loud
+     and gold. Exists specifically to catch the eye right as the countdown
+     begins -- the pre-duel interview beat right before it now runs ~12s,
+     long enough that attention can drift before three big digits alone. */
+  .duel-image.countdown.leadin { font-size: 1.7em; letter-spacing: 3px; }
   .duel-domain-tag {
     text-align: center; margin: 0 0 14px; font-size: 1em; letter-spacing: 1px; color: var(--dim);
   }
@@ -651,7 +670,15 @@
     <div id="playersRemaining"></div>
   </div>
 
-  <div class="interview-line" id="interviewLine"></div>
+  <!-- The pre-duel interview: highlighted as its own on-screen segment (not
+       a faint caption line under the host banner) since this is the one
+       moment per duel the audience actually hears a player "in their own
+       words" -- per Scott's ask, it needs to read as a real dialogue beat
+       worth watching, not something easy to miss. -->
+  <div class="interview-banner" id="interviewBanner">
+    <div class="interview-tag">&#127908; Interview</div>
+    <div class="interview-line" id="interviewLine"></div>
+  </div>
   <div class="agent-thinking" id="agentThinkingLine"></div>
 
   <div id="duelStage">
@@ -733,6 +760,7 @@ const statusEl = document.getElementById('status');
 const playersRemainingEl = document.getElementById('playersRemaining');
 const hostLine = document.getElementById('hostLine');
 const interviewEl = document.getElementById('interviewLine');
+const interviewBannerEl = document.getElementById('interviewBanner');
 const agentThinkingEl = document.getElementById('agentThinkingLine');
 const amphitheaterEl = document.getElementById('amphitheater');
 const chatterFeedEl = document.getElementById('chatterFeed');
@@ -822,6 +850,12 @@ const REACTION_EXCLAIM = [
   "Ooh.", "Ahh...", "Wow.", "Criminy!", "Hm.", "Well now.", "Oooh.",
   "Whoa.", "Yikes.", "Oh my.", "Goodness.", "Hoo boy.", "Well, well.",
   "Say what now?", "No way.", "Huh!", "Get out.", "Unreal.",
+  "Come on now.", "Oh, snap.", "Look at that.", "I did not expect that.",
+  "Well I never.", "Mercy.", "Now hold on.", "Would you look at that.",
+  "Oh, it's ON.", "That's a twist.", "Didn't see that coming.", "Ha!",
+  "Bless it.", "Mm-mm-mm.", "Oh come ON.", "Not bad, not bad.",
+  "That's the stuff.", "Well butter my biscuit.", "Say less.", "Sheesh.",
+  "Oh, we're doing this.", "That's cold.", "Rough.", "Oof.",
 ];
 
 // --- Host banner: canned commentary lines tied to key beats. Real
@@ -841,10 +875,14 @@ const HOST_LINES = {
   preduel: [
     "Ooh, this one's got stakes.", "Here we go, folks!", "This could get interesting fast.", "Let's see what they've got.",
     "Now THIS is a matchup.", "Both sides look ready.", "Let's find out who wants it more.",
+    "The board's holding its breath on this one.", "Let's hear what they've got to say first.",
+    "Two contestants, one domain — let's go.", "This is the matchup nobody was expecting.",
   ],
   bonus: [
     "Ooh, cashing in the banked bonus — bold move!", "A saved-up bonus, spent at just the right moment!",
     "They've been holding onto that — and now's the time!",
+    "That bonus has been sitting there all night — cashed in right when it counts!",
+    "A calculated move — spending the bonus here.",
   ],
   // Plain win: a normal decisive result, neither a nail-biter nor an upset.
   win: [
@@ -869,22 +907,27 @@ const HOST_LINES = {
   tax: [
     "Oh, a domain tax! That's a real gut punch.", "Trading domains — bold, and a little mean!", "That's going to sting for a while.",
     "Ruthless! Absolutely ruthless!",
+    "That's a power move if I've ever seen one.", "Domain tax! Somebody's night just got harder.",
   ],
   burst: [
     "Let's check the leaderboard — big stakes right now!", "A checkpoint prize, and the territory race is tight!",
     "Everybody's watching this leaderboard now!",
+    "Time for a checkpoint — let's see where things stand.", "The race for the board is getting tighter by the minute.",
   ],
   milestone: [
     "Five tiles and counting — that's real money on the board!", "A territory milestone! The bank just opened up a little.",
     "That's a real empire forming right there!",
+    "Milestone reached — the bank is paying out!", "That's a serious chunk of the board now.",
   ],
   scramble: [
     "Hold onto your hats, the board is changing shape!", "Here comes the Scramble, everybody!",
     "Everything you thought you knew about this board is about to change!",
+    "Nobody's territory is safe now!", "The whole board just got shaken up!",
   ],
   finale: [
     "Ladies and gentlemen, we have our champion!", "And there it is — sole owner of the board!",
     "What a run! What a show! We have our champion!",
+    "One board, one champion — and here they are!", "That's the whole board, folks. We have a winner!",
   ],
   // While a live model is genuinely taking its time on a decision -- the
   // host holding the floor a beat longer than usual for a real wait rather
@@ -1059,6 +1102,18 @@ const GOSSIP_TEMPLATES = [
   (name) => `${name} shakes their head slowly.`,
   (name) => `${name}: "Enjoy it while it lasts."`,
   (name) => `${name} narrows their eyes at the board.`,
+  (name) => `${name}: "That's not even their best domain."`,
+  (name) => `${name} taps their foot: "Any day now."`,
+  (name) => `${name} scoffs: "I would NOT have passed on that."`,
+  (name) => `${name} leans back, arms folded: "Overrated."`,
+  (name) => `${name}: "Cute. Won't last."`,
+  (name) => `${name} mutters under their breath, unimpressed.`,
+  (name) => `${name} raises an eyebrow: "Interesting choice."`,
+  (name) => `${name}: "They're playing scared."`,
+  (name) => `${name} smiles thinly: "Their turn's coming."`,
+  (name) => `${name} leans forward, suddenly very interested.`,
+  (name) => `${name}: "I've been saying that domain was soft all night."`,
+  (name) => `${name} claps once, sarcastically.`,
 ];
 
 function pickOtherPlayer(excludeIds) {
@@ -1156,15 +1211,28 @@ function formatExpertiseLine(playerId) {
 // game.py now feeds the challenger's real reply into the defender's live
 // call as opponent_line, the defender's answer can genuinely respond to it,
 // not just coincidentally follow it.
+// A quick host beat that closes out each interview exchange -- turns two
+// isolated lines (host question, player answer) into a real three-part
+// dialogue (ask, answer, reaction) instead of leaving the player's line
+// hanging with nothing acknowledging it. Deliberately generic/short: this
+// is texture between two live lines, not another thing to read carefully.
+const INTERVIEW_REACTIONS = [
+  "Bold words.", "We'll see if that holds up.", "Strong start.", "Noted.",
+  "That's a statement.", "Confident.", "We'll find out soon enough.",
+  "Let's see if they can back that up.", "Fair enough.", "Duly noted.",
+];
+
 async function showDomainIntro(playerId, role, text) {
   interviewEl.textContent = `${playerLabel(playerId)}: ${text}`;
-  interviewEl.classList.add('show');
+  interviewBannerEl.classList.add('show');
   // Held noticeably longer than the first pass -- per Scott, this needs to
   // be slow enough to actually read the response and react to it, not race
   // by. Routed through sleep() so Fast Forward still compresses it like
   // everything else in this pre-duel sequence.
   await sleep(4200);
-  interviewEl.classList.remove('show');
+  sayHostText(INTERVIEW_REACTIONS[Math.floor(Math.random() * INTERVIEW_REACTIONS.length)]);
+  await sleep(1300);
+  interviewBannerEl.classList.remove('show');
   await sleep(500);
 }
 
@@ -1331,12 +1399,21 @@ function playCountdownBeep(bright) {
 // question appears, an "and... we're live" beat for the audience.
 async function playCountdownIntro() {
   playTensionRiser(1.3);
-  duelImage.classList.add('countdown');
+  duelImage.classList.add('countdown', 'leadin');
+  // "GET READY" fills what used to be a blank tension-build beat -- pure
+  // silence/empty box read as nothing happening right when the countdown
+  // that follows is easiest to miss (coming right after the ~12s pre-duel
+  // interview, per Scott's report of not seeing the 3-2-1 at all).
+  duelImage.textContent = 'GET READY';
   await sleep(950);
+  duelImage.classList.remove('leadin');
   for (const n of ['3', '2', '1']) {
     duelImage.textContent = n;
     playCountdownBeep(n !== '1');
-    await sleep(420);
+    // Slightly longer than the original 420ms -- gives the eye a beat to
+    // actually land on each digit after however long attention had to
+    // drift during the interview beat immediately before this.
+    await sleep(480);
   }
   duelImage.classList.remove('countdown');
 }
@@ -2036,37 +2113,46 @@ function displaySeconds(val) {
 }
 
 async function animateClock(clockEl, fromVal, toVal, ms) {
-  const start = performance.now();
   const clampedTo = Math.max(0, toVal);
   const clampedFrom = Math.max(0, fromVal);
   const span = clampedFrom - clampedTo;
+  const start = Date.now();
   return new Promise(resolve => {
-    // requestAnimationFrame is fully suspended by the browser whenever this
-    // tab isn't the visible/focused one (backgrounded, minimized, switched
-    // away from) -- with nothing else driving it, that stranded the promise
-    // forever, freezing the ENTIRE show on whatever turn was mid-animation
-    // the moment focus was lost (reported as a duel clock just stopping).
-    // A plain setTimeout backstop still fires in a backgrounded tab (browsers
-    // throttle it, they don't suspend it outright), so it guarantees this
-    // always resolves within ms of real time regardless of tab visibility;
-    // the rAF path just makes the normal, focused-tab case animate smoothly.
+    // Driven by setInterval + Date.now() elapsed time, NOT
+    // requestAnimationFrame: rAF is fully suspended the instant a tab isn't
+    // the visible/focused one (backgrounded, minimized, switched away from,
+    // a second monitor stealing focus) -- with nothing else driving the
+    // per-frame update, the clock text sat frozen on its OLD value for the
+    // entire animation, then snapped straight to the final value the moment
+    // the old setTimeout backstop fired. The internal clock value was
+    // always correct; only the visual countdown looked broken -- exactly
+    // Scott's report ("internal clocks may be working but the visual
+    // aspect is not... it used to work, at least visually") and confirmed
+    // directly: instrumented a real run and watched the displayed number
+    // sit at 25 for the entire ~2.5s turn, then jump straight to 21 with no
+    // steps in between. setInterval is only throttled when backgrounded
+    // (never suspended outright), and computing the displayed value from
+    // real elapsed wall-clock time (not a tick count) means each player's
+    // clock keeps counting down on its own, independent of the other
+    // player's turn or whether the tab has focus -- a real chess clock,
+    // not an animation that can be starved.
     let done = false;
     const finish = () => {
       if (done) return;
       done = true;
+      clearInterval(intervalId);
       clockEl.textContent = String(displaySeconds(clampedTo));
       resolve();
     };
-    function frame(now) {
+    const tick = () => {
       if (done) return;
-      const t = Math.min(1, (now - start) / ms);
+      const t = Math.min(1, (Date.now() - start) / ms);
       const val = Math.max(0, clampedFrom - span * t);
       clockEl.textContent = String(displaySeconds(val));
-      if (t < 1) requestAnimationFrame(frame);
-      else finish();
-    }
-    requestAnimationFrame(frame);
-    setTimeout(finish, ms + 50);
+      if (t >= 1) finish();
+    };
+    const intervalId = setInterval(tick, 100);
+    tick();
   });
 }
 
@@ -2403,6 +2489,12 @@ const STILL_WAITING_LINES = [
   (model) => `Still thinking it over, apparently.`,
   (model) => `${model} is really weighing this one.`,
   (model) => `Someone's taking their sweet time.`,
+  (model) => `${model} is really making us wait tonight.`,
+  (model) => `You could hear a pin drop out there.`,
+  (model) => `Come on, ${model}, any day now.`,
+  (model) => `The suspense is doing numbers on this crowd.`,
+  (model) => `${model} is deep in thought. Deep.`,
+  (model) => `Somebody get this contestant a coffee.`,
 ];
 let stillThinkingTimer = null;
 
@@ -2672,7 +2764,7 @@ async function startShow() {
   playerModel = {};
   playerColorNode = {};
   playerStats = {};
-  interviewEl.classList.remove('show');
+  interviewBannerEl.classList.remove('show');
   interviewEl.textContent = '';
   chatterFeedEl.innerHTML = '';
   // Reset the count silently -- it isn't shown again until the draft

@@ -132,6 +132,7 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
         player = Player(
             id=pid,
             domain=domain.name,
+            origin_domain=domain.name,
             kingdom_name=_make_kingdom_name(rng),
             profession=professions_pool[pid % len(professions_pool)],
             territory={node},
