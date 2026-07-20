@@ -51,6 +51,15 @@ OLLAMA_TIMEOUT = 90.0
 # once that's resolved upstream.
 TEXT_MODELS = ["llama3.2:latest", "qwen2.5:3b", "gemma2:2b", "phi3:mini"]
 
+# attempt_question's multiple-choice letters. Sized with real headroom past
+# the current worst case (duel.py's _pick_distractors caps at 6 distractors
+# + the real answer = 7 choices), not just exactly enough -- "ABCD" (4
+# letters) crashed with IndexError the moment distractors got bumped past 3
+# without anyone revisiting this hardcoded cap, exactly the kind of silent
+# mismatch a fixed, generously-sized pool referenced by name (not
+# re-typed as a literal at each call site) is meant to prevent.
+LETTERS_POOL = "ABCDEFGHIJ"
+
 # decide_continue's push/retreat announcement is a live, on-air moment the
 # audience is actively watching and waiting on (Scott: "they have to decide
 # in 15 seconds or less") -- nothing like intro_line's long leash before the
@@ -196,7 +205,15 @@ class OllamaAgent(ScriptedAgent):
                                              distractors=distractors)
         choices = options + [question.answer]
         self.rng.shuffle(choices)
-        letters = "ABCD"[:len(choices)]
+        # LETTERS_POOL, not a hardcoded "ABCD": duel.py's _pick_distractors
+        # caps at 6 now (bumped from 3 so a long blurt burst has enough
+        # unique material, see the blurt-repeat fix), so choices can run up
+        # to 7 (6 distractors + the real answer) -- "ABCD"[:len(choices)]
+        # silently stayed 4 characters long past that point (string slicing
+        # doesn't pad or error), and letters[i] then raised IndexError the
+        # moment i reached 4. Sized with real headroom past the current
+        # 7-choice ceiling, not just exactly enough.
+        letters = LETTERS_POOL[:len(choices)]
         lines = [f"{letters[i]}: {choice}" for i, choice in enumerate(choices)]
         # PASS is framed here as a legitimate, smart play -- not a last
         # resort admission of failure -- specifically so a model doesn't
@@ -262,7 +279,11 @@ class OllamaAgent(ScriptedAgent):
         if upper.startswith("PASS"):
             return AnswerAttempt(outcome="passed", correct=False, seconds_used=charged_seconds,
                                   guess="", live=True)
-        m = re.search(r"[A-D]", upper)
+        # Matched against the SAME letters actually offered this turn, not
+        # a hardcoded [A-D] -- that would have silently mis-parsed (or
+        # never matched) any reply lettered E or beyond once choices could
+        # run past 4.
+        m = re.search(f"[{letters}]", upper)
         idx = letters.index(m.group()) if (m and m.group() in letters) else None
         if idx is None:
             return super().attempt_question(player, question, domain, miss_streak=miss_streak,
