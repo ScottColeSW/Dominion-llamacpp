@@ -17,11 +17,19 @@ doc, implemented exactly to the corrected Revision 19 rules.
   dip slightly negative the instant it crosses zero (a slow final answer
   can burn more time than was left), but elimination and comparisons use
   the real value, only the number shown to the audience is clamped.
-- The whole duel is capped at 30 questions seen TOTAL, combined across
-  both players (Revision 18, tightened from 25 seen per player, i.e. up
-  to 50 total, specifically to shorten duels further). The instant that
-  combined total hits 30, the duel resolves immediately by comparing
-  remaining time.
+- The whole duel is capped at question_cap questions seen TOTAL, combined
+  across both players (default 30, Revision 18, tightened from 25 seen per
+  player i.e. up to 50 total, specifically to shorten duels faster). The
+  instant that combined total hits the cap, the duel resolves immediately
+  by comparing remaining time. That default assumes scripted-pace answers
+  (roughly 1-4s each); with live Ollama answers -- especially once
+  ollama_agent.py stopped charging model-load overhead against the clock --
+  a single question can cost well under a second, so 30 stops being a rare
+  safety-valve and becomes the ordinary way duels end, usually with most of
+  both clocks still unspent (confirmed: 10 of 12 duels in one live show hit
+  this cap, only 2 hit an actual clock timeout). game.py passes a much
+  higher cap for live play so clock exhaustion stays the normal ending,
+  matching the original intent; scripted play keeps this default.
 - Questions are drawn from a show-wide used_questions set (threaded in by
   the caller) so the same image/answer pair is avoided for the entire
   show, not just this duel, falling back to a repeat only once a domain's
@@ -87,7 +95,7 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
              agents: Dict[int, ScriptedAgent], rng: random.Random,
              challenger_bonus: bool = False, defender_bonus: bool = False,
              used_questions: Optional[Set[Tuple[str, str]]] = None,
-             base_clock: float = BASE_CLOCK,
+             base_clock: float = BASE_CLOCK, question_cap: int = QUESTION_CAP,
              on_turn: Optional[Callable[[Dict[str, Any]], None]] = None) -> DuelResult:
 
     if used_questions is None:
@@ -152,7 +160,7 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
             return DuelResult(winner_id=other, loser_id=pid, reason="timeout",
                                turns_log=turns_log, clocks_remaining=clocks, questions_seen=seen)
 
-        if total_seen >= QUESTION_CAP:
+        if total_seen >= question_cap:
             other = turn_order[1 - current]
             if clocks[pid] >= clocks[other]:
                 winner, loser = pid, other

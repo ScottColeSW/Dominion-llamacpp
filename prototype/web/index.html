@@ -897,13 +897,45 @@ const HOST_LINES = {
   // react like anyone else watching, not always deliver a full line.
   postduel: REACTION_EXCLAIM,
 };
-function sayHost(category) {
-  const lines = HOST_LINES[category];
-  if (!lines || !lines.length) return;
-  hostLine.textContent = lines[Math.floor(Math.random() * lines.length)];
+// Shared with sayHost below -- factored out so the dynamic, per-duel
+// pre-duel questions (hostPreduelQuestion) can trigger the same pop
+// animation without going through the fixed HOST_LINES category pools.
+function sayHostText(text) {
+  hostLine.textContent = text;
   hostLine.classList.remove('pop');
   void hostLine.offsetWidth;
   hostLine.classList.add('pop');
+}
+function sayHost(category) {
+  const lines = HOST_LINES[category];
+  if (!lines || !lines.length) return;
+  sayHostText(lines[Math.floor(Math.random() * lines.length)]);
+}
+
+// The host directs a specific question at each player by name before they
+// answer -- makes the pre-duel beat read as an actual host<->player
+// dialogue (Scott: "has to be 2 ways") rather than a generic opening line
+// followed by two disconnected reactions. The defender's question
+// explicitly calls back to what the challenger just said, since
+// game.py/ollama_agent.py now feed the challenger's actual line into the
+// defender's live call too -- the whole exchange is meant to read as one
+// continuous conversation, not two separate ones.
+function hostPreduelQuestion(playerId, role, domain, opponentName) {
+  const name = playerLabel(playerId);
+  const challengerTemplates = [
+    `${name}, ${domain} is on the line tonight -- how are you feeling?`,
+    `${name}, tell us: how do you size up ${domain}?`,
+    `${name}, the board's watching -- what's your read on ${domain}?`,
+    `${name}, before we start the clock -- anything you want to say?`,
+  ];
+  const defenderTemplates = [
+    `${name}, you heard ${opponentName}. What do you say back?`,
+    `${name}, your turn -- what's your response to that?`,
+    `${name}, does that change anything for you?`,
+    `${name}, this is your ground to defend -- react to that.`,
+  ];
+  const pool = role === 'challenger' ? challengerTemplates : defenderTemplates;
+  return pool[Math.floor(Math.random() * pool.length)];
 }
 
 // A short, fixed explainer that plays once automatically when the page
@@ -1087,22 +1119,6 @@ async function interDuelReactionBeat() {
 createAmphitheater();
 playIntroDialog();
 
-// --- Backstage interview tidbit: audiences want to know a little about
-// who they're rooting for, not just play-by-play. Built entirely from
-// data already on hand in the frontend (profession and kingdom_name,
-// both already emitted per player on draw_assignment) rather than adding
-// new engine plumbing, so this stays a lightweight, purely cosmetic beat.
-// One contestant from the upcoming duel is picked at random each time so
-// the flavor varies duel to duel instead of always covering the same side.
-const INTERVIEW_TEMPLATES = [
-  (name, prof, king) => `Backstage, ${name} — a ${prof} repping the ${king} — tells us: "I've got this one."`,
-  (name, prof, king) => `"${cap(prof)} by day, board conqueror by night," jokes ${name} of the ${king}.`,
-  (name, prof, king) => `${name} tells the host: "The ${king} isn't just a name — it's a promise."`,
-  (name, prof, king) => `"I didn't expect to still be standing," admits ${name}, the ${king}'s own ${prof}.`,
-  (name, prof, king) => `${name}, ${king}'s ${prof}, flashes a grin backstage: "Bring it on."`,
-  (name, prof, king) => `"Whatever they throw at me, I've survived worse as a ${prof}," ${name} shrugs.`,
-  (name, prof, king) => `A quick word from ${name}: "Representing the ${king} means everything to me tonight."`,
-];
 function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 // Professions in the data are plain lowercase ("night-shift security
 // guard"); title-cased for display anywhere it reads as a label/field
@@ -1122,23 +1138,34 @@ function formatExpertiseLine(playerId) {
   return temperament ? `${prof} · ${temperament}` : prof;
 }
 
-function buildInterviewLine(playerId) {
-  const prof = playerProfession[playerId];
-  const king = playerKingdom[playerId];
-  if (!prof || !king) return '';
-  const name = playerLabel(playerId);
-  const template = INTERVIEW_TEMPLATES[Math.floor(Math.random() * INTERVIEW_TEMPLATES.length)];
-  return template(name, prof, king);
-}
-
-async function showInterviewTidbit(playerId) {
-  const line = buildInterviewLine(playerId);
-  if (!line) return;
-  interviewEl.textContent = line;
+// The host introduces BOTH sides right as a duel opens, before the clock
+// starts -- what each currently holds vs. what's actually being tested
+// tonight (engine/game.py's pre_duel_intro event, one per side; text comes
+// from that player's own model when live, or agents.py's canned fallback).
+// Replaces the old single-random-side profession/kingdom tidbit: this is
+// more relevant (the actual stakes, not generic backstage banter) and,
+// per Scott's ask, covers every player rather than a coin flip. It also
+// doubles as the frontend half of a fairness fix -- see the pre_duel_intro
+// handler in runShowPlayback for why the DEFENDER'S line matters as much
+// as the challenger's, not just narratively.
+//
+// A real 2-way beat now (Scott: "has to be 2 ways"), not a player line in
+// isolation: hostPreduelQuestion puts a directed host question on screen
+// first (the defender's question explicitly calls back to the challenger's
+// just-heard line), THEN this shows the player's actual answer -- and since
+// game.py now feeds the challenger's real reply into the defender's live
+// call as opponent_line, the defender's answer can genuinely respond to it,
+// not just coincidentally follow it.
+async function showDomainIntro(playerId, role, text) {
+  interviewEl.textContent = `${playerLabel(playerId)}: ${text}`;
   interviewEl.classList.add('show');
-  await sleep(1250);
+  // Held noticeably longer than the first pass -- per Scott, this needs to
+  // be slow enough to actually read the response and react to it, not race
+  // by. Routed through sleep() so Fast Forward still compresses it like
+  // everything else in this pre-duel sequence.
+  await sleep(4200);
   interviewEl.classList.remove('show');
-  await sleep(150);
+  await sleep(500);
 }
 
 let newGamePopupTimer = null;
@@ -2045,6 +2072,9 @@ async function animateClock(clockEl, fromVal, toVal, ms) {
 
 let stageChallengerId = null;
 let stageDefenderId = null;
+// Read by hostPreduelQuestion (see the pre_duel_intro handler) to name the
+// domain in the host's directed question -- set fresh each duel in openStage.
+let stageTestedDomain = null;
 // Territory each side holds the moment this duel STARTS, captured before
 // any tiles can change hands -- lets celebrateDuelWinner recognize a real
 // underdog win (see isUpset there) instead of the old domain-based
@@ -2064,10 +2094,18 @@ let clockState = { left: BASE_CLOCK, right: BASE_CLOCK };
 // never on a plain wrong answer, which by design keeps the same image up
 // for the same player to try again, Section 4.
 let lastDuelPrompt = null;
+// The countdown/music used to fire at the end of openStage() itself, but
+// now two pre_duel_intro events (challenger, then defender) stream in
+// between the badge setup and the actual first duel_turn -- firing the
+// countdown early would play it out from underneath those intro lines.
+// Set true here, consumed (and cleared) by the first duel_turn of THIS
+// duel, so it fires exactly once, after both sides have had their say.
+let duelCountdownPending = false;
 
 async function openStage(d) {
   stageChallengerId = d.challenger_id;
   stageDefenderId = d.defender_id;
+  stageTestedDomain = d.tested_domain;
   stageChallengerTerritory = countTerritory(d.challenger_id);
   stageDefenderTerritory = countTerritory(d.defender_id);
   nameLeft.textContent = playerLabel(d.challenger_id);
@@ -2136,11 +2174,10 @@ async function openStage(d) {
   duelStage.classList.add('active');
   duelStage.scrollIntoView({ behavior: 'smooth', block: 'center' });
   sayHost('preduel');
-  const spotlightPid = Math.random() < 0.5 ? d.challenger_id : d.defender_id;
-  await showInterviewTidbit(spotlightPid);
-  await sleep(200);
-  await playCountdownIntro();
-  startDramaMusic();
+  // Countdown/music are deferred to the first duel_turn event -- see
+  // duelCountdownPending -- so the two pre_duel_intro lines that stream in
+  // next (challenger, then defender) get their moment first.
+  duelCountdownPending = true;
 }
 
 // A quick burst of plausible-but-wrong guesses, flashing by while the clock
@@ -2336,7 +2373,7 @@ async function closeStage() {
   await sleep(350);
 }
 
-const THINKING_LABEL = { target: 'choosing a target', continue: 'deciding whether to push on', tax: 'choosing a domain tax target' };
+const THINKING_LABEL = { target: 'choosing a target', continue: 'deciding whether to push on', tax: 'choosing a domain tax target', intro: 'weighing in on tonight’s domain' };
 
 // A growing queue fed by the streaming /api/run-show response (see
 // startShow) -- events can now take real, variable time to produce (a
@@ -2458,7 +2495,27 @@ async function runShowPlayback(queue) {
       await openStage(ev.data);
       continue;
     }
+    if (ev.type === 'pre_duel_intro') {
+      // Host intro for BOTH sides (challenger then defender), streamed as
+      // its own event per game.py -- shown before the countdown, which
+      // duel_turn below is responsible for kicking off once both have run.
+      // A directed host question comes first (see hostPreduelQuestion),
+      // held long enough to actually read, THEN the player's answer --
+      // together this is the real 2-way host<->player exchange Scott asked
+      // for, not a bare reaction line.
+      const opponentName = ev.data.role === 'defender' ? playerLabel(stageChallengerId) : null;
+      sayHostText(hostPreduelQuestion(ev.data.player_id, ev.data.role, stageTestedDomain, opponentName));
+      await sleep(1500);
+      await showDomainIntro(ev.data.player_id, ev.data.role, ev.data.text);
+      continue;
+    }
     if (ev.type === 'duel_turn') {
+      if (duelCountdownPending) {
+        duelCountdownPending = false;
+        await sleep(200);
+        await playCountdownIntro();
+        startDramaMusic();
+      }
       const s = ensureStats(ev.data.player_id);
       if (ev.data.outcome === 'correct') { s.correct++; s.totalCorrectSeconds += ev.data.seconds_used; }
       else if (ev.data.outcome === 'incorrect') { s.incorrect++; }
@@ -2469,6 +2526,13 @@ async function runShowPlayback(queue) {
     if (ev.type === 'duel_result') {
       ensureStats(ev.data.winner_id).wins++;
       await celebrateDuelWinner(ev.data);
+      // The host/crowd reaction beat runs BEFORE the stage closes, so the
+      // two players who just competed are still standing there while the
+      // room reacts -- closeStage() used to run first and hide them, so
+      // the reaction played out over an already-empty stage (Scott's
+      // report: "the host often reacts but the players have gone
+      // already").
+      await interDuelReactionBeat();
       await closeStage();
       playerDomain[ev.data.winner_id] = ev.data.winner_domain_after;
       playerStreak[ev.data.winner_id] = ev.data.winner_streak;
@@ -2476,10 +2540,6 @@ async function runShowPlayback(queue) {
       playTerritoryCaptureSound();
       relabelPlayerTiles(ev.data.winner_id);
       updatePlayersRemaining(playersRemainingCount - 1);
-      // A brief, capped pause between duels for the host and the crowd to
-      // react, per Scott's request -- never more than 5 seconds, and not
-      // every beat gets a full host line (see interDuelReactionBeat).
-      await interDuelReactionBeat();
     }
     if (ev.type === 'territory_reassigned') {
       // A leftover, disconnected piece of the loser's old territory that

@@ -15,7 +15,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from engine.events import EventLog
-from engine.game import run_show
+from engine.game import run_show, SCRIPTED_ONLY
+from engine.history import HistoryRecorder, init_db
 
 WEB_DIR = Path(__file__).parent / "web"
 PORT = 8765
@@ -62,10 +63,18 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
 
+            # Recorded to SQLite (engine/history.py) alongside streaming to
+            # the browser -- every show gets captured automatically, not
+            # just the one currently being watched, so patterns (which
+            # model tends to win, whether the clock-fairness fix holds) can
+            # be analyzed across many games later.
+            recorder = HistoryRecorder(seed=seed, scripted_only=SCRIPTED_ONLY)
+
             def write_event(ev) -> None:
                 line = json.dumps(ev.to_dict()).encode("utf-8") + b"\n"
                 self.wfile.write(line)
                 self.wfile.flush()
+                recorder.on_event(ev)
 
             log = EventLog(on_emit=write_event)
             run_show(seed=seed, log=log)
@@ -77,6 +86,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    init_db()
     server = ThreadingHTTPServer(("localhost", PORT), Handler)
     print(f"Dominion running at http://localhost:{PORT}")
     server.serve_forever()

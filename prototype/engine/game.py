@@ -13,12 +13,23 @@ from .content import pick_domains, DOMAINS_BY_NAME, Domain
 from .models import Player, GameState, KINGDOM_NAME_PARTS_A, KINGDOM_NAME_PARTS_B, PROFESSIONS
 from .agents import ScriptedAgent
 from .ollama_agent import OllamaAgent, TEXT_MODELS
-from .duel import run_duel, BASE_CLOCK
+from .duel import run_duel, BASE_CLOCK, QUESTION_CAP
 
 # Set DOMINION_SCRIPTED_ONLY=1 to force plain ScriptedAgent for every player,
 # skipping all live Ollama calls -- useful for fast local iteration without
 # waiting on real model latency (see prototype/README.md).
 SCRIPTED_ONLY = bool(os.environ.get("DOMINION_SCRIPTED_ONLY"))
+
+# duel.py's default QUESTION_CAP (30) was tuned for scripted-pace answers
+# (roughly 1-4s each). A live answer, once ollama_agent.py stopped charging
+# model-load time against the clock, can cost well under a second -- 30
+# stopped being a rare safety-valve and became the ordinary way live duels
+# ended, usually with most of both 25s clocks still unspent (confirmed: 10
+# of 12 duels in one live show hit the cap, only 2 hit an actual timeout).
+# A much higher cap for live play keeps it a safety valve again, so clock
+# exhaustion is back to being the normal ending -- see duel.py's docstring.
+LIVE_QUESTION_CAP = 300
+EFFECTIVE_QUESTION_CAP = QUESTION_CAP if SCRIPTED_ONLY else LIVE_QUESTION_CAP
 
 # Live trivia used a longer 60s clock at first to give real per-turn latency
 # room to breathe, but that read as slow-paced/boring to actually watch, and
@@ -173,6 +184,32 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
              tested_domain=defender.domain, challenger_using_bonus=challenger_bonus,
              defender_using_bonus=False, base_clock=BASE_CLOCK)
 
+        # The host introduces BOTH sides before the clock starts -- what
+        # each currently holds vs. what's actually being tested tonight
+        # (always the defender's domain; Section 4). This doubles as a
+        # fairness fix: choose_target above already warms the CHALLENGER's
+        # model for free (an untimed call), but the DEFENDER never got an
+        # equivalent chance to warm up before their own first timed trivia
+        # turn -- this gives them the same head start, symmetrically,
+        # before run_duel's clock actually starts running.
+        #
+        # Sequential, not simultaneous: the defender's call is given the
+        # challenger's actual reply text (opponent_line), so this is a real
+        # two-way exchange -- the defender is genuinely responding to what
+        # was just said, not delivering an isolated line that happens to
+        # air second.
+        emit("agent_thinking", player_id=active_pid, model=active_player.model, decision="intro")
+        challenger_intro = agent.intro_line(active_player, defender.domain)
+        emit("pre_duel_intro", player_id=active_pid, role="challenger",
+             model=active_player.model, text=challenger_intro)
+
+        defender_agent = agents[target_id]
+        emit("agent_thinking", player_id=target_id, model=defender.model, decision="intro")
+        defender_intro = defender_agent.intro_line(defender, defender.domain,
+                                                     opponent_line=challenger_intro)
+        emit("pre_duel_intro", player_id=target_id, role="defender",
+             model=defender.model, text=defender_intro)
+
         # Emitted live, turn by turn, as run_duel computes each one -- not
         # batched up and replayed after the whole duel resolves. With a live
         # agent a single turn can itself take real seconds, so the frontend
@@ -193,7 +230,7 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
         result = run_duel(active_player, defender, DOMAINS_BY_NAME[defender.domain],
                            agents, rng, challenger_bonus=challenger_bonus,
                            used_questions=used_questions, base_clock=BASE_CLOCK,
-                           on_turn=emit_turn)
+                           question_cap=EFFECTIVE_QUESTION_CAP, on_turn=emit_turn)
         if challenger_bonus:
             active_player.time_bonus_banked = False
 

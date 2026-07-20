@@ -5,8 +5,10 @@ domain-tax (choose_tax_target), and trivia answering (attempt_question).
 With a working GPU (see prototype/README.md), warm calls run well under a
 second, which is why trivia answering can be live here -- on CPU-only
 inference a single call took 11s warm / 86s cold, which would have blown
-through the duel clock in one or two turns. game.py uses a longer 60s clock
-for live shows specifically to give real latency room.
+through the duel clock in one or two turns. attempt_question caps its own
+wait to roughly what's left on the player's clock (see call_timeout below)
+and charges only actual thinking time, not model-load overhead, so both
+modes share duel.py's original 25s clock -- see game.py and README.md.
 
 attempt_question turns each question into 4-way multiple choice using the
 same distractor pool duel.py already generates for the frontend's cosmetic
@@ -49,16 +51,28 @@ OLLAMA_TIMEOUT = 90.0
 TEXT_MODELS = ["llama3.2:latest", "qwen2.5:3b", "gemma2:2b", "phi3:mini"]
 
 
-def _ask_ollama(model: str, prompt: str, timeout: float = OLLAMA_TIMEOUT) -> Optional[str]:
+def _ask_ollama(model: str, prompt: str, timeout: float = OLLAMA_TIMEOUT) -> "tuple[Optional[str], Optional[float]]":
+    """Returns (reply_text, think_seconds). think_seconds is Ollama's own
+    total_duration minus load_duration (both nanoseconds in the response) --
+    i.e. actual generation time with model-loading overhead excluded -- or
+    None if those fields are missing/malformed. A player whose model happens
+    to already be resident vs. one that needs a cold load shouldn't get a
+    different trivia-clock charge for the exact same quality of answer; see
+    attempt_question, the only caller that uses this second value."""
     body = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode("utf-8")
     req = urllib.request.Request(
         OLLAMA_URL, data=body, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        return (data.get("response") or "").strip()
+        text = (data.get("response") or "").strip()
+        think_seconds = None
+        total_ns, load_ns = data.get("total_duration"), data.get("load_duration")
+        if isinstance(total_ns, (int, float)) and isinstance(load_ns, (int, float)) and total_ns >= load_ns:
+            think_seconds = (total_ns - load_ns) / 1e9
+        return text, think_seconds
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
-        return None
+        return None, None
 
 
 def _parse_index(reply: Optional[str], count: int) -> Optional[int]:
@@ -96,7 +110,8 @@ class OllamaAgent(ScriptedAgent):
             + "\n".join(lines)
             + "\nReply with ONLY the number of your choice."
         )
-        idx = _parse_index(_ask_ollama(self.model, prompt), len(options))
+        reply, _ = _ask_ollama(self.model, prompt)
+        idx = _parse_index(reply, len(options))
         return options[idx] if idx is not None else super().choose_target(player, game)
 
     def decide_continue(self, player: Player, game: GameState) -> bool:
@@ -108,7 +123,7 @@ class OllamaAgent(ScriptedAgent):
             f"Do you keep pushing for more territory, or retreat to defend what you have?\n"
             f"Reply with ONLY the word PUSH or RETREAT."
         )
-        reply = _ask_ollama(self.model, prompt)
+        reply, _ = _ask_ollama(self.model, prompt)
         if reply:
             upper = reply.upper()
             if "PUSH" in upper:
@@ -129,7 +144,8 @@ class OllamaAgent(ScriptedAgent):
             f"You are {player.kingdom_name}. You've earned a Domain Tax: swap domains with one "
             f"opponent of your choice.\n" + "\n".join(lines) + "\nReply with ONLY the number."
         )
-        idx = _parse_index(_ask_ollama(self.model, prompt), len(candidates))
+        reply, _ = _ask_ollama(self.model, prompt)
+        idx = _parse_index(reply, len(candidates))
         return candidates[idx] if idx is not None else super().choose_tax_target(player, game)
 
     def attempt_question(self, player: Player, question: Question, domain: Domain,
@@ -159,14 +175,23 @@ class OllamaAgent(ScriptedAgent):
         if time_remaining is not None:
             call_timeout = max(1.5, min(OLLAMA_TIMEOUT, time_remaining + 1.5))
         t0 = time.time()
-        reply = _ask_ollama(self.model, prompt, timeout=call_timeout)
+        reply, think_seconds = _ask_ollama(self.model, prompt, timeout=call_timeout)
         elapsed = max(0.2, time.time() - t0)
+        # Charge the clock for actual thinking time (Ollama's total_duration
+        # minus load_duration), not full wall-clock elapsed -- otherwise
+        # whichever player's model happens to need a cold load pays for it
+        # out of their own 25s clock as if it were slow reasoning, while the
+        # OTHER player in the same duel isn't charged a cent for the exact
+        # same infrastructure cost just because their model was already
+        # resident. Falls back to wall-clock elapsed only if Ollama's
+        # response is missing the duration fields entirely.
+        charged_seconds = round(think_seconds, 1) if think_seconds is not None else round(elapsed, 1)
         if not reply:
             return super().attempt_question(player, question, domain, miss_streak=miss_streak,
                                              distractors=distractors)
         upper = reply.strip().upper()
         if upper.startswith("PASS"):
-            return AnswerAttempt(outcome="passed", correct=False, seconds_used=round(elapsed, 1),
+            return AnswerAttempt(outcome="passed", correct=False, seconds_used=charged_seconds,
                                   guess="", live=True)
         m = re.search(r"[A-D]", upper)
         idx = letters.index(m.group()) if (m and m.group() in letters) else None
@@ -176,4 +201,62 @@ class OllamaAgent(ScriptedAgent):
         chosen = choices[idx]
         correct = (chosen == question.answer)
         return AnswerAttempt(outcome="correct" if correct else "incorrect", correct=correct,
-                              seconds_used=round(elapsed, 1), guess=chosen, live=True)
+                              seconds_used=charged_seconds, guess=chosen, live=True)
+
+    def intro_line(self, player: Player, tested_domain: str,
+                    opponent_line: Optional[str] = None) -> str:
+        # Called for BOTH the challenger and defender right as a duel opens,
+        # before run_duel starts -- not just narration (Scott's ask: the
+        # host should talk about the domain owned and challenged, for every
+        # player, not just one side). It doubles as a fix for a real
+        # fairness bug: choose_target already warms the CHALLENGER's model
+        # for free (an untimed call right before the duel), but the
+        # defender never got an equivalent warm-up, so their first live
+        # trivia answer could eat a real cold-load cost their opponent
+        # never paid. Calling this for both sides here gives the defender
+        # the same head start, symmetrically, before the timed clock starts
+        # -- and since it's a real, full generation call (not a truncated
+        # one), it's a genuine warm-up, not a token gesture.
+        #
+        # The prompt below is deliberately fed a fuller character sheet
+        # (profession, playing style, territory held, any active streak),
+        # not just domain names -- a bare "you hold X, they're testing Y"
+        # prompt kept coming back flat/generic. This is the one moment per
+        # duel the audience hears a player "in their own words" before the
+        # clock starts, so it needs to actually carry some personality.
+        #
+        # opponent_line (set only for the second speaker -- game.py calls
+        # the challenger first, then passes their actual reply in here for
+        # the defender) makes this a real two-way exchange instead of two
+        # side-by-side monologues that happen to air back to back: the
+        # second player is genuinely responding to what the first one said,
+        # per Scott's "has to be 2 ways" ask.
+        defending = player.domain == tested_domain
+        stakes = (
+            f"Tonight's duel tests {tested_domain} -- your own strongest ground, "
+            f"you're defending home turf."
+            if defending else
+            f"You hold {player.domain}, but tonight's duel is on {tested_domain} instead."
+        )
+        streak_note = (
+            f" You're riding a {player.push_streak}-duel win streak tonight."
+            if player.push_streak >= 2 else ""
+        )
+        reaction_note = (
+            f' Your opponent just said, live, on air: "{opponent_line}" React to THEM '
+            f"directly, not just to the domain -- agree, push back, needle them, whatever "
+            f"fits your style."
+            if opponent_line else
+            ""
+        )
+        prompt = (
+            f"You are {player.kingdom_name}, a {player.profession} competing live "
+            f"on a trivia game show. Your playing style is {player.temperament_label()}. "
+            f"You currently control {len(player.territory)} tile(s) of the board.{streak_note} "
+            f"{stakes}{reaction_note}\n"
+            f"In ONE short, in-character sentence -- like a real contestant caught by "
+            f"a TV camera, not a narrator describing the scene -- react with some actual "
+            f"personality."
+        )
+        reply, _ = _ask_ollama(self.model, prompt)
+        return reply.strip() if reply else super().intro_line(player, tested_domain, opponent_line)

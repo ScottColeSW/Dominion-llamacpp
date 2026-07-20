@@ -132,3 +132,21 @@ class ScriptedAgent:
     def choose_tax_target(self, player: Player, game: GameState) -> Optional[int]:
         candidates = [pid for pid in game.active_ids if pid != player.id]
         return self.rng.choice(candidates) if candidates else None
+
+    def intro_line(self, player: Player, tested_domain: str,
+                    opponent_line: Optional[str] = None) -> str:
+        """A short line about what this player currently holds vs. what's
+        about to be tested, shown for BOTH sides right as a duel opens.
+        OllamaAgent overrides this with a live model reply (fed a fuller
+        character sheet -- profession, temperament, territory, streak --
+        plus, for the second speaker, what the first speaker just said, so
+        it's a real back-and-forth and not two disconnected monologues) and
+        falls back to this exact method on any failure -- so this also has
+        to work as a standalone, always-available line on its own, not
+        just filler. opponent_line is accepted but unused here -- a canned
+        fallback can't meaningfully react to arbitrary opponent text.
+        """
+        streak = f", riding a {player.push_streak}-win streak" if player.push_streak >= 2 else ""
+        if player.domain == tested_domain:
+            return f"defending {tested_domain}{streak}, right where they've always been strongest."
+        return f"currently holds {player.domain}{streak}, but tonight it's {tested_domain} on the line."
