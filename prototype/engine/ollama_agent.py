@@ -24,6 +24,7 @@ import json
 import math
 import random
 import re
+import string
 import time
 import urllib.error
 import urllib.request
@@ -50,15 +51,6 @@ OLLAMA_TIMEOUT = 90.0
 # 8GB-VRAM combination, consistently, not a transient failure. Re-add it
 # once that's resolved upstream.
 TEXT_MODELS = ["llama3.2:latest", "qwen2.5:3b", "gemma2:2b", "phi3:mini"]
-
-# attempt_question's multiple-choice letters. Sized with real headroom past
-# the current worst case (duel.py's _pick_distractors caps at 6 distractors
-# + the real answer = 7 choices), not just exactly enough -- "ABCD" (4
-# letters) crashed with IndexError the moment distractors got bumped past 3
-# without anyone revisiting this hardcoded cap, exactly the kind of silent
-# mismatch a fixed, generously-sized pool referenced by name (not
-# re-typed as a literal at each call site) is meant to prevent.
-LETTERS_POOL = "ABCDEFGHIJ"
 
 # decide_continue's push/retreat announcement is a live, on-air moment the
 # audience is actively watching and waiting on (Scott: "they have to decide
@@ -205,15 +197,25 @@ class OllamaAgent(ScriptedAgent):
                                              distractors=distractors)
         choices = options + [question.answer]
         self.rng.shuffle(choices)
-        # LETTERS_POOL, not a hardcoded "ABCD": duel.py's _pick_distractors
-        # caps at 6 now (bumped from 3 so a long blurt burst has enough
-        # unique material, see the blurt-repeat fix), so choices can run up
-        # to 7 (6 distractors + the real answer) -- "ABCD"[:len(choices)]
-        # silently stayed 4 characters long past that point (string slicing
-        # doesn't pad or error), and letters[i] then raised IndexError the
-        # moment i reached 4. Sized with real headroom past the current
-        # 7-choice ceiling, not just exactly enough.
-        letters = LETTERS_POOL[:len(choices)]
+        # The actual alphabet, not a project-invented cap: a hardcoded
+        # "ABCD" (4 letters) crashed with IndexError the moment
+        # distractors grew past 3 (duel.py's _pick_distractors is at 6 now,
+        # for the blurt-repeat fix, so choices can reach 7) -- string
+        # slicing doesn't pad or error, so letters silently stayed 4
+        # characters long past that point and letters[i] blew up three
+        # lines later. Replacing one hardcoded number with a bigger one
+        # (10) just moves the same bug further out, not closes it --
+        # string.ascii_uppercase (26) is the real ceiling for "a single
+        # letter," not a number anyone chose for this game, so there's
+        # nothing project-specific left to grow out of sync. The assert
+        # makes it impossible to repeat this class of bug silently: if
+        # choices ever somehow exceeds 26, this fails loudly right here
+        # with a clear message, not three lines down as a bare IndexError.
+        letters = string.ascii_uppercase[:len(choices)]
+        assert len(letters) == len(choices), (
+            f"attempt_question has {len(choices)} choices but the alphabet "
+            f"only has {len(string.ascii_uppercase)} letters to label them with."
+        )
         lines = [f"{letters[i]}: {choice}" for i, choice in enumerate(choices)]
         # PASS is framed here as a legitimate, smart play -- not a last
         # resort admission of failure -- specifically so a model doesn't
