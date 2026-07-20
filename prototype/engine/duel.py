@@ -114,9 +114,32 @@ def _pick_distractors(domain: Domain, question: Question, rng: random.Random) ->
     sitting there quietly. Picked once per question, not per attempt, so a
     stubborn wrong-answer loop on the same image keeps cycling the same
     plausible pool instead of reshuffling every single turn. Purely
-    cosmetic -- never includes the real answer itself."""
-    pool = [q.answer for q in domain.questions if q.answer != question.answer]
-    return rng.sample(pool, k=min(3, len(pool))) if pool else []
+    cosmetic -- never includes the real answer itself.
+
+    Capped at 6, not 3: the frontend shows each one at most once per
+    player per turn now (never repeats within one player's own blurt
+    burst, Scott's report), and a longer turn's blurt count can run past 3
+    -- 6 gives enough unique material that a long, heavily-hesitant turn
+    still doesn't have to repeat, while a short domain with fewer real
+    answers just yields a shorter, still repeat-free burst.
+
+    Deduplicated by VALUE, not just by question -- different questions in
+    the same domain frequently share an answer (two different clues can
+    both answer "elephant"), so a plain list comprehension here let
+    rng.sample() return the same STRING twice at two different list
+    positions, which is a real duplicate as far as the frontend blurt
+    burst is concerned even though sample() itself never repeats a
+    position. Order preserved (first occurrence in domain.questions, not
+    a raw set) so this stays deterministic under a seeded rng -- only
+    rng.sample's own selection introduces randomness, the pool it draws
+    from is fixed given the same domain/question."""
+    seen: Set[str] = set()
+    pool: List[str] = []
+    for q in domain.questions:
+        if q.answer != question.answer and q.answer not in seen:
+            seen.add(q.answer)
+            pool.append(q.answer)
+    return rng.sample(pool, k=min(6, len(pool))) if pool else []
 
 
 def run_duel(challenger: Player, defender: Player, domain: Domain,

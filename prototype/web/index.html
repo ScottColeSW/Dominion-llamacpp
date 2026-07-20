@@ -971,25 +971,33 @@ function sayHost(category) {
 function hostPreduelQuestion(playerId, role, phase, domain, opponentName) {
   const name = playerLabel(playerId);
   if (phase === 'origin') {
+    // Names their actual expertise domain directly (Scott's example: "I
+    // see you are an expert in DOMAIN") rather than a vague "what's your
+    // specialty" that makes them supply the domain themselves.
+    const originDomain = playerStartDomain[playerId] || 'your domain';
     const originTemplates = [
-      `${name}, before tonight's duel -- what's your specialty?`,
-      `${name}, tell the crowd: what are you actually known for?`,
-      `${name}, what's the one subject you'd call your own?`,
-      `${name}, what do you bring to this table?`,
+      `${name}, I see you're an expert in ${originDomain}. Tell the crowd about that.`,
+      `${name}, word is you know ${originDomain} inside and out -- is that fair to say?`,
+      `${name}, ${originDomain} is your specialty, correct? What's your story there?`,
+      `${name}, before tonight's duel -- I hear ${originDomain} is your domain. True?`,
     ];
     return originTemplates[Math.floor(Math.random() * originTemplates.length)];
   }
+  // Direct per Scott's example: name the domain on the line, name the
+  // opponent, and ask readiness outright -- "How do you feel about your
+  // chances in DOMAIN? Are you ready to take on Player Y?" rather than a
+  // vaguer "how are you feeling."
   const challengerTemplates = [
-    `${name}, ${domain} is on the line tonight -- how are you feeling?`,
-    `${name}, tell us: how do you size up ${domain}?`,
-    `${name}, the board's watching -- what's your read on ${domain}?`,
-    `${name}, before we start the clock -- anything you want to say?`,
+    `${name}, tonight's domain on the line is ${domain}. How do you feel about your chances against ${opponentName}? Are you ready to take them on?`,
+    `${name}, you're up against ${opponentName} tonight, on ${domain}. Ready?`,
+    `${name}, ${domain} is what's at stake against ${opponentName} -- how are you feeling?`,
+    `${name}, before we start the clock -- are you ready to take on ${opponentName} on ${domain}?`,
   ];
   const defenderTemplates = [
-    `${name}, you heard ${opponentName}. What do you say back?`,
-    `${name}, your turn -- what's your response to that?`,
-    `${name}, does that change anything for you?`,
-    `${name}, this is your ground to defend -- react to that.`,
+    `${name}, ${opponentName} is coming for your ${domain} territory. Are you ready to defend it?`,
+    `${name}, you heard ${opponentName}. Are you ready to defend ${domain} against them?`,
+    `${name}, this is your ground to defend against ${opponentName} -- ready?`,
+    `${name}, ${opponentName} just challenged you on ${domain}. What do you say back?`,
   ];
   const pool = role === 'challenger' ? challengerTemplates : defenderTemplates;
   return pool[Math.floor(Math.random() * pool.length)];
@@ -2293,7 +2301,19 @@ async function openStage(d) {
 // as rapid-fire rather than a slow crossfade. Falls back to the old calm
 // "is thinking..." beat if a question genuinely has no distractors to draw
 // from (a domain with only one question, essentially never in practice).
-function startRapidFireGuesses(playerId, distractors) {
+// Fisher-Yates on a copy -- never mutates the shared distractors array
+// (duel.py hands the SAME list back across repeated attempts on one
+// question, so mutating it here would corrupt later turns/players too).
+function shuffleCopy(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function startRapidFireGuesses(playerId, distractors, totalMs) {
   if (!distractors || !distractors.length) {
     duelSayLabel.textContent = '';
     duelGuessText.textContent = playerLabel(playerId) + ' is thinking…';
@@ -2302,19 +2322,32 @@ function startRapidFireGuesses(playerId, distractors) {
   }
   duelSayLabel.textContent = playerLabel(playerId) + ' blurts:';
   duelGuess.classList.add('rapidfire');
+  // Shuffled once per turn and never repeated within this one player's
+  // burst -- Scott: "blurts can't be repeats of the same answer by the
+  // same player. the other player could blurt the same answer. but we are
+  // repeating a lot." The old version cycled distractors[i % length],
+  // which guaranteed a repeat the moment the burst ran past the pool size.
+  // Paced to spread evenly across the turn's actual duration (totalMs)
+  // instead of a fixed interval, so a longer/more-hesitant turn shows more
+  // (still unique) guesses rather than just looping the same handful
+  // faster; once every unique option has been shown, it holds on the last
+  // one rather than wrapping back to repeat.
+  const order = shuffleCopy(distractors);
+  const interval = Math.max(300, Math.min(650, totalMs / order.length));
   let i = 0;
   const flick = () => {
-    duelGuessText.textContent = distractors[i % distractors.length] + '?';
+    duelGuessText.textContent = order[i] + '?';
     duelGuessText.style.animation = 'none';
     void duelGuessText.offsetWidth; // force reflow so the pop replays every flick
     duelGuessText.style.animation = '';
     i++;
   };
   flick();
-  // 150ms originally, but that read as too fast to actually register each
-  // guess before it flipped to the next one -- slowed down so each blurt is
-  // legible for a beat before the flicker moves on.
-  return setInterval(flick, 380);
+  const timerId = setInterval(() => {
+    if (i >= order.length) { clearInterval(timerId); return; }
+    flick();
+  }, interval);
+  return timerId;
 }
 
 function stopRapidFireGuesses(timerId) {
@@ -2360,7 +2393,6 @@ async function playDuelTurn(d) {
   // distractors to draw from.
   duelGuess.classList.remove('correct', 'wrong', 'passed');
   duelGuess.classList.add('show');
-  const rapidFireTimer = startRapidFireGuesses(d.player_id, d.distractors);
 
   const fromVal = clockState[clockKey];
   const toVal = d.clock_remaining;
@@ -2371,6 +2403,10 @@ async function playDuelTurn(d) {
   // that problem (seconds_used there is simulated, never real elapsed
   // time), so they keep the full tickDuration animation exactly as before.
   const animMs = d.live ? LIVE_TURN_ANIM_MS / FF_LEVELS[ffLevelIndex] : tickDuration(d.seconds_used);
+  // Computed before starting the blurt burst (not after, as before) so it
+  // can pace a repeat-free cycle through the actual turn duration instead
+  // of a fixed interval.
+  const rapidFireTimer = startRapidFireGuesses(d.player_id, d.distractors, animMs);
   await animateClock(clockEl, fromVal, toVal, animMs);
   clockState[clockKey] = toVal;
 
@@ -2613,7 +2649,10 @@ async function runShowPlayback(queue) {
       // enough to actually read, THEN the player's answer -- together this
       // is the real 2-way host<->player exchange Scott asked for, now with
       // "several back and forth" per player instead of just one.
-      const opponentName = ev.data.role === 'defender' ? playerLabel(stageChallengerId) : null;
+      // Both sides get the opponent's name now, not just the defender --
+      // Scott's direct-question example asks the CHALLENGER "are you ready
+      // to take on Player Y?" too, which needs the defender's name in hand.
+      const opponentName = ev.data.role === 'defender' ? playerLabel(stageChallengerId) : playerLabel(stageDefenderId);
       sayHostText(hostPreduelQuestion(ev.data.player_id, ev.data.role, ev.data.phase, stageTestedDomain, opponentName));
       await sleep(1200);
       await showDomainIntro(ev.data.player_id, ev.data.role, ev.data.text);
