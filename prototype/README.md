@@ -303,3 +303,17 @@ in that environment specifically. Confirmed this wasn't an engine or
 frontend bug by hitting `/api/run-show` directly with `curl`: the full
 12-duel show, `finale` event included, comes back in well under a second
 server-side every time.
+
+**The content pool is deduped and meaningfully bigger.** `engine/content.py`
+went from 2050 to 2355 questions across the same 39 domains (Scott: "I do
+think we have to expand the domain questions and answers pool"). Along the
+way, a real bug turned up: `duel.py`'s `_pick_distractors` dedupes the
+blurt/distractor pool by answer VALUE, so nine domains with a repeated
+answer (56 collisions total -- Board Games had 60 questions but only 52
+distinct answers) were silently drawing from a smaller effective pool than
+their question count implied. Every collision was replaced with a fresh
+question, not just deleted, so the fix and the growth pass happened
+together. Verified with a script asserting zero within-domain answer
+duplicates across all 39 domains (was 56, now 0), plus 60 full scripted
+shows run end to end with no errors and `engine/test_board_geometry.py`
+still green.
