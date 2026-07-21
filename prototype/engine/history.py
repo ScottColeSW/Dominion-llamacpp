@@ -61,6 +61,12 @@ CREATE TABLE IF NOT EXISTS duels (
     defender_clock_remaining REAL
 );
 
+CREATE TABLE IF NOT EXISTS board_domains (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    show_id INTEGER NOT NULL REFERENCES shows(id),
+    domain TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS player_stats (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     show_id INTEGER NOT NULL REFERENCES shows(id),
@@ -78,12 +84,38 @@ CREATE TABLE IF NOT EXISTS player_stats (
 );
 """
 
+# Columns added after player_stats already shipped -- CREATE TABLE IF NOT
+# EXISTS above is a no-op against an existing table, so a real db already
+# holding shows (this project's had one running since early in development)
+# needs these added in place rather than losing that history to a
+# drop-and-recreate. Tracks each winner's push-vs-retreat choice after a
+# duel (engine/game.py's "continues"/"retreats" events) -- added to check
+# whether a live model's decisions actually track the temperament label
+# it's given, after a one-off direct test found qwen2.5:3b answering
+# RETREAT regardless of an "aggressive" label and llama3.2:latest answering
+# PUSH regardless of "cautious" (see README's "waiting... wins most" note).
+_MIGRATIONS = {
+    "player_stats": [
+        ("pushes", "INTEGER NOT NULL DEFAULT 0"),
+        ("retreats", "INTEGER NOT NULL DEFAULT 0"),
+    ],
+}
+
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+    for table, columns in _MIGRATIONS.items():
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for name, decl in columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
 
 def init_db(db_path: str = DB_PATH) -> None:
     """Idempotent; call once at server startup."""
     conn = sqlite3.connect(db_path, timeout=5)
     try:
         conn.executescript(SCHEMA)
+        _run_migrations(conn)
         conn.commit()
     finally:
         conn.close()
@@ -130,14 +162,15 @@ def get_stats(db_path: str = DB_PATH) -> Dict[str, Any]:
                 "model": model, "games_played": 0, "wins": 0, "correct": 0,
                 "incorrect": 0, "passed": 0, "total_correct_seconds": 0.0,
                 "championships": 0, "as_challenger": 0, "challenger_wins": 0,
-                "as_defender": 0, "defender_wins": 0,
+                "as_defender": 0, "defender_wins": 0, "pushes": 0, "retreats": 0,
             })
 
         for row in conn.execute(
             "SELECT model, COUNT(*) AS games_played, SUM(wins) AS wins, "
             "SUM(correct) AS correct, SUM(incorrect) AS incorrect, "
             "SUM(passed) AS passed, SUM(total_correct_seconds) AS total_correct_seconds, "
-            "SUM(is_champion) AS championships FROM player_stats "
+            "SUM(is_champion) AS championships, SUM(pushes) AS pushes, "
+            "SUM(retreats) AS retreats FROM player_stats "
             "WHERE model IS NOT NULL GROUP BY model"
         ):
             m = ensure(row["model"])
@@ -147,6 +180,7 @@ def get_stats(db_path: str = DB_PATH) -> Dict[str, Any]:
                 "passed": row["passed"] or 0,
                 "total_correct_seconds": row["total_correct_seconds"] or 0.0,
                 "championships": row["championships"] or 0,
+                "pushes": row["pushes"] or 0, "retreats": row["retreats"] or 0,
             })
 
         for row in conn.execute(
@@ -186,12 +220,40 @@ def get_stats(db_path: str = DB_PATH) -> Dict[str, Any]:
             m["defender_win_rate"] = (
                 round(m["defender_wins"] / m["as_defender"], 3) if m["as_defender"] else None
             )
+            # Push % after a win: continues vs retreats (game.py's
+            # "continues"/"retreats" events). Each player's temperament is
+            # randomized fresh every show, so a model actually following the
+            # label it's given should average out to a moderate, varying
+            # rate across enough shows -- a rate parked near 0% or 100%
+            # regardless of volume is itself the signal that the model isn't
+            # really tracking temperament. See README's "waiting... wins
+            # most" note for the direct single-call test that first found
+            # this (qwen2.5:3b retreated 8/9 times regardless of an
+            # "aggressive" label; llama3.2:latest pushed 9/9 regardless of
+            # "cautious").
+            decisions = m["pushes"] + m["retreats"]
+            m["push_rate"] = round(m["pushes"] / decisions, 3) if decisions else None
+
+        # Board domain frequency: how often each domain actually gets drawn
+        # onto the board (see domain_seeded/board_domains above) -- a live
+        # answer to "the same domains keep coming up" instead of a one-off
+        # simulation. With 13 of ~39 domains drawn per show (a third of the
+        # library every single time), meaningful-looking overlap across a
+        # handful of shows is expected from sampling alone; this is what
+        # lets that get checked against real accumulated data instead.
+        domain_rows = conn.execute(
+            "SELECT domain, COUNT(*) AS n FROM board_domains GROUP BY domain ORDER BY n DESC"
+        ).fetchall()
+        board_domain_counts = [{"domain": r["domain"], "count": r["n"]} for r in domain_rows]
+        board_draws_total = sum(r["count"] for r in board_domain_counts)
 
         return {
             "shows_recorded": totals,
             "duels_recorded": duel_totals,
             "by_reason": by_reason,
             "models": sorted(models.values(), key=lambda m: m["wins"], reverse=True),
+            "board_domain_counts": board_domain_counts,
+            "board_draws_total": board_draws_total,
         }
     finally:
         conn.close()
@@ -216,6 +278,15 @@ class HistoryRecorder:
         self.players: Dict[int, Dict[str, Any]] = {}  # player_id -> draft info + running stats
         self.duel_index = 0
         self.duels: List[Dict[str, Any]] = []
+        # One entry per domain_seeded event -- the 13 domains actually drawn
+        # onto this show's board (see engine/content.py's pick_domains).
+        # Scott suspected the same domains kept coming up as board
+        # territory; a 500-show simulation found no engine bias (rng.sample
+        # over 39 domains checked out statistically uniform), but that's
+        # only provable by actually recording real draws over time rather
+        # than re-running one-off simulations whenever the question comes
+        # up again -- see get_board_domain_stats() and the Standings page.
+        self.board_domains: List[str] = []
         self._pending_challenge: Optional[Dict[str, Any]] = None
 
     def on_event(self, ev: Any) -> None:
@@ -226,14 +297,24 @@ class HistoryRecorder:
 
     def _handle(self, ev: Any) -> None:
         etype, data = ev.type, ev.data
-        if etype == "draw_assignment":
+        if etype == "domain_seeded":
+            self.board_domains.append(data["domain"])
+        elif etype == "draw_assignment":
             pid = data["player_id"]
             self.players[pid] = {
                 "model": data["model"], "kingdom_name": data["kingdom_name"],
                 "profession": data["profession"], "starting_domain": data["domain"],
                 "wins": 0, "correct": 0, "incorrect": 0, "passed": 0,
-                "total_correct_seconds": 0.0,
+                "total_correct_seconds": 0.0, "pushes": 0, "retreats": 0,
             }
+        elif etype == "continues":
+            p = self.players.get(data["player_id"])
+            if p is not None:
+                p["pushes"] += 1
+        elif etype == "retreats":
+            p = self.players.get(data["player_id"])
+            if p is not None:
+                p["retreats"] += 1
         elif etype == "challenge_declared":
             self._pending_challenge = {
                 "challenger_id": data["challenger_id"], "defender_id": data["defender_id"],
@@ -292,6 +373,11 @@ class HistoryRecorder:
                  finale_data["total_duels"], finale_data["prize"]),
             )
             show_id = cur.lastrowid
+            for domain in self.board_domains:
+                conn.execute(
+                    "INSERT INTO board_domains (show_id, domain) VALUES (?,?)",
+                    (show_id, domain),
+                )
             for d in self.duels:
                 conn.execute(
                     "INSERT INTO duels (show_id, duel_index, challenger_id, challenger_model, "
@@ -307,10 +393,12 @@ class HistoryRecorder:
                 conn.execute(
                     "INSERT INTO player_stats (show_id, player_id, model, kingdom_name, "
                     "profession, starting_domain, wins, correct, incorrect, passed, "
-                    "total_correct_seconds, is_champion) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "total_correct_seconds, is_champion, pushes, retreats) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (show_id, pid, p["model"], p["kingdom_name"], p["profession"],
                      p["starting_domain"], p["wins"], p["correct"], p["incorrect"],
-                     p["passed"], round(p["total_correct_seconds"], 1), int(pid == champ_id)),
+                     p["passed"], round(p["total_correct_seconds"], 1), int(pid == champ_id),
+                     p["pushes"], p["retreats"]),
                 )
             conn.commit()
         finally:

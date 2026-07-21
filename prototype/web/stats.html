@@ -77,6 +77,19 @@
   .card .role-split { margin-top: 14px; font-size: 0.8em; color: var(--dim); display: flex; justify-content: space-between; }
 
   .empty { text-align: center; color: var(--dim); margin-top: 60px; font-size: 1.1em; }
+
+  /* Board domain frequency: a horizontal bar per domain, sorted by how
+     often it's actually been drawn onto the board across every recorded
+     show -- see history.py's board_domains table. */
+  .domain-freq-note { color: var(--dim); font-size: 0.88em; margin-bottom: 14px; }
+  .domain-freq-note b { color: var(--text); }
+  .domain-bars { display: flex; flex-direction: column; gap: 5px; }
+  .domain-bar-row { display: grid; grid-template-columns: 160px 1fr 34px; align-items: center; gap: 10px; font-size: 0.82em; }
+  .domain-bar-row .dname { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .domain-bar-track { height: 10px; border-radius: 5px; background: #241634; overflow: hidden; }
+  .domain-bar-fill { height: 100%; background: linear-gradient(90deg, var(--purple), #8b5fc9); border-radius: 5px; }
+  .domain-bar-row .dcount { text-align: right; color: var(--text); }
+  .domain-bar-row.below-expected .domain-bar-fill { background: linear-gradient(90deg, #4fa3d1, #6bc3f1); }
 </style>
 </head>
 <body>
@@ -139,7 +152,7 @@ async function load() {
   html += `<h2>Leaderboard</h2>`;
   html += `<table><thead><tr>
     <th>Model</th><th>Shows</th><th>Duels</th><th>Wins</th><th>Win %</th><th>Accuracy</th>
-    <th>Avg Correct (s)</th><th>Champs</th>
+    <th>Avg Correct (s)</th><th>Champs</th><th>Push %</th>
   </tr></thead><tbody>`;
   data.models.forEach((m, i) => {
     html += `<tr class="${i === 0 ? 'rank-1' : ''}">
@@ -151,9 +164,22 @@ async function load() {
       <td>${pct(m.accuracy)}</td>
       <td>${num(m.avg_correct_seconds, 2)}</td>
       <td>${m.championships}</td>
+      <td>${pct(m.push_rate)}</td>
     </tr>`;
   });
   html += `</tbody></table>`;
+
+  html += `<div class="domain-freq-note">
+    <b>Push %:</b> after winning a duel, how often a model chooses to keep pushing
+    for more territory instead of retreating to defend what it has. Each player's
+    assigned playing style (Cautious/Balanced/Aggressive) is randomized fresh every
+    show, so a model genuinely following that label should land somewhere in the
+    middle and vary show to show — a rate parked near 0% or 100% regardless of
+    volume means the model isn't really tracking the label it's been given, not
+    that it's an unusually extreme player. First noticed with a direct test:
+    qwen2.5:3b answered retreat 8 of 9 times even when told to play aggressive;
+    llama3.2:latest answered push 9 of 9 times even when told to play cautious.
+  </div>`;
 
   html += `<h2>Player Cards</h2><div class="cards">`;
   data.models.forEach(m => {
@@ -170,9 +196,34 @@ async function load() {
         <span>As challenger: ${pct(m.challenger_win_rate)} (${m.as_challenger})</span>
         <span>As defender: ${pct(m.defender_win_rate)} (${m.as_defender})</span>
       </div>
+      <div class="role-split" style="margin-top:6px;">
+        <span>Push rate: ${pct(m.push_rate)} (${m.pushes}&#8594;/${m.retreats}&#8592;)</span>
+      </div>
     </div>`;
   });
   html += `</div>`;
+
+  if (data.board_domain_counts && data.board_domain_counts.length) {
+    const domains = data.board_domain_counts;
+    const maxCount = domains[0].count;
+    const expected = data.board_draws_total / domains.length;
+    html += `<h2>Board Domain Frequency</h2>`;
+    html += `<div class="domain-freq-note">Every domain drawn onto a board across all recorded shows
+      (${data.board_draws_total} total draws over ${domains.length} distinct domains). With 13 of ~39
+      library domains drawn each show, meaningful-looking overlap across just a handful of shows is
+      expected from sampling alone — this list is the real check, not a guess. Expected count per
+      domain if the draw is uniform: <b>${expected.toFixed(1)}</b>. Bars below that line are shown in blue.</div>`;
+    html += `<div class="domain-bars">`;
+    domains.forEach(d => {
+      const belowExpected = d.count < expected;
+      html += `<div class="domain-bar-row${belowExpected ? ' below-expected' : ''}">
+        <div class="dname">${d.domain}</div>
+        <div class="domain-bar-track"><div class="domain-bar-fill" style="width:${(d.count / maxCount) * 100}%"></div></div>
+        <div class="dcount">${d.count}</div>
+      </div>`;
+    });
+    html += `</div>`;
+  }
 
   content.innerHTML = html;
 }

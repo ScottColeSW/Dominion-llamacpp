@@ -124,6 +124,18 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
     # players land on which model varies game to game.
     model_pool = TEXT_MODELS.copy()
     rng.shuffle(model_pool)
+    # A player's origin_domain (their real, if amateur, expertise) is drawn
+    # independently from the FULL library, not just the 13 domains actually
+    # seeded on this show's board -- Scott's design note: "the players do
+    # not necessarily have expertise that will come up at all... or the
+    # super lucky would land on a matching domain." Previously this line
+    # just aliased origin_domain to whatever board domain the player drafted
+    # (domain.name below), which meant every single player started the show
+    # as a genuine expert in their own held territory, always -- never the
+    # rare, lucky coincidence the design called for, and directly why
+    # Scott's own interview ("Expertise: X" / "Holds: X") always showed the
+    # exact same domain on both lines at the top of every show.
+    origin_domain_pool = list(DOMAINS_BY_NAME.keys())
 
     for pick_number, pid in enumerate(draft_order, start=1):
         node = rng.choice(remaining_nodes)
@@ -132,7 +144,7 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
         player = Player(
             id=pid,
             domain=domain.name,
-            origin_domain=domain.name,
+            origin_domain=rng.choice(origin_domain_pool),
             kingdom_name=_make_kingdom_name(rng),
             profession=professions_pool[pid % len(professions_pool)],
             territory={node},
@@ -396,12 +408,14 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
         keep_going, continue_reason = winner_agent.decide_continue(winner, game)
         if keep_going and game.adjacent_opponents(winner_id):
             game.spotlight = winner_id
-            emit("continues", player_id=winner_id, model=winner.model, reason=continue_reason)
+            emit("continues", player_id=winner_id, model=winner.model, reason=continue_reason,
+                 temperament=winner.temperament, temperament_label=winner.temperament_label())
         else:
             winner.push_streak = 0
             game.spotlight = None
             game.excluded_from_pick = winner_id
-            emit("retreats", player_id=winner_id, model=winner.model, reason=continue_reason)
+            emit("retreats", player_id=winner_id, model=winner.model, reason=continue_reason,
+                 temperament=winner.temperament, temperament_label=winner.temperament_label())
 
     champion_id = game.sole_owner()
     champion = players[champion_id]

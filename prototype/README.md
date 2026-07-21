@@ -317,3 +317,131 @@ together. Verified with a script asserting zero within-domain answer
 duplicates across all 39 domains (was 56, now 0), plus 60 full scripted
 shows run end to end with no errors and `engine/test_board_geometry.py`
 still green.
+
+**A player's expertise was never actually independent of their board
+domain -- it was the same value.** `game.py`'s draft loop used to set
+`origin_domain=domain.name`, aliasing a player's real (if amateur) expertise
+straight to whichever domain they drafted onto the board -- meaning every
+player started every show as a genuine expert in their own held territory,
+100% of the time, never the rare lucky coincidence the design called for
+(Scott, an earlier session: "the players do not necessarily have expertise
+that will come up at all... or the super lucky would land on a matching
+domain"), and exactly why the interview badge's "Expertise:" and "Holds:"
+lines always showed the identical domain at the top of every show. Now
+drawn independently from the full 39-domain library via `rng.choice`.
+Verified directly: replaying the exact draft logic across 300 shows, the
+match rate dropped from 100% to 2.87% (expected ~2.56% for 1-in-39 odds).
+
+**The board's domain draw was already fair -- confirmed, not assumed.**
+Scott's report that "the same domains come up as board territory a lot"
+turned out to be sampling variance, not a bug: `pick_domains` draws 13 of
+~39 domains (a third of the whole library) every single show, so real
+overlap across just a handful of shows is expected by chance alone. A
+500-show simulation came back statistically uniform (expected ~166.7 draws
+per domain, observed range 145-192, all 39 domains represented). The new
+`board_domains` table (`engine/history.py`, populated from `domain_seeded`
+events) and its Standings-page panel exist so this stays checkable against
+real accumulated data going forward instead of needing a fresh simulation
+every time the question comes up again.
+
+**The "just retreat and wait" strategy some Scott observed live isn't a
+bug -- it's a real, measured quirk of the local models, not the engine
+math.** Elimination here is all-or-nothing (a duel's loser is eliminated
+outright, no partial damage), so every additional duel a player fights is
+an independent fresh chance to be knocked out -- pushing repeatedly
+compounds risk, retreating doesn't. A 150-show scripted simulation found no
+temperament bias in who becomes champion (champions averaged temperament
+0.510 vs the full pool's 0.495, actually skewing slightly toward
+*aggressive*), which means the scripted push/retreat formula itself is
+fine. But a direct live test against the actual local models (fixed
+temperament/streak inputs, `OllamaAgent.decide_continue`) found `qwen2.5:3b`
+-- the current Standings leader -- answered RETREAT in 8 of 9 trials
+regardless of the "aggressive" label it was given, while `llama3.2:latest`
+answered PUSH in 9 of 9 regardless of "cautious." The models aren't
+reliably following the temperament they're assigned; one of them just
+happens to default to a genuinely conservative answer, and that bias is
+exactly what this ruleset rewards. Worth knowing, not obviously worth
+"fixing" -- there's no single correct temperament-compliance fix, and the
+mismatch is arguably a fun, honest artifact of using real small local
+models rather than a scripted personality.
+
+**Several presentation bugs fixed together, all from the same testing
+pass:**
+- The players-remaining counter (`#playersRemaining`) used to live inside
+  `#heroStage`, which `startShow()` sets to `display:none` for the entire
+  run -- it was updating correctly in the DOM the whole time, just never
+  visible once the show started. Moved to sit permanently above the board.
+- The spotlight toddle-in animation (`.player-face.toddle-in`) used to get
+  applied immediately in `openStage()`, well before the same function's own
+  `duelStage.scrollIntoView({behavior:'smooth'})` a few lines later --
+  scrollIntoView is an uncontrolled async browser scroll with no completion
+  callback, so on a page with real scroll distance the whole 0.9s animation
+  could finish while the stage was still off-screen. Now applied ~350ms
+  *after* the scroll call instead of before it.
+- A live turn's clock animation was a flat 400ms regardless of
+  `seconds_used` -- at 400ms (further divided by Fast Forward),
+  `animateClock`'s own `setInterval(tick, 100)` only fires once or twice,
+  reading as a single instant jump followed by a much longer static hold
+  through the rest of the turn's guess-reveal sequence, not a countdown.
+  Now scales with `seconds_used` (350ms-1200ms) so longer charges visibly
+  take longer.
+- The Scramble curtain intermission's total hold was ~3.2s, not the 5s
+  Scott asked for; redistributed across the closing/text/reopening beats to
+  sum to exactly 5s at 1x speed.
+- Challenge Stage badge colors used to tint from each player's own
+  `PLAYER_COLORS` board tile -- a 13-color palette picked for whole-board
+  variety, not contrast against one specific opponent, so two similar hues
+  could land on both badges at once and read as barely different (Scott:
+  "we are unable to set the challenge stage player badge background colors
+  correctly"). Now a fixed, always-distinct left/right pair
+  (`STAGE_LEFT_COLOR`/`STAGE_RIGHT_COLOR`, electric blue vs hot magenta --
+  not literally red/green, per Scott's own "no, not that") so which side is
+  which reads instantly regardless of who's up. Board tiles and territory
+  captures still use each player's real, persistent `playerColor()`.
+
+**The "game freezes after a few shows, clicking around fixes it" report is
+almost certainly Chrome's own background-tab timer throttling, not a leak.**
+Audited every `setInterval`/`setTimeout` in `web/index.html` for a missing
+`clearInterval`/`clearTimeout` -- all of them are properly paired. Audited
+DOM growth across repeated shows in the same tab -- `#stage` and
+`#chatterFeed` are both explicitly cleared at the top of `startShow()`, so
+nothing accumulates unbounded across "New Game" replays. This session's own
+automated browser testing (see the disconnect-crash fix above) hit the
+exact same symptom directly: `document.hidden` read `true` even while
+nominally fronted, and the whole show-playback loop is `sleep()`-driven
+(`setTimeout`-based); Chrome clamps timers hard in a backgrounded/unfocused
+tab, which produces precisely "looks stuck, then a click on the page
+un-sticks it" (a click restores focus/visibility, un-throttling every
+pending timer at once). Good news either way: `HistoryRecorder` writes
+happen entirely server-side as `run_show()` executes (confirmed earlier via
+`curl` completing a full 12-duel show in under a second) -- a frozen-looking
+frontend has zero effect on whether a show's data actually got captured.
+
+**The push/retreat model-bias finding is now a tracked scorecard stat, not
+a one-off test result.** Scott: "it would look informed to add the 'test
+whether the real models show a systematic bias' results as part of the
+scorecard." `game.py`'s `continues`/`retreats` events now carry the
+player's temperament alongside `model`; `history.py` tracks `pushes`/
+`retreats` per player per show (migrated onto the existing `player_stats`
+table via `ALTER TABLE`, not a schema rebuild, so the accumulated history
+wasn't lost) and `get_stats()` computes a `push_rate` per model. Surfaced
+on the Standings page as a "Push %" column plus a note explaining what
+compliance should look like (temperament is randomized fresh every show, so
+a model actually tracking it should land in the middle and vary -- a rate
+parked at 0% or 100% regardless of volume is the signal, not the raw
+number). This also means the finding keeps getting more solid as more real
+shows are recorded, instead of resting on the original 9-trial direct test.
+
+**Two small usability gaps closed:**
+- The end-of-show popup (`#newGameOverlay`) had no way to dismiss it
+  short of clicking NEW GAME -- added a close button (`#overlayCloseBtn`)
+  that just hides the overlay, champion still visible underneath.
+- No way to stop a show once started. Added a Quit/Halt control-panel
+  button: aborts the in-flight `fetch('/api/run-show')` via
+  `AbortController` (which `server.py`'s existing disconnect handling --
+  see the crash fix above -- then stops server-side too, instead of
+  burning real Ollama calls for a show nobody's watching anymore), then
+  reloads the page rather than hand-resetting every piece of mid-show
+  state by hand. Verified directly: aborting mid-show produced no server
+  traceback (same graceful path as a closed browser tab) and left the page
+  in a clean, fully-reset state.
