@@ -8,6 +8,10 @@ trivia; if Ollama isn't installed or a call fails, that player transparently
 falls back to a scripted stand-in agent so the show never stalls (see
 [`prototype/engine/ollama_agent.py`](prototype/engine/ollama_agent.py)).
 
+# Demo
+A short demonstration video is available on Loom.
+[`Dominion live`](https://www.loom.com/share/2d3bfddb3e5a4a4bbf9f38dd51299f70)
+
 ## Requirements
 
 - Python 3.9+. No pip packages needed — the whole project is standard
