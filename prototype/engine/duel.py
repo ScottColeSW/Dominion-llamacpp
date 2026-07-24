@@ -61,7 +61,7 @@ import random
 
 from .content import Domain, Question
 from .agents import AnswerAttempt, ScriptedAgent
-from .models import Player
+from .models import Player, GameState
 
 
 QUESTION_CAP = 30  # total across BOTH players in one duel, not per-player
@@ -159,7 +159,14 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
              challenger_bonus: bool = False, defender_bonus: bool = False,
              used_questions: Optional[Set[Tuple[str, str]]] = None,
              base_clock: int = BASE_CLOCK, question_cap: int = QUESTION_CAP,
-             on_turn: Optional[Callable[[Dict[str, Any]], None]] = None) -> DuelResult:
+             on_turn: Optional[Callable[[Dict[str, Any]], None]] = None,
+             game: Optional[GameState] = None) -> DuelResult:
+    # game (added for the "agents get smarter as they play" feature) is
+    # passed straight through to agent.attempt_question below so a live
+    # OllamaAgent can reference this player's accumulated domain_record for
+    # the domain being tested right now -- ScriptedAgent's own
+    # attempt_question just accepts and ignores it, same as it already does
+    # with distractors/time_remaining.
 
     if used_questions is None:
         used_questions = set()
@@ -216,7 +223,8 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
             # expects it to end. ScriptedAgent ignores this; it's never
             # slow enough to matter.
             attempt = agent.attempt_question(player, question, domain, miss_streak=miss_streak,
-                                              distractors=distractors, time_remaining=clocks[pid])
+                                              distractors=distractors, time_remaining=clocks[pid],
+                                              game=game)
 
         clocks[pid] -= attempt.seconds_used
         seen[pid] += 1

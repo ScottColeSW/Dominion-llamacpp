@@ -76,8 +76,9 @@ class ScriptedAgent:
 
     def attempt_question(self, player: Player, question: Question, domain: Domain,
                           miss_streak: int = 0, distractors: Optional[List[str]] = None,
-                          time_remaining: Optional[float] = None) -> AnswerAttempt:
-        # distractors/time_remaining are accepted but unused here --
+                          time_remaining: Optional[float] = None,
+                          game: Optional[GameState] = None) -> AnswerAttempt:
+        # distractors/time_remaining/game are accepted but unused here --
         # ScriptedAgent already "cheats" via question.answer directly, and
         # is never slow enough for time_remaining to matter. They exist on
         # this signature so the shared call site (duel.py) can pass them
@@ -142,7 +143,7 @@ class ScriptedAgent:
         # here also covers OllamaAgent whenever its live reply doesn't
         # parse cleanly, so it has to work standalone, not just as filler.
         if not game.adjacent_opponents(player.id):
-            return False, "no one left in range to challenge -- holding position."
+            return False, "no one left in range to challenge. Holding position."
         base_rate = 0.65 + 0.20 * player.temperament       # 0.5 -> 0.75
         decay_rate = 0.23 - 0.16 * player.temperament      # 0.5 -> 0.15
         floor = 0.15 + 0.20 * player.temperament           # 0.5 -> 0.25
@@ -156,27 +157,30 @@ class ScriptedAgent:
             continue_chance = min(0.95, continue_chance + 0.25)
         keep_going = self.rng.random() < continue_chance
         if keep_going:
-            return True, "riding the momentum -- pushing on for more."
+            return True, "riding the momentum. Pushing on for more."
         return False, "content to hold this ground and let someone else take the spotlight."
 
     def choose_tax_target(self, player: Player, game: GameState) -> Optional[int]:
         candidates = [pid for pid in game.active_ids if pid != player.id]
         return self.rng.choice(candidates) if candidates else None
 
-    def intro_line_origin(self, player: Player) -> str:
+    def intro_line_origin(self, player: Player, game: Optional[GameState] = None) -> str:
         """Round 1 of the pre-duel interview: a short line about the ONE
         domain this player actually built a name on (origin_domain, set once
         at the draft and never touched again -- see models.py). They're an
         enthusiastic amateur there, nothing more, and nowhere else -- see
         intro_line_challenge for why that distinction matters. OllamaAgent
         overrides this with a live model reply and falls back to this exact
-        method on any failure, so it also has to work standalone.
+        method on any failure, so it also has to work standalone. game is
+        accepted but unused here -- a canned fallback can't meaningfully
+        weave in show history the way a live reply can.
         """
         streak = f", riding a {player.push_streak}-win streak" if player.push_streak >= 2 else ""
         return f"built a name on {player.origin_domain}{streak}, and stands by it."
 
     def intro_line_challenge(self, player: Player, tested_domain: str,
-                              opponent_line: Optional[str] = None) -> str:
+                              opponent_line: Optional[str] = None,
+                              game: Optional[GameState] = None) -> str:
         """Round 2: a short reaction to tonight's ACTUAL tested domain --
         this is the player being told/reminded what they're up against, per
         Scott's "they will be informed... of the domain to challenge."
@@ -184,9 +188,32 @@ class ScriptedAgent:
         happens to equal their origin_domain -- a player is only a genuine
         (if amateur) expert in the one domain they drafted; everywhere else
         they're exactly as informed as an average person off the street, no
-        better. opponent_line is accepted but unused here -- a canned
-        fallback can't meaningfully react to arbitrary opponent text.
+        better. opponent_line/game are accepted but unused here -- a canned
+        fallback can't meaningfully react to arbitrary opponent text or
+        show history.
         """
         if player.origin_domain == tested_domain:
             return f"tonight's {tested_domain} test is exactly their home turf."
-        return f"tonight tests {tested_domain} -- outside their home turf, just an amateur guess from here."
+        return f"tonight tests {tested_domain}, outside their home turf. Just an amateur guess from here."
+
+    def intro_line_opponent(self, player: Player, opponent: Player,
+                             opponent_line: Optional[str] = None,
+                             game: Optional[GameState] = None) -> str:
+        """Round 3 of the pre-duel interview: a short, in-character read on
+        the SPECIFIC opponent about to be faced -- Scott's ask that the host
+        "prep the player with a question about their expertise, their
+        thoughts on the subject, and their thoughts on the other player."
+        Leans on temperament (the one trait this canned stand-in can vary
+        meaningfully on without a real model actually reasoning about the
+        matchup): aggressive players talk a bigger game, cautious players
+        are more measured/respectful. opponent_line/game are accepted but
+        unused here -- same reasoning as intro_line_challenge: a canned
+        fallback can't meaningfully react to arbitrary opponent text or
+        show history. OllamaAgent overrides this with a live reply and
+        falls back here on any failure.
+        """
+        if player.temperament > 0.65:
+            return f"not worried about {opponent.kingdom_name}. Confident that's handled."
+        if player.temperament < 0.35:
+            return f"respects {opponent.kingdom_name}, but still thinks this is winnable."
+        return f"figures {opponent.kingdom_name} is a real test, but ready for it."

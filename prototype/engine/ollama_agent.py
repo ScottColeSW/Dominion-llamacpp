@@ -108,6 +108,47 @@ def _parse_index(reply: Optional[str], count: int) -> Optional[int]:
     return idx if 0 <= idx < count else None
 
 
+def _history_block(game: Optional[GameState]) -> str:
+    """A short "SHOW SO FAR" prompt fragment built from GameState.memory
+    (see models.py) -- Scott: "everyone, all agents, will be more and more
+    informed as the game proceeds; like the players get smarter as they
+    really play." Threaded into every live call EXCEPT attempt_question
+    (see _domain_familiarity_line below for why that one gets a lighter,
+    separate treatment) -- those calls happen once or twice per duel, not
+    dozens of times, so the fuller context is cheap in aggregate. Empty
+    string early in the show (nothing remembered yet), so those prompts
+    stay exactly as short as they always were until there's actually
+    something to report.
+    """
+    if not game:
+        return ""
+    text = game.recent_history_text()
+    return f" What's happened in the show so far: {text}" if text else ""
+
+
+def _domain_familiarity_line(game: Optional[GameState], player: Player, domain_name: str) -> str:
+    """A one-line "you've already seen this domain tonight" fact for
+    attempt_question's prompt specifically -- real accumulated in-show
+    experience with the SPECIFIC subject being tested right now, which is
+    the most literal reading of "the players get smarter as they really
+    play." Kept separate from _history_block above (and never includes the
+    full show history) since this prompt gets built on every single trivia
+    attempt, the highest-frequency call site by far -- a full history
+    block there would add real prompt weight (and latency) to every turn
+    of every duel, not just once or twice per duel like the other calls.
+    """
+    if not game:
+        return ""
+    familiarity = game.domain_familiarity(player.id, domain_name)
+    if not familiarity:
+        return ""
+    correct, total = familiarity
+    return (
+        f" You've already faced {total} question(s) in {domain_name} earlier tonight "
+        f"({correct} correct) -- draw on that experience."
+    )
+
+
 class OllamaAgent(ScriptedAgent):
     """Same interface as ScriptedAgent; overrides only the three decision
     points to consult this player's assigned local model, falling back to
@@ -129,7 +170,8 @@ class OllamaAgent(ScriptedAgent):
         ]
         prompt = (
             f"You are {player.kingdom_name}, a {player.profession} on a trivia game show, "
-            f"playing style: {player.temperament_label()}. Pick ONE opponent to challenge next.\n"
+            f"playing style: {player.temperament_label()}.{_history_block(game)} "
+            f"Pick ONE opponent to challenge next.\n"
             + "\n".join(lines)
             + "\nReply with ONLY the number of your choice."
         )
@@ -149,7 +191,8 @@ class OllamaAgent(ScriptedAgent):
             return super().decide_continue(player, game)
         prompt = (
             f"You are {player.kingdom_name}, a {player.profession}, playing style: "
-            f"{player.temperament_label()}. You are on a {player.push_streak}-win streak. "
+            f"{player.temperament_label()}. You are on a {player.push_streak}-win streak."
+            f"{_history_block(game)} "
             f"Do you keep pushing for more territory, or retreat to defend what you have? "
             f"The host and the live audience are waiting on your answer right now -- "
             f"keep it quick.\n"
@@ -182,7 +225,8 @@ class OllamaAgent(ScriptedAgent):
         ]
         prompt = (
             f"You are {player.kingdom_name}. You've earned a Domain Tax: swap domains with one "
-            f"opponent of your choice.\n" + "\n".join(lines) + "\nReply with ONLY the number."
+            f"opponent of your choice.{_history_block(game)}\n"
+            + "\n".join(lines) + "\nReply with ONLY the number."
         )
         reply, _ = _ask_ollama(self.model, prompt)
         idx = _parse_index(reply, len(candidates))
@@ -190,11 +234,12 @@ class OllamaAgent(ScriptedAgent):
 
     def attempt_question(self, player: Player, question: Question, domain: Domain,
                           miss_streak: int = 0, distractors: Optional[List[str]] = None,
-                          time_remaining: Optional[float] = None) -> AnswerAttempt:
+                          time_remaining: Optional[float] = None,
+                          game: Optional[GameState] = None) -> AnswerAttempt:
         options = list(distractors or [])
         if not options:
             return super().attempt_question(player, question, domain, miss_streak=miss_streak,
-                                             distractors=distractors)
+                                             distractors=distractors, game=game)
         choices = options + [question.answer]
         self.rng.shuffle(choices)
         # The actual alphabet, not a project-invented cap: a hardcoded
@@ -238,6 +283,7 @@ class OllamaAgent(ScriptedAgent):
             + "\n".join(lines)
             + "\nReply with ONLY the single letter of your answer, or PASS."
             + pass_hint
+            + _domain_familiarity_line(game, player, domain.name)
             + " Passing when you're genuinely unsure is a legitimate, smart "
               "move on this show, not a failure -- a sharp contestant "
               "doesn't guess blindly just to avoid admitting they don't know."
@@ -276,7 +322,7 @@ class OllamaAgent(ScriptedAgent):
         charged_seconds = max(MIN_CHARGED_SECONDS, math.ceil(raw_seconds))
         if not reply:
             return super().attempt_question(player, question, domain, miss_streak=miss_streak,
-                                             distractors=distractors)
+                                             distractors=distractors, game=game)
         upper = reply.strip().upper()
         if upper.startswith("PASS"):
             return AnswerAttempt(outcome="passed", correct=False, seconds_used=charged_seconds,
@@ -289,13 +335,13 @@ class OllamaAgent(ScriptedAgent):
         idx = letters.index(m.group()) if (m and m.group() in letters) else None
         if idx is None:
             return super().attempt_question(player, question, domain, miss_streak=miss_streak,
-                                             distractors=distractors)
+                                             distractors=distractors, game=game)
         chosen = choices[idx]
         correct = (chosen == question.answer)
         return AnswerAttempt(outcome="correct" if correct else "incorrect", correct=correct,
                               seconds_used=charged_seconds, guess=chosen, live=True)
 
-    def intro_line_origin(self, player: Player) -> str:
+    def intro_line_origin(self, player: Player, game: Optional[GameState] = None) -> str:
         # Round 1 of the pre-duel interview, called for BOTH sides right as
         # a duel opens, before run_duel starts. Split from the old single
         # intro_line into two real rounds per Scott's ask: "several back
@@ -318,7 +364,8 @@ class OllamaAgent(ScriptedAgent):
         prompt = (
             f"You are {player.kingdom_name}, a {player.profession} competing live "
             f"on a trivia game show. Your playing style is {player.temperament_label()}. "
-            f"You currently control {len(player.territory)} tile(s) of the board.{streak_note} "
+            f"You currently control {len(player.territory)} tile(s) of the board.{streak_note}"
+            f"{_history_block(game)} "
             f"Your one real subject is {player.origin_domain} -- you're a genuine "
             f"enthusiast there, an eager AMATEUR, not a world-class expert, but it's "
             f"still the one thing you actually know.\n"
@@ -327,10 +374,11 @@ class OllamaAgent(ScriptedAgent):
             f"domain with some real personality."
         )
         reply, _ = _ask_ollama(self.model, prompt)
-        return reply.strip() if reply else super().intro_line_origin(player)
+        return reply.strip() if reply else super().intro_line_origin(player, game=game)
 
     def intro_line_challenge(self, player: Player, tested_domain: str,
-                              opponent_line: Optional[str] = None) -> str:
+                              opponent_line: Optional[str] = None,
+                              game: Optional[GameState] = None) -> str:
         # Round 2: the player being told/reminded what's actually on the
         # line tonight -- Scott: "they will be informed... of the domain to
         # challenge." Deliberately does NOT assume expertise here unless
@@ -365,10 +413,44 @@ class OllamaAgent(ScriptedAgent):
         )
         prompt = (
             f"You are {player.kingdom_name}, a {player.profession}, playing style "
-            f"{player.temperament_label()}. {stakes}{reaction_note}\n"
+            f"{player.temperament_label()}. {stakes}{reaction_note}{_history_block(game)}\n"
             f"In ONE short, in-character sentence, react to actually being told "
             f"this is what tonight's duel is on -- like a real contestant hearing "
             f"the category for the first time, not a narrator."
         )
         reply, _ = _ask_ollama(self.model, prompt)
-        return reply.strip() if reply else super().intro_line_challenge(player, tested_domain, opponent_line)
+        return reply.strip() if reply else super().intro_line_challenge(
+            player, tested_domain, opponent_line, game=game)
+
+    def intro_line_opponent(self, player: Player, opponent: Player,
+                             opponent_line: Optional[str] = None,
+                             game: Optional[GameState] = None) -> str:
+        # Round 3: the player's own take on the SPECIFIC opponent they're
+        # about to face, not just the domain -- Scott's ask for the host to
+        # "prep the player with a question about their expertise, their
+        # thoughts on the subject, and their thoughts on the other player."
+        # Mirrors intro_line_challenge's opponent_line handling: set only
+        # for the second speaker (game.py feeds the challenger's actual
+        # opponent-round reply into the defender's call here), so this
+        # round can be a real two-way exchange -- "here's what they just
+        # said about you" -- rather than two isolated readouts.
+        reaction_note = (
+            f' They just said, live, on air, about facing you: "{opponent_line}" React to '
+            f"that directly if you want -- agree, brush it off, fire back, whatever fits "
+            f"your style."
+            if opponent_line else
+            ""
+        )
+        prompt = (
+            f"You are {player.kingdom_name}, a {player.profession}, playing style "
+            f"{player.temperament_label()}. You're about to face {opponent.kingdom_name}, "
+            f"a {opponent.profession} (playing style: {opponent.temperament_label()}) who "
+            f"currently controls {len(opponent.territory)} tile(s) of the board."
+            f"{reaction_note}{_history_block(game)}\n"
+            f"In ONE short, in-character sentence, give your honest read on THIS specific "
+            f"opponent -- respect, trash talk, nerves, whatever actually fits your own "
+            f"style, like a real contestant sizing up exactly who they're about to face."
+        )
+        reply, _ = _ask_ollama(self.model, prompt)
+        return reply.strip() if reply else super().intro_line_opponent(
+            player, opponent, opponent_line, game=game)

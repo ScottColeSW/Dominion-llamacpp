@@ -1,7 +1,7 @@
 """Core state model: players and the live game state."""
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Dict, Set, Optional, List
+from typing import Dict, Set, Optional, List, Tuple
 
 KINGDOM_NAME_PARTS_A = [
     "Whisker", "Meatloaf", "Drizzle", "Cobblestone", "Marmalade", "Thistle",
@@ -20,6 +20,43 @@ PROFESSIONS = [
     "line cook", "IT help desk analyst", "veterinary assistant",
     "warehouse supervisor",
 ]
+
+# A "great fit" domain shortlist per profession, used to weight the
+# without-replacement origin_domain draw in game.py's draft loop (Scott:
+# "it is very unlikely that a construction worker type is going to choose
+# stamp collecting" -- origin_domain was previously a flat, uniform random
+# pick across the whole 39-domain library, totally uncoupled from
+# profession, which is exactly how that kind of nonsense pairing happened).
+# Not an exhaustive or exclusive list -- any domain NOT listed here for a
+# given profession still has a real (just much lower) chance of being that
+# player's origin_domain, so the pairing stays a genuine draw, not a rigid
+# lookup table. Domain names must match DOMAIN_LIBRARY entries in content.py
+# exactly.
+PROFESSION_DOMAIN_AFFINITY: Dict[str, List[str]] = {
+    "claims adjuster": ["Cars and Trucks", "Weather", "Construction and Tools", "Firefighters"],
+    "night-shift security guard": ["Fair Grounds", "Grocery Store", "Community Helpers",
+                                    "Construction and Tools", "Space and Planets"],
+    "dental hygienist": ["Ice Cream", "Bakery and Bread", "Pizza", "Community Helpers"],
+    "long-haul trucker": ["Cars and Trucks", "Trains", "Weather", "Camping"],
+    "barista": ["Cooking and Kitchen", "Bakery and Bread", "Ice Cream", "Grocery Store"],
+    "HVAC technician": ["Winter and Snow", "Weather", "Construction and Tools", "Autumn"],
+    "school bus driver": ["School", "Playgrounds", "Cars and Trucks", "Birthdays"],
+    "actuary": ["Weather", "Space and Planets", "Board Games", "Cars and Trucks"],
+    "landscaper": ["Flowers and Gardens", "Autumn", "Farm Animals", "Camping", "Bugs and Insects"],
+    "pharmacy tech": ["Community Helpers", "Grocery Store", "Bakery and Bread"],
+    "insurance underwriter": ["Cars and Trucks", "Weather", "Construction and Tools", "Firefighters"],
+    "line cook": ["Cooking and Kitchen", "Pizza", "Bakery and Bread", "Grocery Store", "Ice Cream"],
+    "IT help desk analyst": ["Space and Planets", "Board Games", "School"],
+    "veterinary assistant": ["Cats", "Dogs", "Farm Animals", "Zoo Animals", "Birds",
+                              "Reptiles and Amphibians", "Ocean Animals"],
+    "warehouse supervisor": ["Grocery Store", "Construction and Tools", "Cars and Trucks", "Bicycles"],
+}
+# Weight multiplier for a profession's shortlisted domains vs. everything
+# else in the pool -- high enough to make a sensible pairing likely, low
+# enough that it's still a real draw (an early, well-matched domain can
+# still get taken by an earlier pick in the draft order) rather than a
+# guarantee.
+PROFESSION_DOMAIN_WEIGHT = 6
 
 
 @dataclass
@@ -46,13 +83,20 @@ class Player:
     # choice, push/retreat, domain tax) -- see ollama_agent.py. Fixed for the
     # whole run, assigned at the draft, shown on the player's badge.
     model: str = ""
-    # The domain this player actually drafted, set once at the draw and
-    # never touched again -- domain (above) is CURRENT holdings, which
-    # drifts constantly over a show via conquest and domain tax, so it's
-    # not a stable enough anchor for a live model's own sense of identity.
+    # This player's personal, amateur expertise -- deliberately independent
+    # of domain (above), which is CURRENT board holdings and drifts
+    # constantly over a show via conquest and domain tax, so it's not a
+    # stable enough anchor for a live model's own sense of identity.
     # ollama_agent.py's intro_line prompt uses this as a fixed "this is
-    # where you started, this is who you are" reference point, separate
-    # from whatever domain happens to be on the line tonight.
+    # who you are" reference point, separate from whatever domain happens
+    # to be on the line tonight. Drawn once at the draft from the FULL
+    # domain library (not just the 13 seeded on this show's board), so
+    # landing on a matching board domain is a real, rare coincidence rather
+    # than guaranteed -- but the draw itself is weighted toward whatever
+    # plausibly fits this player's profession (PROFESSION_DOMAIN_AFFINITY
+    # above) and drawn without replacement across players, so no two
+    # players ever share the same personal expertise, the same way no two
+    # tiles ever share the same board domain.
     origin_domain: str = ""
 
     def name_tag(self) -> str:
@@ -77,6 +121,29 @@ class GameState:
     duel_count: int = 0
     scrambled: bool = False
     burst_prizes: List[dict] = field(default_factory=list)
+    # A short, bounded rolling log of plain-English facts about the show so
+    # far -- duel outcomes, the Scramble -- threaded into every live
+    # OllamaAgent prompt that makes a strategic call or speaks in character
+    # (choose_target, decide_continue, choose_tax_target, the intro_line_*
+    # trio), so real models get progressively more informed about the state
+    # of the board as the show goes on, not just about their own personal
+    # history. Scott: "everyone, all agents, will be more and more informed
+    # as the game proceeds; like the players get smarter as they really
+    # play." Capped at MEMORY_LIMIT entries via remember() below (never by
+    # truncating the field type itself), so prompt size can't grow without
+    # bound no matter how long a show runs -- only the most recent handful
+    # of facts are ever in view, which also keeps this a "recent form" read
+    # rather than an ever-growing, eventually-unreadable transcript.
+    memory: List[str] = field(default_factory=list)
+    # player_id -> domain name -> [correct_count, total_count] for THIS
+    # show only -- lets attempt_question's prompt say "you've already faced
+    # N questions in this domain tonight, M correct," real accumulated
+    # in-show experience with a SPECIFIC subject. Deliberately separate
+    # from `memory` above (which is show-wide and narrative) since this is
+    # per-player and numeric, and it's consulted on the highest-frequency
+    # call path (every single trivia attempt) where a full history block
+    # would be too much prompt weight to pay every time.
+    domain_record: Dict[int, Dict[str, List[int]]] = field(default_factory=dict)
 
     def sole_owner(self) -> Optional[int]:
         return next(iter(self.active_ids)) if len(self.active_ids) == 1 else None
@@ -88,3 +155,33 @@ class GameState:
 
     def adjacent_opponents(self, player_id: int) -> List[int]:
         return [pid for pid in self.active_ids if pid != player_id and self.players_adjacent(player_id, pid)]
+
+    MEMORY_LIMIT = 8
+
+    def remember(self, line: str) -> None:
+        self.memory.append(line)
+        if len(self.memory) > self.MEMORY_LIMIT:
+            self.memory = self.memory[-self.MEMORY_LIMIT:]
+
+    def recent_history_text(self) -> str:
+        """A single sentence-joined block of the most recent remembered
+        facts, oldest first -- empty string if nothing's happened yet
+        (early in the show), which every call site below checks before
+        adding a "SHOW SO FAR" section to a prompt at all."""
+        return " ".join(self.memory)
+
+    def domain_familiarity(self, player_id: int, domain_name: str) -> Optional[Tuple[int, int]]:
+        """(correct, total) this player has faced in domain_name so far
+        this show, or None if they haven't seen this domain at all yet --
+        the None case matters: a player's very first question in a domain
+        should read as genuinely uninformed, not claim "0 correct" as if
+        that were meaningful experience."""
+        rec = self.domain_record.get(player_id, {}).get(domain_name)
+        return (rec[0], rec[1]) if rec else None
+
+    def record_duel_turns(self, turns_log: List[dict]) -> None:
+        for turn in turns_log:
+            rec = self.domain_record.setdefault(turn["player_id"], {}).setdefault(turn["domain"], [0, 0])
+            rec[1] += 1
+            if turn["correct"]:
+                rec[0] += 1

@@ -54,6 +54,12 @@ class Handler(BaseHTTPRequestHandler):
             content_type = "text/css"
         elif file_path.suffix == ".js":
             content_type = "application/javascript"
+        elif file_path.suffix == ".mp3":
+            # Scott's own recorded sound files (web/sounds/) -- served
+            # straight off disk like any other static asset here, just
+            # needs the right content type so browsers actually play it
+            # instead of trying to parse it as HTML (the default above).
+            content_type = "audio/mpeg"
         self._send(200, file_path.read_bytes(), content_type)
 
     def do_POST(self) -> None:

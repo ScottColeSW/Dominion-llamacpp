@@ -10,7 +10,10 @@ from typing import Dict, List, Optional
 
 from .board import build_hub_ring, build_pyramid_13, connected_components
 from .content import pick_domains, DOMAINS_BY_NAME, Domain
-from .models import Player, GameState, KINGDOM_NAME_PARTS_A, KINGDOM_NAME_PARTS_B, PROFESSIONS
+from .models import (
+    Player, GameState, KINGDOM_NAME_PARTS_A, KINGDOM_NAME_PARTS_B, PROFESSIONS,
+    PROFESSION_DOMAIN_AFFINITY, PROFESSION_DOMAIN_WEIGHT,
+)
 from .agents import ScriptedAgent
 from .ollama_agent import OllamaAgent, TEXT_MODELS
 from .duel import run_duel, BASE_CLOCK, QUESTION_CAP
@@ -135,18 +138,38 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
     # rare, lucky coincidence the design called for, and directly why
     # Scott's own interview ("Expertise: X" / "Holds: X") always showed the
     # exact same domain on both lines at the top of every show.
+    #
+    # Drawn WITHOUT replacement across players (Scott: "its a choice without
+    # replacement, so we never get expertise overlap, just like the board
+    # works") -- pop() below removes each pick from the shared pool as it's
+    # taken, same no-duplicates guarantee the board's remaining_nodes list
+    # already gives tile domains. Also weighted by profession fit rather
+    # than flat-uniform (Scott's biggest-problem report: "it is very
+    # unlikely that a construction worker type is going to choose stamp
+    # collecting" -- a fully independent, unweighted draw was exactly how
+    # that kind of nonsense pairing happened). Still a real draw, not a
+    # rigid lookup: an earlier pick in the draft order can take a domain
+    # that would have been a later player's ideal fit too, same scarcity
+    # dynamic as the board.
     origin_domain_pool = list(DOMAINS_BY_NAME.keys())
 
     for pick_number, pid in enumerate(draft_order, start=1):
         node = rng.choice(remaining_nodes)
         remaining_nodes.remove(node)
         domain = node_domain[node]
+        profession = professions_pool[pid % len(professions_pool)]
+
+        affinity = set(PROFESSION_DOMAIN_AFFINITY.get(profession, ()))
+        weights = [PROFESSION_DOMAIN_WEIGHT if d in affinity else 1 for d in origin_domain_pool]
+        origin_domain = rng.choices(origin_domain_pool, weights=weights, k=1)[0]
+        origin_domain_pool.remove(origin_domain)
+
         player = Player(
             id=pid,
             domain=domain.name,
-            origin_domain=rng.choice(origin_domain_pool),
+            origin_domain=origin_domain,
             kingdom_name=_make_kingdom_name(rng),
-            profession=professions_pool[pid % len(professions_pool)],
+            profession=profession,
             territory={node},
             # 0.1-0.9 rather than the full 0-1 range, so nobody plays as a
             # pure coin-flip robot or an absolute maniac -- everyone still
@@ -157,6 +180,7 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
         players[pid] = player
         owner[node] = pid
         emit("draw_assignment", player_id=pid, domain=domain.name,
+             origin_domain=player.origin_domain,
              kingdom_name=player.kingdom_name, profession=player.profession,
              node=node, on_stage=(node == 0), pick_number=pick_number,
              remaining_after=len(remaining_nodes), temperament=player.temperament,
@@ -210,51 +234,67 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
              tested_domain=defender.domain, challenger_using_bonus=challenger_bonus,
              defender_using_bonus=False, base_clock=BASE_CLOCK)
 
-        # The pre-duel interview: two full rounds per side, not one -- per
+        # The pre-duel interview: three full rounds per side now -- per
         # Scott's ask for "several back and forth between host and player
         # so the models are warm to their own domain and knowledge of the
-        # domain they are dueling on." Round 1 (intro_line_origin) is about
-        # the ONE domain this player actually drafted; round 2
-        # (intro_line_challenge) is them being informed what's actually on
-        # the line tonight, which may or may not be that same domain. Four
-        # full generation calls per duel now instead of two, so it's also a
-        # more thorough model warm-up -- this doubles as a fix for a real
-        # fairness bug: choose_target above already warms the CHALLENGER's
-        # model for free (an untimed call), but the DEFENDER never got an
-        # equivalent chance to warm up before their own first timed trivia
-        # turn -- calling all this for both sides here gives the defender
-        # the same head start, symmetrically, before the timed clock starts.
+        # domain they are dueling on," later extended with a third round:
+        # "the host should prep the player with a question about their
+        # expertise, their thoughts on the subject, and their thoughts on
+        # the other player." Round 1 (intro_line_origin) is about the ONE
+        # domain this player actually drafted; round 2 (intro_line_challenge)
+        # is them being informed what's actually on the line tonight, which
+        # may or may not be that same domain; round 3 (intro_line_opponent)
+        # is their own read on the specific opponent they're about to face.
+        # Six full generation calls per duel now instead of four, so it's
+        # also a more thorough model warm-up -- this doubles as a fix for a
+        # real fairness bug: choose_target above already warms the
+        # CHALLENGER's model for free (an untimed call), but the DEFENDER
+        # never got an equivalent chance to warm up before their own first
+        # timed trivia turn -- calling all this for both sides here gives
+        # the defender the same head start, symmetrically, before the timed
+        # clock starts.
         #
         # Sequential, not simultaneous, and grouped by PLAYER (challenger's
-        # full two rounds, then defender's) rather than interleaved by
+        # full three rounds, then defender's) rather than interleaved by
         # round -- reads as one contestant's mini-interview finishing before
-        # the next starts, not four disconnected lines in an odd order. The
-        # defender's challenge-round call is given the challenger's actual
-        # challenge-round reply text (opponent_line), so THAT round is a
-        # real two-way exchange, not just two isolated monologues that
-        # happen to air back to back.
+        # the next starts, not six disconnected lines in an odd order. Both
+        # the challenge round AND the new opponent round feed the
+        # challenger's actual reply into the defender's equivalent live call
+        # (opponent_line), so both are real two-way exchanges, not just
+        # isolated monologues that happen to air back to back.
         defender_agent = agents[target_id]
 
         emit("agent_thinking", player_id=active_pid, model=active_player.model, decision="intro")
-        challenger_origin = agent.intro_line_origin(active_player)
+        challenger_origin = agent.intro_line_origin(active_player, game=game)
         emit("pre_duel_intro", player_id=active_pid, role="challenger", phase="origin",
              model=active_player.model, text=challenger_origin)
 
         emit("agent_thinking", player_id=active_pid, model=active_player.model, decision="intro")
-        challenger_challenge = agent.intro_line_challenge(active_player, defender.domain)
+        challenger_challenge = agent.intro_line_challenge(active_player, defender.domain, game=game)
         emit("pre_duel_intro", player_id=active_pid, role="challenger", phase="challenge",
              model=active_player.model, text=challenger_challenge)
 
+        emit("agent_thinking", player_id=active_pid, model=active_player.model, decision="intro")
+        challenger_opponent = agent.intro_line_opponent(active_player, defender, game=game)
+        emit("pre_duel_intro", player_id=active_pid, role="challenger", phase="opponent",
+             model=active_player.model, text=challenger_opponent)
+
         emit("agent_thinking", player_id=target_id, model=defender.model, decision="intro")
-        defender_origin = defender_agent.intro_line_origin(defender)
+        defender_origin = defender_agent.intro_line_origin(defender, game=game)
         emit("pre_duel_intro", player_id=target_id, role="defender", phase="origin",
              model=defender.model, text=defender_origin)
 
         emit("agent_thinking", player_id=target_id, model=defender.model, decision="intro")
         defender_challenge = defender_agent.intro_line_challenge(defender, defender.domain,
-                                                                   opponent_line=challenger_challenge)
+                                                                   opponent_line=challenger_challenge, game=game)
         emit("pre_duel_intro", player_id=target_id, role="defender", phase="challenge",
              model=defender.model, text=defender_challenge)
+
+        emit("agent_thinking", player_id=target_id, model=defender.model, decision="intro")
+        defender_opponent = defender_agent.intro_line_opponent(defender, active_player,
+                                                                 opponent_line=challenger_opponent, game=game)
+        emit("pre_duel_intro", player_id=target_id, role="defender", phase="opponent",
+             model=defender.model, text=defender_opponent)
 
         # Emitted live, turn by turn, as run_duel computes each one -- not
         # batched up and replayed after the whole duel resolves. With a live
@@ -277,9 +317,15 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
         result = run_duel(active_player, defender, DOMAINS_BY_NAME[defender.domain],
                            agents, rng, challenger_bonus=challenger_bonus,
                            used_questions=used_questions, base_clock=BASE_CLOCK,
-                           question_cap=EFFECTIVE_QUESTION_CAP, on_turn=emit_turn)
+                           question_cap=EFFECTIVE_QUESTION_CAP, on_turn=emit_turn, game=game)
         if challenger_bonus:
             active_player.time_bonus_banked = False
+
+        # Real accumulated in-show experience per player per domain (Scott:
+        # "the players get smarter as they really play") -- feeds
+        # OllamaAgent.attempt_question's domain-familiarity line on this
+        # player's future attempts in the SAME domain later in the show.
+        game.record_duel_turns(result.turns_log)
 
         game.duel_count += 1
         winner_id, loser_id = result.winner_id, result.loser_id
@@ -352,6 +398,19 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
              clocks_remaining=result.clocks_remaining, turns=len(result.turns_log),
              territory_gained=territory_gained, winner_streak=winner.push_streak)
 
+        # Show-wide memory (Scott: "everyone, all agents, will be more and
+        # more informed as the game proceeds") -- a plain-English fact any
+        # live model's prompt can reference later via GameState.memory, not
+        # just this player's own personal record. defender.domain is read
+        # here (not winner.domain, which may have just been reassigned to
+        # the loser's old domain on a challenger win) specifically because
+        # it's the domain this exact duel was actually fought on, regardless
+        # of who ends up owning it afterward.
+        game.remember(
+            f"{winner.kingdom_name} defeated {loser.kingdom_name} in a {defender.domain} duel "
+            f"({result.reason.replace('_', ' ')})."
+        )
+
         for reassigned_id, tiles in reassignments:
             emit("territory_reassigned", to_id=reassigned_id, tiles=tiles)
 
@@ -394,6 +453,7 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
             game.scrambled = True
             emit("scramble", active_players=len(game.active_ids),
                  board_size=len(game.owner), new_owner=dict(game.owner))
+            game.remember(f"The board was scrambled -- {len(game.active_ids)} players remain, territory reshuffled.")
 
         if game.sole_owner() is not None:
             break
