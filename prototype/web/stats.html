@@ -35,10 +35,18 @@
   .summary-stat .label { font-size: 0.8em; color: var(--dim); letter-spacing: 0.5px; }
 
   /* Defender-vs-challenger home-turf note: duel.py tests the DEFENDER's own
-     held domain, so a defender is more likely to be answering something
-     they already hold territory in -- this panel makes that asymmetry
-     visible across every recorded show, not just discoverable by querying
-     the db by hand. */
+     held domain every duel (that's the territory actually at stake, so it
+     can't be changed without breaking the conquest fiction -- Scott caught
+     an earlier attempt to coin-flip this, since testing the challenger's
+     own domain made no narrative sense). The real structural edge this
+     produced (measured at 56.5%/43.5% across the first 18 shows -- see
+     README.md) is driven by domain_record/_domain_familiarity_line, not the
+     domain choice itself. duel.py briefly compensated with a flat clock
+     handicap for the challenger (CHALLENGER_HOME_TURF_HANDICAP), but that
+     was removed too -- Scott, after watching more shows: "honestly, I
+     don't think they need that home-field advantage." This panel now
+     exists purely to keep tracking the live split across every recorded
+     show as an observed stat, not a target the engine tunes toward. */
   .home-turf {
     background: var(--card); border: 1px solid #35234f; border-radius: 14px;
     padding: 16px 24px; margin-bottom: 28px; font-size: 0.92em; color: var(--dim);
@@ -134,11 +142,17 @@ async function load() {
   </div>`;
 
   html += `<div class="home-turf">
-    <div><b>Home-turf note:</b> every duel tests the <b>defender's own held domain</b> —
-    the defender is more likely to already know it, the challenger is the one
-    attacking into unfamiliar territory. Across all recorded duels, the
-    defender has won <b>${pct(totalDefenderWins / allDuels)}</b> of the time
-    vs the challenger's <b>${pct(totalChallengerWins / allDuels)}</b>.</div>
+    <div><b>Home-turf note:</b> every duel still tests the
+    <b>defender's own held domain</b> -- that's the territory actually at
+    stake. Defenders build a real, concentrated track record on that one
+    domain from defending it duel after duel, a genuine experience edge
+    over challengers, whose attacks land on a different domain each time.
+    A compensating clock handicap for challengers was tried and then
+    removed (Scott: "honestly, I don't think they need that home-field
+    advantage") -- this edge is now a known, accepted asymmetry rather than
+    something the engine corrects for. Across all recorded duels, the
+    defender has won <b>${pct(totalDefenderWins / allDuels)}</b> of the
+    time vs the challenger's <b>${pct(totalChallengerWins / allDuels)}</b>.</div>
     <div class="bar-row">
       <div style="width:70px; font-size:0.8em;">Challenger</div>
       <div class="bar-track">

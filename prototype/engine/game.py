@@ -72,8 +72,17 @@ MILESTONE_TERRITORY = 5
 MILESTONE_BONUS = 1_000_000
 
 
-def _make_kingdom_name(rng: random.Random) -> str:
-    return f"{rng.choice(KINGDOM_NAME_PARTS_A)} {rng.choice(KINGDOM_NAME_PARTS_B)}"
+def _make_kingdom_name(rng: random.Random, a_pool: list, b_pool: list) -> str:
+    # Pop from shuffled, per-show pools rather than an independent rng.choice
+    # each time -- Scott noticed players ending up with the same "last name"
+    # (the B part), which was near-guaranteed since KINGDOM_NAME_PARTS_B has
+    # exactly PLAYER_COUNT entries and independent draws hit the birthday
+    # paradox hard at that size. Consuming without replacement (same pattern
+    # as origin_domain_pool below) makes every B part unique across the 13
+    # players, and every A part unique too since that pool is even bigger.
+    a = a_pool.pop() if a_pool else rng.choice(KINGDOM_NAME_PARTS_A)
+    b = b_pool.pop() if b_pool else rng.choice(KINGDOM_NAME_PARTS_B)
+    return f"{a} {b}"
 
 
 def run_show(seed: Optional[int] = None, log=None) -> dict:
@@ -152,6 +161,11 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
     # that would have been a later player's ideal fit too, same scarcity
     # dynamic as the board.
     origin_domain_pool = list(DOMAINS_BY_NAME.keys())
+    # Shuffled, per-show kingdom-name pools -- see _make_kingdom_name.
+    kingdom_a_pool = list(KINGDOM_NAME_PARTS_A)
+    kingdom_b_pool = list(KINGDOM_NAME_PARTS_B)
+    rng.shuffle(kingdom_a_pool)
+    rng.shuffle(kingdom_b_pool)
 
     for pick_number, pid in enumerate(draft_order, start=1):
         node = rng.choice(remaining_nodes)
@@ -168,7 +182,7 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
             id=pid,
             domain=domain.name,
             origin_domain=origin_domain,
-            kingdom_name=_make_kingdom_name(rng),
+            kingdom_name=_make_kingdom_name(rng, kingdom_a_pool, kingdom_b_pool),
             profession=profession,
             territory={node},
             # 0.1-0.9 rather than the full 0-1 range, so nobody plays as a
@@ -230,71 +244,65 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
 
         defender = players[target_id]
         challenger_bonus = active_player.time_bonus_banked
+        # The territory actually at stake in every duel is always the
+        # DEFENDER's (territory transfer below only ever moves the LOSER's
+        # land to the winner, and only the defender's land is what's being
+        # contested here), so the trivia domain has to be the defender's --
+        # Revision 20's brief attempt at coin-flipping this instead was
+        # reverted (Scott: "it seems the challenges are taking place on the
+        # challenger's domain. that shouldn't be possible since they want to
+        # capture a different territory/domain"). Revision 21 then tried a
+        # compensating clock handicap for the challenger instead (see
+        # README.md's home-turf section for the real mechanism behind the
+        # measured 56.5%/43.5% split -- domain_record/_domain_familiarity_line,
+        # not this domain choice). Revision 22 dropped that handicap too:
+        # Scott, after watching more shows with the live-vs-fallback answer
+        # counter, "honestly, I don't think they need that home-field
+        # advantage." The structural edge is real and documented, just no
+        # longer something this engine tries to correct for.
+        tested_domain = defender.domain
         emit("challenge_declared", challenger_id=active_pid, defender_id=target_id,
-             tested_domain=defender.domain, challenger_using_bonus=challenger_bonus,
+             tested_domain=tested_domain, challenger_using_bonus=challenger_bonus,
              defender_using_bonus=False, base_clock=BASE_CLOCK)
 
-        # The pre-duel interview: three full rounds per side now -- per
-        # Scott's ask for "several back and forth between host and player
-        # so the models are warm to their own domain and knowledge of the
-        # domain they are dueling on," later extended with a third round:
-        # "the host should prep the player with a question about their
-        # expertise, their thoughts on the subject, and their thoughts on
-        # the other player." Round 1 (intro_line_origin) is about the ONE
-        # domain this player actually drafted; round 2 (intro_line_challenge)
-        # is them being informed what's actually on the line tonight, which
-        # may or may not be that same domain; round 3 (intro_line_opponent)
-        # is their own read on the specific opponent they're about to face.
-        # Six full generation calls per duel now instead of four, so it's
-        # also a more thorough model warm-up -- this doubles as a fix for a
-        # real fairness bug: choose_target above already warms the
-        # CHALLENGER's model for free (an untimed call), but the DEFENDER
-        # never got an equivalent chance to warm up before their own first
-        # timed trivia turn -- calling all this for both sides here gives
-        # the defender the same head start, symmetrically, before the timed
-        # clock starts.
+        # The pre-duel interview: ONE combined round per side now -- used to
+        # be three separate rounds (origin domain, tested domain, read on
+        # the opponent), per Scott's original ask for "several back and
+        # forth between host and player so the models are warm to their own
+        # domain and knowledge of the domain they are dueling on," later
+        # extended to a third round about the opponent specifically. Scott
+        # then found three separate rounds read like disconnected exchanges
+        # rather than the model actually answering one real question:
+        # "it doesn't seem like the agents are hearing each other in
+        # conversation... player 1, I see you are a cautious expert in
+        # flowers and gardens, how do you feel about competing with player 2
+        # on the subject of Farm Animals. Like that kinda." One combined
+        # call now (intro_line_combined) covers all three things at once --
+        # own expertise, tonight's actual domain, and the named opponent --
+        # matching the host's single loaded question in index.html's
+        # hostPreduelQuestion. Two full generation calls per duel now
+        # instead of six, one per side, still giving the DEFENDER the same
+        # warm-up head start choose_target already gives the CHALLENGER for
+        # free (an untimed call) before their own first timed trivia turn.
         #
-        # Sequential, not simultaneous, and grouped by PLAYER (challenger's
-        # full three rounds, then defender's) rather than interleaved by
-        # round -- reads as one contestant's mini-interview finishing before
-        # the next starts, not six disconnected lines in an odd order. Both
-        # the challenge round AND the new opponent round feed the
-        # challenger's actual reply into the defender's equivalent live call
-        # (opponent_line), so both are real two-way exchanges, not just
-        # isolated monologues that happen to air back to back.
+        # Sequential, not simultaneous, and challenger first then defender,
+        # same as before -- reads as one contestant's answer finishing
+        # before the next starts. The defender's call still gets fed the
+        # challenger's actual reply as opponent_line, so it's a real
+        # two-way exchange, not two isolated monologues that happen to air
+        # back to back.
         defender_agent = agents[target_id]
 
         emit("agent_thinking", player_id=active_pid, model=active_player.model, decision="intro")
-        challenger_origin = agent.intro_line_origin(active_player, game=game)
-        emit("pre_duel_intro", player_id=active_pid, role="challenger", phase="origin",
-             model=active_player.model, text=challenger_origin)
-
-        emit("agent_thinking", player_id=active_pid, model=active_player.model, decision="intro")
-        challenger_challenge = agent.intro_line_challenge(active_player, defender.domain, game=game)
-        emit("pre_duel_intro", player_id=active_pid, role="challenger", phase="challenge",
-             model=active_player.model, text=challenger_challenge)
-
-        emit("agent_thinking", player_id=active_pid, model=active_player.model, decision="intro")
-        challenger_opponent = agent.intro_line_opponent(active_player, defender, game=game)
-        emit("pre_duel_intro", player_id=active_pid, role="challenger", phase="opponent",
-             model=active_player.model, text=challenger_opponent)
+        challenger_line = agent.intro_line_combined(active_player, tested_domain, defender, game=game)
+        emit("pre_duel_intro", player_id=active_pid, role="challenger",
+             model=active_player.model, text=challenger_line)
 
         emit("agent_thinking", player_id=target_id, model=defender.model, decision="intro")
-        defender_origin = defender_agent.intro_line_origin(defender, game=game)
-        emit("pre_duel_intro", player_id=target_id, role="defender", phase="origin",
-             model=defender.model, text=defender_origin)
-
-        emit("agent_thinking", player_id=target_id, model=defender.model, decision="intro")
-        defender_challenge = defender_agent.intro_line_challenge(defender, defender.domain,
-                                                                   opponent_line=challenger_challenge, game=game)
-        emit("pre_duel_intro", player_id=target_id, role="defender", phase="challenge",
-             model=defender.model, text=defender_challenge)
-
-        emit("agent_thinking", player_id=target_id, model=defender.model, decision="intro")
-        defender_opponent = defender_agent.intro_line_opponent(defender, active_player,
-                                                                 opponent_line=challenger_opponent, game=game)
-        emit("pre_duel_intro", player_id=target_id, role="defender", phase="opponent",
-             model=defender.model, text=defender_opponent)
+        defender_line = defender_agent.intro_line_combined(defender, tested_domain, active_player,
+                                                             opponent_line=challenger_line, game=game)
+        emit("pre_duel_intro", player_id=target_id, role="defender",
+             model=defender.model, text=defender_line)
 
         # Emitted live, turn by turn, as run_duel computes each one -- not
         # batched up and replayed after the whole duel resolves. With a live
@@ -314,10 +322,14 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
                  lucky_blurt=turn["lucky_blurt"])
             turn_count[0] += 1
 
-        result = run_duel(active_player, defender, DOMAINS_BY_NAME[defender.domain],
-                           agents, rng, challenger_bonus=challenger_bonus,
-                           used_questions=used_questions, base_clock=BASE_CLOCK,
-                           question_cap=EFFECTIVE_QUESTION_CAP, on_turn=emit_turn, game=game)
+        result = run_duel(
+            active_player, defender, DOMAINS_BY_NAME[tested_domain],
+            agents, rng, challenger_bonus=challenger_bonus,
+            used_questions=used_questions, base_clock=BASE_CLOCK,
+            question_cap=EFFECTIVE_QUESTION_CAP, on_turn=emit_turn,
+            on_before_attempt=lambda pid, model: emit(
+                "agent_thinking", player_id=pid, model=model, decision="attempt"),
+            game=game)
         if challenger_bonus:
             active_player.time_bonus_banked = False
 
@@ -401,14 +413,28 @@ def run_show(seed: Optional[int] = None, log=None) -> dict:
         # Show-wide memory (Scott: "everyone, all agents, will be more and
         # more informed as the game proceeds") -- a plain-English fact any
         # live model's prompt can reference later via GameState.memory, not
-        # just this player's own personal record. defender.domain is read
-        # here (not winner.domain, which may have just been reassigned to
-        # the loser's old domain on a challenger win) specifically because
-        # it's the domain this exact duel was actually fought on, regardless
-        # of who ends up owning it afterward.
+        # just this player's own personal record. tested_domain is read here
+        # (not winner.domain, which may have just been reassigned to the
+        # loser's old domain on a challenger win) specifically because it's
+        # the domain this exact duel was actually fought on -- always the
+        # defender's domain, per the revert above -- regardless of who ends
+        # up owning it afterward.
+        #
+        # Every duel loss is a full elimination in this format (single loss
+        # and you're out -- see loser.active = False / active_ids.discard
+        # above), but "defeated... in a duel" alone doesn't say that
+        # outright. Scott: eliminated players seem to still get referenced
+        # by other agents as if they're still around -- choose_target
+        # already can't literally pick an eliminated player again (it only
+        # draws from active_ids), so this was a narrative-clarity gap, not
+        # a game-logic bug: a live model reading its own history block has
+        # no explicit signal that "defeated" here means gone for good, not
+        # just a lost skirmish in a show with many duels. Spelling it out
+        # plainly removes the ambiguity.
         game.remember(
-            f"{winner.kingdom_name} defeated {loser.kingdom_name} in a {defender.domain} duel "
-            f"({result.reason.replace('_', ' ')})."
+            f"{winner.kingdom_name} defeated {loser.kingdom_name} in a {tested_domain} duel "
+            f"({result.reason.replace('_', ' ')}). {loser.kingdom_name} is eliminated and out "
+            f"of the game."
         )
 
         for reassigned_id, tiles in reassignments:

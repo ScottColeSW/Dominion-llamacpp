@@ -7,10 +7,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import random
-from typing import List, Optional, Tuple
+from typing import List, Optional, Set, Tuple
 
-from .content import Question, Domain
-from .models import Player, GameState
+from .content import Question, Domain, same_category
+from .models import Player, GameState, PROFESSION_DOMAIN_AFFINITY
 
 
 @dataclass
@@ -77,7 +77,8 @@ class ScriptedAgent:
     def attempt_question(self, player: Player, question: Question, domain: Domain,
                           miss_streak: int = 0, distractors: Optional[List[str]] = None,
                           time_remaining: Optional[float] = None,
-                          game: Optional[GameState] = None) -> AnswerAttempt:
+                          game: Optional[GameState] = None,
+                          previously_wrong: Optional[Set[str]] = None) -> AnswerAttempt:
         # distractors/time_remaining/game are accepted but unused here --
         # ScriptedAgent already "cheats" via question.answer directly, and
         # is never slow enough for time_remaining to matter. They exist on
@@ -97,7 +98,25 @@ class ScriptedAgent:
         # 1.0 -> -0.06), cautious players pass a bit more readily (0.0 ->
         # +0.06); this is a style difference, not a skill difference.
         temperament_adjust = (0.5 - player.temperament) * 0.12
-        pass_chance = min(0.45, max(0.02, self.base_pass_chance + temperament_adjust + 0.07 * miss_streak))
+        # A pass costs the SAME player's own clock just like any other
+        # attempt (duel.py: "wrong answers and passes keep the same
+        # player's turn going and keep draining their own clock") -- it
+        # does NOT "save the clock," a framing Scott flagged as backwards.
+        # The only real upside to passing is dodging a question you don't
+        # know before burning several MORE attempts guessing wrong at that
+        # same image, and that tradeoff only makes sense with time to
+        # spare: a player already low on their own clock can't afford to
+        # gamble on a fresh unknown question when they might not know
+        # THAT one either, so time_remaining now genuinely shapes
+        # pass_chance instead of only temperament/miss_streak deciding it.
+        time_adjust = 0.0
+        if time_remaining is not None:
+            if time_remaining < 8:
+                time_adjust = -0.15  # can't afford to gamble on an unknown fresh question
+            elif time_remaining > 15:
+                time_adjust = 0.08   # comfortable enough to bail on a bad one
+        pass_chance = min(0.45, max(0.02, self.base_pass_chance + temperament_adjust
+                                     + time_adjust + 0.07 * miss_streak))
         # Charged time is driven by a blurt count, not a flat random roll --
         # Scott's ask: "add .5 seconds per blurt, so 3 blurts is 2 seconds,
         # etc." (ceil(3 * 0.5) == 2), so the frontend's rapid-fire guess
@@ -124,6 +143,16 @@ class ScriptedAgent:
             return AnswerAttempt(outcome="correct", correct=True, seconds_used=seconds, guess=question.answer)
 
         others = [q.answer for q in domain.questions if q.answer != question.answer]
+        # Steer away from a wrong answer already given for this exact
+        # question -- Scott: "agents are repeating guesses." Only actually
+        # excludes anything if doing so still leaves a real option; a
+        # small domain can genuinely run out of fresh wrong answers before
+        # FORCED_PASS_MISS_STREAK kicks in, and repeating one then is
+        # better than crashing on an empty choice list.
+        if previously_wrong:
+            fresh = [a for a in others if a not in previously_wrong]
+            if fresh:
+                others = fresh
         guess = self.rng.choice(others) if others else question.answer
         return AnswerAttempt(outcome="incorrect", correct=False, seconds_used=seconds, guess=guess)
 
@@ -164,56 +193,86 @@ class ScriptedAgent:
         candidates = [pid for pid in game.active_ids if pid != player.id]
         return self.rng.choice(candidates) if candidates else None
 
-    def intro_line_origin(self, player: Player, game: Optional[GameState] = None) -> str:
-        """Round 1 of the pre-duel interview: a short line about the ONE
-        domain this player actually built a name on (origin_domain, set once
-        at the draft and never touched again -- see models.py). They're an
-        enthusiastic amateur there, nothing more, and nowhere else -- see
-        intro_line_challenge for why that distinction matters. OllamaAgent
-        overrides this with a live model reply and falls back to this exact
-        method on any failure, so it also has to work standalone. game is
-        accepted but unused here -- a canned fallback can't meaningfully
-        weave in show history the way a live reply can.
-        """
-        streak = f", riding a {player.push_streak}-win streak" if player.push_streak >= 2 else ""
-        return f"built a name on {player.origin_domain}{streak}, and stands by it."
-
-    def intro_line_challenge(self, player: Player, tested_domain: str,
-                              opponent_line: Optional[str] = None,
-                              game: Optional[GameState] = None) -> str:
-        """Round 2: a short reaction to tonight's ACTUAL tested domain --
-        this is the player being told/reminded what they're up against, per
-        Scott's "they will be informed... of the domain to challenge."
-        Deliberately does NOT assume expertise here unless tested_domain
-        happens to equal their origin_domain -- a player is only a genuine
-        (if amateur) expert in the one domain they drafted; everywhere else
-        they're exactly as informed as an average person off the street, no
-        better. opponent_line/game are accepted but unused here -- a canned
-        fallback can't meaningfully react to arbitrary opponent text or
-        show history.
-        """
-        if player.origin_domain == tested_domain:
-            return f"tonight's {tested_domain} test is exactly their home turf."
-        return f"tonight tests {tested_domain}, outside their home turf. Just an amateur guess from here."
-
-    def intro_line_opponent(self, player: Player, opponent: Player,
+    def intro_line_combined(self, player: Player, tested_domain: str, opponent: Player,
                              opponent_line: Optional[str] = None,
                              game: Optional[GameState] = None) -> str:
-        """Round 3 of the pre-duel interview: a short, in-character read on
-        the SPECIFIC opponent about to be faced -- Scott's ask that the host
-        "prep the player with a question about their expertise, their
-        thoughts on the subject, and their thoughts on the other player."
-        Leans on temperament (the one trait this canned stand-in can vary
-        meaningfully on without a real model actually reasoning about the
-        matchup): aggressive players talk a bigger game, cautious players
-        are more measured/respectful. opponent_line/game are accepted but
-        unused here -- same reasoning as intro_line_challenge: a canned
+        """The single pre-duel interview line -- replaces the old
+        three-round origin/challenge/opponent sequence (Scott: three
+        separate rounds "doesn't seem like the agents are hearing each
+        other in conversation," reading as disconnected exchanges rather
+        than one real answer; he asked for it condensed into one loaded
+        question/answer, matching the host's single combined question in
+        index.html's hostPreduelQuestion). Covers, in one line: the
+        player's real origin-domain standing (the ONE domain they actually
+        built a name on, set once at the draft -- see models.py), an
+        honest read on tonight's ACTUAL tested domain (only a genuine
+        expert if it happens to match their origin domain -- everywhere
+        else they're exactly as informed as anyone off the street, no
+        better), and a temperament-flavored read on the specific opponent
+        named. opponent_line/game accepted but unused here -- a canned
         fallback can't meaningfully react to arbitrary opponent text or
-        show history. OllamaAgent overrides this with a live reply and
-        falls back here on any failure.
+        show history the way a live reply can. OllamaAgent overrides this
+        with a live model reply and falls back to this exact method on any
+        failure, so it also has to work standalone.
         """
+        # Revision 26 -- Scott: "agents might be better if they talk in
+        # first person. our labels stay, but the words might be better."
+        # The tell that this was actually written in third person all
+        # along, not just deliberately elliptical: "Respects X, but still
+        # THINKS this is winnable" and "FIGURES X is a real test" use
+        # third-person verb conjugation (he/she thinks, figures) with the
+        # subject dropped -- read aloud as this player's own live quote
+        # (see index.html's interviewEl, which prefixes these with the
+        # player's own name and a colon), that grammar mismatch is exactly
+        # what makes a scripted line sound like a narrator describing the
+        # player instead of the player actually talking.
+        # Revision 27 -- Scott: agents "aren't making rudimentary
+        # connections like zoos domain and animals expertise and seeing
+        # the advantage." PROFESSION_DOMAIN_AFFINITY (models.py) already
+        # tracks exactly this kind of professional connection -- e.g. a
+        # veterinary assistant's affinity list includes Zoo Animals,
+        # Farm Animals, Cats, Dogs, Birds -- but until now it was only
+        # ever consulted once, at the draft, to weight which domain a
+        # player's origin_domain gets drawn from; nothing surfaced it
+        # again afterward, so a player whose ACTUAL tested domain tonight
+        # happens to be a different-but-related one to their profession
+        # had no way to say so, and read as generically clueless outside
+        # their single fixed origin_domain instead of professionally
+        # informed. This adds a real middle case between "exactly my home
+        # turf" and "outside my wheelhouse."
+        # Revision 32 -- Scott's own examples of the reasoning he actually
+        # wants: "I can see how my knowledge of farms could help me in
+        # oceans, they both have a lot of animals," and "as a farmer, other
+        # reptiles affect farms." Neither is a PROFESSION match (nothing in
+        # PROFESSION_DOMAIN_AFFINITY ties "farmer" to Ocean Animals) -- it's
+        # a connection between the two DOMAINS themselves. same_category
+        # (content.py) is the new, coarser layer for exactly that: two
+        # different domains that happen to share a broad family (Farm
+        # Animals / Ocean Animals: both "Animals"). Checked only after the
+        # profession-affinity tier so a genuine professional tie still wins
+        # when both apply.
+        streak = f", riding a {player.push_streak}-win streak" if player.push_streak >= 2 else ""
+        profession_affinity = PROFESSION_DOMAIN_AFFINITY.get(player.profession, ())
+        category = same_category(player.origin_domain, tested_domain)
+        if player.origin_domain == tested_domain:
+            domain_take = (f"I built a name on {tested_domain}{streak}, and tonight's test "
+                            f"is exactly my home turf.")
+        elif tested_domain in profession_affinity:
+            domain_take = (f"I built a name on {player.origin_domain}{streak}, but as a "
+                            f"{player.profession}, {tested_domain} is right in my wheelhouse "
+                            f"professionally too. I've got a real edge here.")
+        elif category:
+            domain_take = (f"I built a name on {player.origin_domain}{streak}. {tested_domain} "
+                            f"isn't officially my thing, but they're both {category.lower()}, "
+                            f"so I think some of that knowledge carries over.")
+        else:
+            domain_take = (f"I built a name on {player.origin_domain}{streak}, so tonight's "
+                            f"{tested_domain} test is outside my wheelhouse. Just giving you "
+                            f"my honest guess.")
         if player.temperament > 0.65:
-            return f"not worried about {opponent.kingdom_name}. Confident that's handled."
-        if player.temperament < 0.35:
-            return f"respects {opponent.kingdom_name}, but still thinks this is winnable."
-        return f"figures {opponent.kingdom_name} is a real test, but ready for it."
+            opponent_take = f"I'm not worried about {opponent.kingdom_name}. I've got this handled."
+        elif player.temperament < 0.35:
+            opponent_take = f"I respect {opponent.kingdom_name}, but I still think this is winnable."
+        else:
+            opponent_take = f"I figure {opponent.kingdom_name} is a real test, but I'm ready for it."
+        return f"{domain_take} {opponent_take}"

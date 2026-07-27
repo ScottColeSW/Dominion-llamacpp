@@ -30,6 +30,30 @@ streams the event log to the page as newline-delimited JSON as the show is
 actually produced (not all at once), which the page reveals as a scrolling
 broadcast transcript, ending in the prize reveal.
 
+## Environment variables
+
+Both read once, at server startup (`prototype/server.py`) -- set them before
+running `python3 server.py`, not after.
+
+- **`DOMINION_SCRIPTED_ONLY`** — set to `1` to force every player onto the
+  scripted fallback agent (`engine/agents.py`) and skip live Ollama calls
+  entirely. A full show then runs near-instantly instead of the several
+  minutes real model calls can take (see "Expect real latency" below).
+  This is the standard way to iterate on the engine or frontend without
+  needing Ollama installed or running at all.
+  ```
+  DOMINION_SCRIPTED_ONLY=1 python3 server.py          # macOS / Linux
+  $env:DOMINION_SCRIPTED_ONLY=1; python server.py      # Windows PowerShell
+  set DOMINION_SCRIPTED_ONLY=1 && python server.py     # Windows cmd.exe
+  ```
+- **`DOMINION_PORT`** — overrides the default port (`8765`) the server binds
+  to and prints in its startup message. Only useful if something else on
+  your machine is already using 8765, or you want to run two shows side by
+  side. Leave unset for the default.
+  ```
+  DOMINION_PORT=9000 python3 server.py
+  ```
+
 ## Ollama agents
 
 Each of the 13 players is assigned one of `TEXT_MODELS` in
@@ -174,20 +198,58 @@ questions across many shows later (does the challenger-bias fix above
 actually hold at scale? does any one model out-perform the others over
 hundreds of duels?) without re-running anything.
 
-**The defender really does have a structural edge, not just bad luck.**
+**The defender had a real structural edge, not just bad luck.**
 `get_stats()` (`engine/history.py`) aggregates `player_stats`/`duels` by
 model (the only identity that actually persists across shows -- player_id,
-kingdom name, and profession are all redrawn fresh every run) for the new
-Standings page (`web/stats.html`, served at `/stats.html`, backed by the new
+kingdom name, and profession are all redrawn fresh every run) for the
+Standings page (`web/stats.html`, served at `/stats.html`, backed by
 `GET /api/stats` in `server.py`). Across the first 18 recorded shows (216
-duels), the defender won 56.5% of the time vs the challenger's 43.5% --
-`duel.py` tests "the DEFENDER's domain only" by design (Section 4), so the
-defender is answering a domain they already hold while the challenger is
-attacking into potentially unfamiliar territory. That's a real home-turf
-advantage baked into the rules as written, not an engine bug -- surfaced on
-the Standings page itself (a "home-turf" panel with the live split) so it
-stays visible as more shows get recorded, rather than something only
-discoverable by querying the db by hand.
+duels), the defender won 56.5% of the time vs the challenger's 43.5%.
+`duel.py` tests "the DEFENDER's domain only" by design (Section 4) -- that's
+not optional flavor, it's the only rule that makes sense narratively, since
+the territory actually at stake in every duel is always the defender's (the
+loser's land is what transfers to the winner). The real driver of the edge
+turned out to be `domain_record`/`_domain_familiarity_line`
+(`engine/models.py`/`ollama_agent.py`): a player who holds one piece of
+territory defends the SAME domain across every consecutive challenge
+against them, building a real, concentrated in-show track record ("you've
+already faced N questions here, M correct") that feeds straight into their
+next answer's prompt. A challenger's attacks, by contrast, are scattered
+across whatever domain each different target currently holds, so no single
+domain ever gets that same concentrated repeat exposure for them. That's a
+genuine structural asymmetry driven by land tenure, not a skill difference
+-- but Scott flagged it directly: "this should be a fair game, at least a
+level field."
+
+**First attempt, reverted:** Revision 20 tried coin-flipping which player's
+own currently-held domain got tested each duel. That genuinely would have
+balanced the odds, but Scott caught the real problem immediately: "it seems
+the challenges are taking place on the challenger's domain. that shouldn't
+be possible since they want to capture a different territory/domain."
+Correct -- testing the challenger's own land never made narrative sense
+regardless of the fairness math, since the challenger isn't fighting to
+defend their own territory in this duel at all.
+
+**Second attempt, also reverted (Revision 21, `engine/duel.py`):** the
+tested domain went back to always being the defender's, and instead the
+challenger got a flat, unconditional clock handicap
+(`CHALLENGER_HOME_TURF_HANDICAP`, 3 seconds on top of the 25s base clock)
+every single time they challenged, separate from and additive with the
+earned `time_bonus_banked` mechanic. This left the domain choice and
+territory inheritance untouched and just gave the structurally
+disadvantaged role a bit more room to work with.
+
+**Revision 22: the handicap was removed too.** After watching more shows
+with the live-vs-fallback answer counter (`web/index.html`'s
+`#modelActivityStat`), Scott: "honestly, I don't think they need that
+home-field advantage." `CHALLENGER_HOME_TURF_HANDICAP` is gone from
+`duel.py` and `game.py` entirely, not just zeroed out. The structural
+defender edge described above is real and still fully documented here, but
+the engine no longer tries to correct for it -- it's an accepted, known
+asymmetry of land tenure rather than a bug the clock has to compensate for.
+The Standings page's "home-turf" panel stays in place to keep tracking the
+live split across recorded shows, now purely as an observed stat rather
+than a tuning target.
 
 ## Layout
 

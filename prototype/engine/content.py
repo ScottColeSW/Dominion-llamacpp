@@ -34,7 +34,7 @@ done twice now) is just adding more entries in this same shape.
 """
 from __future__ import annotations
 from dataclasses import dataclass, replace
-from typing import List, Optional
+from typing import Dict, List, Optional
 import json
 import os
 import random
@@ -2543,3 +2543,65 @@ def pick_domains(count: int, rng: random.Random) -> List[Domain]:
 
 
 DOMAINS_BY_NAME = {d.name: d for d in DOMAIN_LIBRARY}
+
+# Revision 32 -- Scott's own examples of the kind of reasoning he wants
+# players to actually voice: "I can see how my knowledge of farms could
+# help me in oceans, they both have a lot of animals" and "as a farmer,
+# we don't have lizards but other reptiles do affect farms." Neither is
+# covered by PROFESSION_DOMAIN_AFFINITY (models.py), which only maps a
+# PROFESSION to a fixed shortlist of domains -- it has nothing to say
+# about two DOMAINS being related to each other regardless of anyone's
+# job. This is that missing layer: a broad, hand-grouped category per
+# domain, so a player whose real expertise and tonight's tested domain
+# just happen to share a category (Farm Animals / Ocean Animals: both
+# "Animals") can be told so directly and given a chance to reason about
+# it, even with no profession-based link at all. Deliberately coarse and
+# a little informal (this is a game show, not a taxonomy) -- the goal is
+# a small, plausible nudge for prompts, not a rigorous ontology.
+DOMAIN_CATEGORIES: Dict[str, str] = {
+    "Cats": "Animals", "Dogs": "Animals", "Ocean Animals": "Animals",
+    "Farm Animals": "Animals", "Zoo Animals": "Animals", "Birds": "Animals",
+    "Reptiles and Amphibians": "Animals", "Bugs and Insects": "Animals",
+    "Dinosaurs": "Animals",
+
+    "Pizza": "Food", "Ice Cream": "Food", "Grocery Store": "Food",
+    "Cooking and Kitchen": "Food", "Bakery and Bread": "Food",
+
+    "Autumn": "Nature and Seasons", "Rainbows": "Nature and Seasons",
+    "Weather": "Nature and Seasons", "Beach and Summer": "Nature and Seasons",
+    "Winter and Snow": "Nature and Seasons", "Flowers and Gardens": "Nature and Seasons",
+    "Camping": "Nature and Seasons",
+
+    "Bicycles": "Vehicles and Travel", "Cars and Trucks": "Vehicles and Travel",
+    "Trains": "Vehicles and Travel",
+
+    "Fair Grounds": "Play and Leisure", "Board Games": "Play and Leisure",
+    "Sports Balls": "Play and Leisure", "Playgrounds": "Play and Leisure",
+    "Circus": "Play and Leisure", "Swimming": "Play and Leisure",
+    "Birthdays": "Play and Leisure",
+
+    "Space and Planets": "Science and Discovery",
+
+    "Fairy Tales": "Stories and Make-Believe", "Pirates": "Stories and Make-Believe",
+
+    "Musical Instruments": "Arts and Music",
+
+    "School": "Work and Community", "Construction and Tools": "Work and Community",
+    "Firefighters": "Work and Community", "Community Helpers": "Work and Community",
+}
+
+
+def same_category(domain_a: str, domain_b: str) -> Optional[str]:
+    """The shared category name if both domains are grouped together in
+    DOMAIN_CATEGORIES above, or None if either domain is uncategorized or
+    they simply don't share one. None (not an exact-match check) is also
+    what's returned for domain_a == domain_b -- callers that need to
+    special-case "this is literally the same domain" should check that
+    themselves first, same_category is only ever meant to answer "is there
+    a plausible FAMILY resemblance between two DIFFERENT domains."
+    """
+    if domain_a == domain_b:
+        return None
+    cat_a = DOMAIN_CATEGORIES.get(domain_a)
+    cat_b = DOMAIN_CATEGORIES.get(domain_b)
+    return cat_a if cat_a and cat_a == cat_b else None

@@ -98,6 +98,35 @@ class Player:
     # players ever share the same personal expertise, the same way no two
     # tiles ever share the same board domain.
     origin_domain: str = ""
+    # Revision 29 -- Scott's "leave a note for your future self" idea: each
+    # live Ollama call is a fresh, stateless request (see ollama_agent.py's
+    # module docstring), so nothing about a player's OWN prior reasoning
+    # survives to their next turn unless it's explicitly written down and
+    # handed back to them -- like someone with anterograde amnesia relying
+    # on a notebook. Deliberately separate from GameState.memory
+    # (models.py -- shared across every player, engine-authored, and always
+    # factual, e.g. "Player 3 beat Player 7"): this is PRIVATE to this one
+    # player, and unlike the engine's log, it's the model's OWN claim about
+    # its own strategy, which can be wrong, stale, or overconfident. Capped
+    # short -- both in length per note (NOTE_MAX_CHARS in ollama_agent.py)
+    # and in count here -- so it stays a sticky note a future turn can
+    # glance at, not a growing, eventually-unreliable diary the model has to
+    # re-read and could double down on being wrong about.
+    private_notes: List[str] = field(default_factory=list)
+    PRIVATE_NOTE_LIMIT = 2
+
+    def remember_note(self, note: str) -> None:
+        if not note:
+            return
+        self.private_notes.append(note)
+        if len(self.private_notes) > self.PRIVATE_NOTE_LIMIT:
+            self.private_notes = self.private_notes[-self.PRIVATE_NOTE_LIMIT:]
+
+    def recent_notes_text(self) -> str:
+        """Oldest first, same convention as GameState.recent_history_text --
+        empty string if this player has never left themselves a note yet,
+        which every call site checks before adding anything to a prompt."""
+        return " / ".join(self.private_notes)
 
     def name_tag(self) -> str:
         return self.domain

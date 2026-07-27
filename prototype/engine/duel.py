@@ -1,7 +1,25 @@
 """Duel resolution: the chess-clock mechanic from Section 4 of the design
 doc, implemented exactly to the corrected Revision 19 rules.
 
-- Both players are tested on the DEFENDER's domain only.
+- Both players are tested on the DEFENDER's currently-held domain only --
+  this is the territory actually at stake (only the LOSER's land ever
+  transfers to the winner, and the defender is always whoever's land is
+  being attacked), so the trivia subject has to be the defender's domain,
+  full stop. Revision 20 briefly tried coin-flipping this between the
+  challenger's and defender's own domain to address a real, measured
+  structural edge, but Scott caught that it broke the actual conquest
+  fiction: "it seems the challenges are taking place on the challenger's
+  domain. that shouldn't be possible since they want to capture a different
+  territory/domain." He's right -- testing the challenger's own land never
+  made narrative sense regardless of the fairness math, so Revision 21
+  reverted this rule back to exactly what it always was and moved the
+  fairness fix to a compensating clock handicap (CHALLENGER_HOME_TURF_HANDICAP)
+  instead. Revision 22 then dropped that handicap too -- after watching more
+  shows with the new live-vs-fallback answer counter, Scott: "honestly, I
+  don't think they need that home-field advantage." The structural edge
+  documented in README.md is a real, known, accepted side effect of tying
+  domain to territory (see the module comment there), not something this
+  engine tries to correct for anymore.
 - Each player has an independent clock (25s, +5s if a time bonus is spent).
   Revision 18 shortened the base clock from 60s to 25s specifically to
   burn through duels faster and reduce how many times any single hot
@@ -53,6 +71,18 @@ doc, implemented exactly to the corrected Revision 19 rules.
   seconds, so the caller needs per-turn events as they happen to stream
   live, rather than the entire duel resolving silently before anything
   reaches the frontend.
+- on_before_attempt, if given, fires right before the real, potentially
+  slow agent.attempt_question call (never for a forced pass or a lucky
+  blurt, since neither one actually calls the agent) -- lets the caller
+  surface a "this player's live model is thinking right now" indicator for
+  the trivia-answering turns specifically. Previously the only
+  agent_thinking events game.py ever emitted were for the pre-duel
+  interview, target choice, push/retreat, and domain tax decisions -- the
+  actual question-answering turns, which are most of a live duel's real
+  wall-clock time, never got one at all, so nothing on screen (including
+  the Player Roster's own thinking indicator) ever reflected them. Scott:
+  "I'd expect it to be 'thinking' during the interviews and game
+  challenge" -- this was the "game challenge" half that was missing.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -71,6 +101,16 @@ QUESTION_CAP = 30  # total across BOTH players in one duel, not per-player
 # into "4.0"-looking float output despite every individual charge already
 # being a clean integer.
 BASE_CLOCK = 25
+# Revision 21 added CHALLENGER_HOME_TURF_HANDICAP here (a flat clock head
+# start for the challenger, compensating for domain_record/
+# _domain_familiarity_line's real accumulated-experience edge for whoever
+# currently holds a piece of land -- see README.md's home-turf section for
+# the full mechanism and the measured 56.5%/43.5% split it produces).
+# Revision 22 removed it again: after watching more shows with the new
+# live-vs-fallback answer counter, Scott: "honestly, I don't think they need
+# that home-field advantage." The structural edge is still real and still
+# documented, it's just no longer something this engine tries to patch --
+# an accepted, known asymmetry rather than a bug to compensate for.
 # A live model's "pass" is entirely voluntary -- attempt_question only
 # registers one if the model's reply literally starts with "PASS" (see
 # ollama_agent.py). A model that never volunteers that word can otherwise
@@ -160,6 +200,7 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
              used_questions: Optional[Set[Tuple[str, str]]] = None,
              base_clock: int = BASE_CLOCK, question_cap: int = QUESTION_CAP,
              on_turn: Optional[Callable[[Dict[str, Any]], None]] = None,
+             on_before_attempt: Optional[Callable[[int, str], None]] = None,
              game: Optional[GameState] = None) -> DuelResult:
     # game (added for the "agents get smarter as they play" feature) is
     # passed straight through to agent.attempt_question below so a live
@@ -181,7 +222,30 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
     turn_order = [challenger.id, defender.id]
     players_by_id = {challenger.id: challenger, defender.id: defender}
     current = 0  # index into turn_order; challenger acts first
-    miss_streak = 0  # consecutive incorrect-or-passed attempts on this turn
+    miss_streak = 0  # consecutive incorrect-or-passed attempts on this turn (across ANY question)
+    # Scoped specifically to consecutive WRONG GUESSES on the CURRENT
+    # question -- separate from miss_streak above, which was being used for
+    # both purposes and let the two collide: FORCED_PASS_MISS_STREAK was
+    # documented as "consecutive misses on ONE question" but miss_streak
+    # itself never resets on a pass (only on a correct answer), so a player
+    # who passed a few times in a row could hit the forced-pass threshold
+    # and then never be offered a real attempt again -- attempt_question
+    # stops getting called at all once forced, so there's no path back to a
+    # correct answer to reset it, guaranteeing passes until the clock hits
+    # zero. Confirmed live: exactly Scott's report of an agent "falling
+    # into a pass loop and ending up losing." question_miss_streak resets
+    # to 0 on every fresh question (a pass OR a correct answer both draw a
+    # new one), so a run of voluntary passes can never itself trigger the
+    # forced-pass safety net -- only genuinely repeated wrong guesses AT
+    # THE SAME QUESTION can, which is what this was always meant to catch.
+    question_miss_streak = 0
+    # Wrong guesses already given for the CURRENT question by the CURRENT
+    # player -- reset alongside question_miss_streak whenever a fresh
+    # question comes up. Scott: "agents are repeating guesses." Neither
+    # agent previously had any memory of what it had already tried and
+    # gotten wrong on this exact question, so nothing stopped the same
+    # wrong answer coming back around on a later attempt.
+    previously_wrong: Set[str] = set()
     total_seen = 0  # combined attempts across BOTH players this duel
 
     question = _draw_question(domain, used_questions, rng)
@@ -193,7 +257,7 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
         player = players_by_id[pid]
 
         lucky_blurt = False
-        if miss_streak >= FORCED_PASS_MISS_STREAK:
+        if question_miss_streak >= FORCED_PASS_MISS_STREAK:
             # The agent doesn't get asked at all this turn -- forced past
             # the point where a stubborn live model would otherwise keep
             # guessing the same image wrong forever. A flat time cost (a
@@ -222,9 +286,11 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
             # the duel visibly drags on past when the audience already
             # expects it to end. ScriptedAgent ignores this; it's never
             # slow enough to matter.
+            if on_before_attempt is not None:
+                on_before_attempt(pid, player.model)
             attempt = agent.attempt_question(player, question, domain, miss_streak=miss_streak,
                                               distractors=distractors, time_remaining=clocks[pid],
-                                              game=game)
+                                              game=game, previously_wrong=previously_wrong)
 
         clocks[pid] -= attempt.seconds_used
         seen[pid] += 1
@@ -272,15 +338,28 @@ def run_duel(challenger: Player, defender: Player, domain: Domain,
         if attempt.correct:
             current = 1 - current  # turn passes to the other player
             miss_streak = 0
+            question_miss_streak = 0
+            previously_wrong = set()
             question = _draw_question(domain, used_questions, rng)
             distractors = _pick_distractors(domain, question, rng)
         elif attempt.outcome == "passed":
             # Deliberate skip: same player continues, but they get a new
-            # image, exactly what passing is for.
+            # image, exactly what passing is for. question_miss_streak
+            # resets here too (a fresh question means zero wrong guesses
+            # against it so far) -- this is what stops a run of passes
+            # from ever tripping the forced-pass safety net on its own;
+            # only repeated wrong guesses AT ONE question can do that now.
             miss_streak += 1
+            question_miss_streak = 0
+            previously_wrong = set()
             question = _draw_question(domain, used_questions, rng)
             distractors = _pick_distractors(domain, question, rng)
         else:
             # Plain wrong answer: same player, same image, another crack
-            # at the thing they just missed.
+            # at the thing they just missed. Remember the guess itself so
+            # attempt_question's next call for this exact question can
+            # steer away from repeating it -- see previously_wrong above.
             miss_streak += 1
+            question_miss_streak += 1
+            if attempt.guess:
+                previously_wrong.add(attempt.guess)

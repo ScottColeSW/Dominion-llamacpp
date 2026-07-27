@@ -42,15 +42,9 @@
   #startBtn:hover:not(:disabled) { transform: scale(1.04); }
   #startBtn:disabled { opacity: 0.6; cursor: default; }
   #status { color: var(--dim); margin-top: 14px; min-height: 20px; }
-  /* Pre-show viewer prediction -- Scott: "maybe a human could make a
-     prediction before the game starts, like maybe the model that will win
-     or player #." The draft (and which model lands on which player number)
-     doesn't happen until after Start is clicked, so player NUMBER is the
-     only thing that can actually be predicted at this point -- picking a
-     number here is a bet on that draft slot. Purely optional: Start works
-     fine with no pick made. */
-  #predictionPanel { margin: 22px 0 4px; }
-  #predictionPanel .prediction-label {
+  /* Viewer prediction, now shown post-draft in #predictionOverlay (see that
+     element's own comment further down) rather than pre-Start. */
+  .prediction-label {
     color: var(--dim); letter-spacing: 1px; font-size: 0.85em;
     text-transform: uppercase; margin-bottom: 10px;
   }
@@ -68,6 +62,48 @@
     border-color: var(--gold); box-shadow: 0 0 14px rgba(245,197,66,0.6);
   }
   #predictionStatus { color: var(--dim); font-size: 0.85em; margin-top: 10px; min-height: 18px; }
+  /* Replaces the old pre-Start prediction spot in #heroStage -- just a
+     quiet heads-up that the real pick happens once the roster (real names/
+     models/domains) actually exists. */
+  #predictionHint { color: var(--dim); font-size: 0.85em; margin-top: 18px; font-style: italic; }
+  /* Live (polled, not a one-time check) Ollama status on the title screen
+     -- Scott: the in-show roster panel's "Ollama offline" note turned out
+     to be misleading mid-show (Ollama can be genuinely busy serving a real
+     generate() call, which starves the lightweight /api/tags status check
+     for several seconds, reading as "offline" even while live answers are
+     actively coming through elsewhere) -- but the title screen, checked
+     BEFORE the show starts and before anything is asking Ollama for
+     anything, is exactly the moment this reading is trustworthy.
+     Revision 31 -- this used to pair with a "Start Ollama" button that
+     silently launched `ollama serve` as a background process (server.py's
+     try_start_ollama). Scott: it "started via a terminal popup
+     unexpectedly... we simply need to tell them to run the setup.py" --
+     dropped the whole silent-launch approach in favor of just telling the
+     person what to do in their own terminal, fully transparent, no
+     surprise windows. Only text now, no button. Revision 30's duplication
+     onto #preShowTitleCard (so this is visible before the very first
+     click/tap, not just after) is unaffected by this change. */
+  #ollamaStatus, #preShowOllamaStatus { margin-top: 14px; font-size: 0.85em;
+    text-align: center; }
+  .ollama-online { color: #7ee787; }
+  .ollama-offline { color: #ff8080; }
+  .ollama-checking { color: var(--dim); }
+  /* The post-draft prediction popup (Revision 22) -- same visual treatment
+     as #newGameOverlay (dim backdrop, centered gold-bordered card) since
+     it's the same kind of "the show pauses here for you" moment. */
+  #predictionOverlay {
+    position: fixed; inset: 0; background: rgba(5,2,12,0.75);
+    display: none; align-items: center; justify-content: center; z-index: 1000;
+  }
+  #predictionOverlay.show { display: flex; animation: overlayFade .4s ease; }
+  #predictionOverlay .prediction-label { margin-top: 6px; }
+  #predictionContinueBtn {
+    margin-top: 18px; font-size: 1.05em; padding: 12px 32px; border-radius: 40px;
+    border: none; background: linear-gradient(90deg, var(--gold), #ffd76b);
+    color: #1a1024; font-weight: 700; cursor: pointer; letter-spacing: 1px;
+    box-shadow: 0 0 24px rgba(245,197,66,0.5);
+  }
+  #predictionContinueBtn:hover { transform: scale(1.03); }
   /* The finale card's own callout on whether the pick paid off -- distinct
      green/red treatment so it reads at a glance next to the champion
      reveal, rather than blending into the rest of the recap text. */
@@ -102,6 +138,18 @@
   /* The "vertical slice" control panel: Mute All + Fast Forward, pinned to
      the left edge so it's always reachable regardless of how far the page
      has scrolled, roughly level with the Challenge Stage. */
+  /* Pause: freezes every CSS keyframe animation on the page in one shot
+     (idle blink, badge pulse, amphitheater bounce, sparkle twinkle, the
+     toddle walk-in/out, everything) the instant this class lands on body
+     -- Scott: "a pause button which stops all the action." Paired in JS
+     with sleep() itself waiting on the same pause gate (freezes event/
+     narrative progress), speechSynthesis.pause() (freezes the host/
+     player voice mid-word), and ramping masterGain to 0 (silences Web
+     Audio music/sound instantly) -- see setPaused() below. !important is
+     load-bearing here: this needs to override every animation's own
+     explicit duration/timing declared elsewhere in this file. */
+  body.show-paused, body.show-paused * { animation-play-state: paused !important; }
+
   #controlPanel {
     position: fixed; left: 12px; top: 140px; z-index: 800;
     display: flex; flex-direction: column; gap: 8px;
@@ -123,6 +171,7 @@
   #quitBtn { color: var(--red); border-color: #5c2430; }
   #quitBtn:hover:not(:disabled) { border-color: var(--red); box-shadow: 0 0 10px rgba(224,85,95,0.35); }
   #quitBtn:disabled { opacity: 0.4; cursor: default; transform: none !important; }
+  #pauseBtn:disabled { opacity: 0.4; cursor: default; transform: none !important; }
   /* Standings link styled to match the control panel's own buttons, since
      it lives in the same fixed panel and does the same kind of job
      (a persistent, always-reachable control) even though it's an <a>,
@@ -140,6 +189,77 @@
        than overlapping it. */
     #controlPanel { left: 4px; top: auto; bottom: 12px; flex-direction: row; }
   }
+
+  /* The model roster: a small persistent status panel listing the actual
+     local Ollama models tonight's show draws from (engine/ollama_agent.py's
+     TEXT_MODELS), each with a human-readable name, parameter size, and an
+     online/offline dot -- Scott's ask after running `ollama ps` himself and
+     seeing nothing listed: "can we have list on the left, under the
+     controls, of the agents/model running, parameters." A plain child of
+     #controlPanel (same flex column, same gap) rather than a second fixed
+     panel with its own hand-tuned top offset -- it just stacks under the
+     existing buttons automatically, which is a more literal reading of
+     "under the controls" anyway. */
+  #modelRoster {
+    margin-top: 2px; padding: 10px 12px; border-radius: 10px;
+    border: 1px solid #35234f; background: var(--card);
+    box-shadow: 0 2px 10px rgba(0,0,0,0.4);
+    display: flex; flex-direction: column; gap: 7px;
+    /* Wider than the plain button column above it -- once the kingdom
+       name is appended (Scott: "P1: Llama 3.2 3.2B, Kingdom"), a row
+       routinely runs longer than any control label, so the panel needs
+       real room instead of forcing an early wrap. */
+    width: 220px;
+  }
+  .model-roster-label {
+    color: var(--dim); text-transform: uppercase; letter-spacing: 1.5px;
+    font-size: 0.68em; font-weight: 700;
+  }
+  .model-roster-row {
+    display: flex; align-items: baseline; gap: 5px; flex-wrap: wrap;
+    font-size: 0.75em;
+  }
+  .model-roster-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    background: var(--dim);
+  }
+  /* A slow pulse on the online dot specifically -- a flat colored dot
+     among a column of static buttons reads as decoration rather than a
+     live status; the pulse is what actually says "this is a live check,
+     not a label." */
+  .model-roster-dot.online { background: var(--green); box-shadow: 0 0 6px rgba(88,209,143,0.8); animation: rosterDotPulse 2.4s ease-in-out infinite; }
+  .model-roster-dot.offline { background: var(--red); }
+  @keyframes rosterDotPulse {
+    0%, 100% { opacity: 1; } 50% { opacity: 0.45; }
+  }
+  /* Scott: "I thought the green online indicator would simply toggle to
+     the brain when thinking instead of a separate line" -- the dot itself
+     becomes the thinking indicator now (a brain emoji, pulsing) rather than
+     staying a plain circle with a whole extra line appended below it. Only
+     ever applied on top of the existing online/offline classes (isThinking
+     implies online -- a model can't be mid-call if Ollama's unreachable),
+     so no separate color logic needed here. */
+  .model-roster-dot.thinking {
+    width: auto; height: auto; border-radius: 0; background: none;
+    box-shadow: none; font-size: 9px; line-height: 8px;
+    animation: rosterThinkingPulse 1.1s ease-in-out infinite;
+  }
+  @keyframes rosterThinkingPulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+  .model-roster-name { color: var(--text); font-weight: 600; }
+  .model-roster-params { color: var(--dim); }
+  /* Only present in the per-player view (see renderModelRosterPlayers) --
+     "P1", "P2", etc. ahead of the model name, so the panel doubles as
+     proof each of the 13 contestants really is a distinct agent rather
+     than a name pulled from the same pool. */
+  .model-roster-player { color: var(--gold); font-weight: 700; }
+  /* The kingdom name trailing each row, per Scott's requested format --
+     dimmer than the model name/params since it's context, not the
+     headline, but still distinct from the plain dim status text. */
+  .model-roster-kingdom { color: var(--text); font-style: italic; opacity: 0.85; }
+  /* Shown in place of the per-model rows while the very first /api/models
+     fetch is still in flight, and again if it fails outright (e.g. the
+     server itself unreachable) -- never leaves the panel silently blank. */
+  .model-roster-status { color: var(--dim); font-size: 0.72em; font-style: italic; }
   #playersRemaining {
     color: var(--gold); font-weight: 700; letter-spacing: 1px; font-size: 1.3em;
     margin-top: 10px; text-align: center; min-height: 1.4em;
@@ -274,6 +394,23 @@
     display: flex; flex-direction: column; align-items: center; gap: 6px;
     padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid #2c1f45;
     flex-shrink: 0;
+    /* Anchors .aud-sparkle's absolute positioning to this box specifically,
+       not the page -- see sparkleAudience below. */
+    position: relative;
+  }
+  /* A quick sparkle burst over the crowd itself when a player does well --
+     Scott's ask, deliberately smaller/more frequent than spawnConfetti's
+     full-page rain (reserved for an actual duel win/upset), so an ordinary
+     correct answer still gets a little visible "the crowd likes that"
+     flourish without it feeling like the big celebration. */
+  .aud-sparkle {
+    position: absolute; font-size: 15px; pointer-events: none;
+    animation: sparklePop 900ms ease-out forwards;
+  }
+  @keyframes sparklePop {
+    0%   { opacity: 0; transform: translateY(4px) scale(0.4) rotate(0deg); }
+    30%  { opacity: 1; transform: translateY(-6px) scale(1.15) rotate(50deg); }
+    100% { opacity: 0; transform: translateY(-28px) scale(0.7) rotate(100deg); }
   }
   .aud-row { display: flex; justify-content: center; gap: 7px; }
   .aud-row.back { gap: 10px; opacity: 0.65; }
@@ -286,16 +423,25 @@
   .aud-head.react { animation: audBob .5s ease; }
   @keyframes audBob { 0% { transform: translateY(var(--arc, 0px)); } 40% { transform: translateY(calc(var(--arc, 0px) - 4px)); } 100% { transform: translateY(var(--arc, 0px)); } }
   /* Back to being a plain inner block nested inside .audience-panel, same
-     as originally -- the panel itself provides the box/border now. Kept a
-     max-height + scroll (new) so a long chatter history can't grow the
-     whole left column taller than the board sitting next to it. */
+     as originally -- the panel itself provides the box/border now.
+     Scott's explicit correction on an earlier attempt at this: no
+     scrollbar at all -- the feed should just stop right at the board's own
+     height (via #lowerRow's align-items: stretch above). Revision 22: new
+     lines land at the TOP now (Scott: "the crowd updates should roll from
+     top down, newest at the top"), so older lines quietly fall off the
+     BOTTOM instead of ever needing to scroll to see them -- see
+     addChatterLine's insertBefore/removeChild(lastChild). overflow: hidden
+     (not auto) is what actually delivers that -- content past the box's
+     real rendered height is simply clipped, and addChatterLine's own
+     MAX_CHATTER_LINES trim keeps the DOM from growing unbounded regardless
+     of how tall that box happens to be. */
   .chatter-feed {
     display: flex; flex-direction: column; gap: 4px; min-height: 1.4em;
-    /* Fills whatever vertical room is left in the (now height-stretched)
+    /* Fills whatever vertical room is left in the (height-stretched)
        audience panel instead of stopping at a fixed 280px -- flex: 1 with
-       min-height: 0 is what lets a flex child actually shrink/scroll
-       within its parent rather than forcing the parent taller. */
-    flex: 1 1 auto; min-height: 0; overflow-y: auto;
+       min-height: 0 is what lets a flex child actually shrink within its
+       parent rather than forcing the parent taller. */
+    flex: 1 1 auto; min-height: 0; overflow: hidden;
   }
   .chatter-line {
     font-size: 0.88em; color: var(--dim); animation: chatterIn .3s ease both;
@@ -377,6 +523,41 @@
   }
   .finale-stat-label:first-child { margin-top: 0; }
   .finale-stat-divider { width: 70%; height: 1px; background: rgba(245,197,66,0.25); margin: 8px 0 0; }
+
+  /* --- A silent 3-second title-only card, shown before ANYTHING else on
+     the page (present in the initial markup itself, not added by JS, so
+     there's zero flash of the stage set underneath before it) -- Scott's
+     ask: a fixed window to start screen recording before the stage set
+     (Start button, host banner, board area) or the host's voice appears
+     at all. Solid background, opaque, highest z-index on the page -- it
+     doesn't matter that the real page is already rendered behind it. --- */
+  #preShowTitleCard {
+    position: fixed; inset: 0; z-index: 1200; background: #050208;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    transition: opacity .6s ease;
+  }
+  #preShowTitleCard.fade { opacity: 0; pointer-events: none; }
+  .pre-show-title {
+    font-size: 3.2em; font-weight: 900; letter-spacing: 6px; color: var(--gold);
+    text-shadow: 0 0 30px rgba(245,197,66,0.5);
+  }
+  .pre-show-subtitle {
+    font-size: 1.1em; letter-spacing: 3px; color: var(--dim); margin-top: 10px; text-transform: uppercase;
+  }
+  /* Browsers block audio until a real user gesture unlocks it (see
+     waitForFirstInteraction below) -- Scott's report ("the host didn't
+     speak until I clicked an empty part of the screen") was this
+     requirement being invisible: nothing on screen said a click/tap was
+     needed, so it just read as a silent, seemingly broken host. Hidden
+     until the 3s title-card window has passed with no interaction yet, so
+     it doesn't clutter the very first instant someone lands on the page,
+     then pulses to actually draw the eye. */
+  .pre-show-hint {
+    font-size: 0.85em; letter-spacing: 1px; color: var(--gold); margin-top: 26px;
+    opacity: 0; transition: opacity .4s ease;
+  }
+  .pre-show-hint.show { opacity: 1; animation: preShowHintPulse 1.6s ease-in-out infinite; }
+  @keyframes preShowHintPulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
 
   /* --- Pre-production curtain intro: a real "Hollywood" open, not just a
      plain panel slide -- velvet-textured curtains, sweeping spotlight
@@ -646,16 +827,32 @@
      need to walk up again): the face toddles a short distance forward into
      its badge spot, rocking side to side like a real little waddle,
      instead of just appearing already in place. */
-  .player-face.toddle-in { animation: faceToddleIn 0.9s ease-out both; }
+  .player-face.toddle-in { animation: faceToddleIn 1.7s ease-out both; }
   @keyframes faceToddleIn {
-    0%   { transform: translateX(-26px) rotate(0deg); }
-    12%  { transform: translateX(-21px) rotate(-9deg); }
-    26%  { transform: translateX(-16px) rotate(7deg); }
-    40%  { transform: translateX(-11px) rotate(-8deg); }
-    54%  { transform: translateX(-7px)  rotate(6deg); }
-    68%  { transform: translateX(-4px)  rotate(-5deg); }
-    82%  { transform: translateX(-1px)  rotate(3deg); }
+    0%   { transform: translateX(-90px) rotate(0deg); }
+    10%  { transform: translateX(-78px) rotate(-10deg); }
+    20%  { transform: translateX(-64px) rotate(8deg); }
+    30%  { transform: translateX(-50px) rotate(-9deg); }
+    40%  { transform: translateX(-37px) rotate(7deg); }
+    50%  { transform: translateX(-26px) rotate(-7deg); }
+    60%  { transform: translateX(-17px) rotate(6deg); }
+    70%  { transform: translateX(-10px) rotate(-5deg); }
+    80%  { transform: translateX(-5px)  rotate(4deg); }
+    90%  { transform: translateX(-1px)  rotate(-2deg); }
     100% { transform: translateX(0)     rotate(0deg); }
+  }
+  /* A literal traveling marker for the same freshly-spotlighted-challenger
+     moment above -- Scott: "it would be cool if they walked off the board
+     and into the other badge." Positioned fixed (viewport coordinates,
+     matching getBoundingClientRect) so it can cross from the actual board
+     tile all the way to the duel stage badge, which the toddle-in waddle
+     above can't do on its own since that's just a short local slide
+     within the badge box itself. See flyToStage. */
+  .board-travel-avatar {
+    position: fixed; width: 18px; height: 18px; border-radius: 50%;
+    z-index: 1100; pointer-events: none;
+    box-shadow: 0 0 10px rgba(245,197,66,0.7), 0 2px 6px rgba(0,0,0,0.5);
+    transition: left .85s cubic-bezier(.4,0,.2,1), top .85s cubic-bezier(.4,0,.2,1);
   }
   /* Three distinct facts about the player, deliberately kept visually
      separate: real-world profession (job), chosen expertise (the domain
@@ -701,6 +898,14 @@
   }
   .bonus-badge.show { display: inline-block; }
   @keyframes badgePulse { 0%, 100% { box-shadow: 0 0 0 2px rgba(245,197,66,0.4), 0 0 0 rgba(245,197,66,0.6); } 50% { box-shadow: 0 0 0 2px rgba(245,197,66,0.4), 0 0 14px rgba(245,197,66,0.9); } }
+  /* Revision 21 briefly added a static .handicap-tag label here to explain
+     an unconditional clock handicap for challengers. Revision 22 removed
+     the handicap mechanic entirely (Scott, after watching more shows with
+     the live-vs-fallback answer counter: "honestly, I don't think they
+     need that home-field advantage") -- see duel.py's BASE_CLOCK comment
+     and README.md's home-turf section for the full history. The defender's
+     structural edge (domain_record/_domain_familiarity_line) is real and
+     documented, just no longer something the engine corrects for. */
   /* The winner tag: hidden until a duel resolves, then flashed on the
      winning side before the stage closes, so the win itself gets its own
      visible beat instead of jumping straight to the next card. */
@@ -722,15 +927,23 @@
      reaction beat still plays over an occupied stage (Scott's earlier
      "the host often reacts but the players have gone already" fix stays
      intact -- the winner is still there, spotlighted). */
-  .duel-player.eliminated-left { animation: toddleOffLeft 0.9s ease-in forwards; }
-  .duel-player.eliminated-right { animation: toddleOffRight 0.9s ease-in forwards; }
+  .duel-player.eliminated-left { animation: toddleOffLeft 1.6s ease-in forwards; }
+  .duel-player.eliminated-right { animation: toddleOffRight 1.6s ease-in forwards; }
   @keyframes toddleOffLeft {
-    0% { transform: translateX(0) rotate(0deg); opacity: 1; }
-    100% { transform: translateX(-140%) rotate(-14deg); opacity: 0; }
+    0%   { transform: translateX(0)     rotate(0deg);   opacity: 1; }
+    15%  { transform: translateX(-20%)  rotate(-8deg);  opacity: 1; }
+    30%  { transform: translateX(-45%)  rotate(6deg);   opacity: 1; }
+    50%  { transform: translateX(-75%)  rotate(-10deg); opacity: 0.9; }
+    75%  { transform: translateX(-115%) rotate(8deg);   opacity: 0.5; }
+    100% { transform: translateX(-170%) rotate(-16deg); opacity: 0; }
   }
   @keyframes toddleOffRight {
-    0% { transform: translateX(0) rotate(0deg); opacity: 1; }
-    100% { transform: translateX(140%) rotate(14deg); opacity: 0; }
+    0%   { transform: translateX(0)     rotate(0deg);  opacity: 1; }
+    15%  { transform: translateX(20%)   rotate(8deg);  opacity: 1; }
+    30%  { transform: translateX(45%)   rotate(-6deg); opacity: 1; }
+    50%  { transform: translateX(75%)   rotate(10deg); opacity: 0.9; }
+    75%  { transform: translateX(115%)  rotate(-8deg); opacity: 0.5; }
+    100% { transform: translateX(170%)  rotate(16deg); opacity: 0; }
   }
   /* A stronger, more deliberate re-spotlight on the winner once they're
      alone on stage -- distinct from the more modest .victory glow so
@@ -854,6 +1067,25 @@
 </style>
 </head>
 <body>
+  <div id="preShowTitleCard">
+    <div class="pre-show-title">DOMINION</div>
+    <div class="pre-show-subtitle">Agent vs. Agent</div>
+    <!-- Revision 30 -- Scott: "I wanted that choice on the 'tap to start'
+         page to be really upfront and prepped." The Ollama ready/offline
+         check (task #172) originally only lived inside #heroStage, which
+         sits BEHIND this very card and stays hidden until the first
+         click/tap dismisses it -- so whether tonight's live models are
+         even reachable went unseen until after that first interaction.
+         Duplicated here instead, visible the instant the page loads,
+         before anyone has touched anything -- see renderOllamaStartCheck(),
+         which drives both this element and #heroStage's original one
+         together. Revision 31 dropped the button that used to sit next to
+         this (see that revision's CSS comment) -- text only now. -->
+    <div id="preShowOllamaStatus">
+      <span id="preShowOllamaStatusText" class="ollama-checking">Checking Ollama…</span>
+    </div>
+    <div class="pre-show-hint" id="preShowHint">Click or tap anywhere to begin</div>
+  </div>
   <div id="curtainOverlay">
     <div class="curtain-beams"></div>
     <div class="curtain-sparkles" id="curtainSparkles"></div>
@@ -866,9 +1098,23 @@
 
   <div id="controlPanel">
     <button id="muteBtn" title="Silence all sound">&#128263; Mute All</button>
+    <button id="pauseBtn" disabled title="Freeze all show action -- resumes exactly where it left off">&#9208; Pause</button>
     <button id="ffBtn" title="Speed through presentation pacing (not real model wait time)">&#9193; Fast Forward</button>
     <a id="standingsLink" href="/stats.html" target="_blank" rel="noopener noreferrer" title="Model stats and standings across every recorded show">&#127942; Standings</a>
     <button id="quitBtn" disabled title="Stop the current show and return to the start screen">&#9209; Quit / Halt</button>
+    <div id="modelRoster" title="The local Ollama models tonight's contestants draw from">
+      <div class="model-roster-label">Player Roster</div>
+      <div id="modelRosterList"><div class="model-roster-status">Checking...</div></div>
+      <!-- Scott: "is the first run somehow different?... running ollama ps
+           shows only 1 model running... wtf?" -- a real, running tally of
+           how many trivia answers actually came back from a live Ollama
+           call vs. silently fell back to scripted (see duel_turn's `live`
+           field, engine/agents.py's AnswerAttempt), so this is checkable
+           from the show itself instead of only from the outside via
+           `ollama ps` (which only ever shows whatever's CURRENTLY loaded,
+           not a running total of what's actually been called). -->
+      <div id="modelActivityStat" class="model-roster-status"></div>
+    </div>
   </div>
 
   <h1>DOMINION</h1>
@@ -895,10 +1141,15 @@
   <div id="heroStage">
     <button id="startBtn">START SHOW</button>
     <div id="status"></div>
-    <div id="predictionPanel">
-      <div class="prediction-label">Optional: predict the champion by player number</div>
-      <div id="predictionGrid"></div>
-      <div id="predictionStatus">No prediction made</div>
+    <!-- Revision 22: Scott: "it would be better to let the human pick the
+         prediction after player roster is set." The pick used to happen
+         right here, before Start, when nothing but a player NUMBER existed
+         to bet on -- moved to #predictionOverlay instead, which opens once
+         the draft actually finishes and every player has a real kingdom
+         name, model, and domain to make an informed guess from. -->
+    <div id="predictionHint">You'll get to predict the champion once tonight's roster is set.</div>
+    <div id="ollamaStatus">
+      <span id="ollamaStatusText" class="ollama-checking">Checking Ollama…</span>
     </div>
   </div>
 
@@ -998,12 +1249,34 @@
     </div>
   </div>
 
+  <!-- Revision 22: Scott: "it would be better to let the human pick the
+       prediction after player roster is set." Opens once the draft
+       actually finishes (every player has a real kingdom name, model, and
+       domain -- see runShowPlayback's draw_assignment handler, fired when
+       remaining_after hits 0), instead of the old spot before Start where
+       only a bare player NUMBER existed to bet on. Same underlying
+       viewerPrediction/activeShowPrediction state and #predictionGrid/
+       #predictionStatus elements as before, just relocated into this
+       overlay and populated with real info once it's actually known. -->
+  <div id="predictionOverlay">
+    <div class="overlay-box">
+      <div class="overlay-title">The roster is set. Who takes the crown?</div>
+      <div class="prediction-label">Optional: tap a player to predict the champion</div>
+      <div id="predictionGrid"></div>
+      <div id="predictionStatus">No prediction made</div>
+      <button id="predictionContinueBtn">LOCK IT IN &amp; CONTINUE</button>
+    </div>
+  </div>
+
 <script>
 const startBtn = document.getElementById('startBtn');
 const heroStage = document.getElementById('heroStage');
+const preShowTitleCard = document.getElementById('preShowTitleCard');
+const preShowHint = document.getElementById('preShowHint');
 const predictionGridEl = document.getElementById('predictionGrid');
 const predictionStatusEl = document.getElementById('predictionStatus');
 const muteBtn = document.getElementById('muteBtn');
+const pauseBtn = document.getElementById('pauseBtn');
 const ffBtn = document.getElementById('ffBtn');
 const statusEl = document.getElementById('status');
 const playersRemainingEl = document.getElementById('playersRemaining');
@@ -1061,6 +1334,84 @@ const quitBtn = document.getElementById('quitBtn');
 const BASE_CLOCK = 25;
 const BONUS_SECONDS = 5;
 
+// --- Pause: freezes forward progress of the show (event pacing, speech,
+// music/sound, the duel clock, rapid-fire blurts, and every CSS
+// animation via the .show-paused rule above) without cancelling the run
+// -- distinct from Quit/Halt, which aborts the show entirely and can't be
+// resumed. Scott's ask: "a pause button which stops all the action."
+// pauseWaiters holds resolver functions for every in-flight sleep() call
+// (and anything else that awaits waitWhilePaused()) that's currently
+// blocked waiting on a pause to lift; resolving them all on resume is
+// what lets dozens of concurrently-awaited timers pick back up at once.
+let isPaused = false;
+let pauseWaiters = [];
+// Total real time spent paused so far this show, plus (while a pause is
+// actively in progress) time since THIS pause began -- pausedAwareElapsed
+// subtracts both from a raw Date.now() delta so anything timing itself
+// against real elapsed time (the duel clock, the blurt cycle) freezes in
+// place instead of "catching up" the instant the pause lifts.
+let pausedAccumulatedMs = 0;
+let currentPauseStartedAt = null;
+// Running total of ALL pause time since the show started, past pauses
+// included -- callers must NOT subtract this raw total against their own
+// elapsed-since-I-started clock (see pausedAwareElapsed below for why).
+function totalPausedMs() {
+  let paused = pausedAccumulatedMs;
+  if (isPaused && currentPauseStartedAt !== null) paused += Date.now() - currentPauseStartedAt;
+  return paused;
+}
+// Bug Scott caught: "if you press pause and let it sit, the time in pause
+// is added to the player's clock once unpaused" -- everything else reacted
+// perfectly, only the clocks were wrong. Root cause: pausedAwareElapsed used
+// to subtract totalPausedMs() (the show's ENTIRE pause history) from every
+// timer's elapsed-since-its-own-start value, not just pause time that
+// actually happened during THAT timer's own run. A single early pause in
+// duel 1 permanently poisoned every later duel's clock animation for the
+// rest of the show: each new animateClock call sets its own fresh `start =
+// Date.now()`, but the old code still subtracted the FULL historical pause
+// total, which could easily exceed the real elapsed time since this new
+// `start`, driving the computed elapsed negative and making the displayed
+// clock read higher than its true value (visually "gaining" time) until
+// enough real time finally passed to outrun the stale deficit.
+// Fix: callers now capture a pausedBaseline snapshot (totalPausedMs() at
+// the moment their own `start` is set) and pass it in here; only the DELTA
+// of pause time accrued SINCE that baseline is ever subtracted, so a pause
+// from three duels ago can no longer bleed into this one.
+function pausedAwareElapsed(startedAt, pausedBaseline = 0) {
+  return Date.now() - startedAt - (totalPausedMs() - pausedBaseline);
+}
+function waitWhilePaused() {
+  if (!isPaused) return Promise.resolve();
+  return new Promise(resolve => pauseWaiters.push(resolve));
+}
+// Remembers whether audio was ALREADY muted (via the separate Mute All
+// button) before this pause started, so resuming restores that prior
+// state correctly instead of always unmuting.
+let wasMutedBeforePause = false;
+function setPaused(next) {
+  if (next === isPaused) return;
+  isPaused = next;
+  document.body.classList.toggle('show-paused', isPaused);
+  pauseBtn.classList.toggle('active', isPaused);
+  pauseBtn.textContent = isPaused ? '▶ Resume' : '⏸ Pause';
+  if (isPaused) {
+    currentPauseStartedAt = Date.now();
+    if (window.speechSynthesis) speechSynthesis.pause();
+    wasMutedBeforePause = muted;
+    const ctx = getAudioCtx();
+    if (ctx && masterGain && !muted) masterGain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.05);
+  } else {
+    pausedAccumulatedMs += Date.now() - currentPauseStartedAt;
+    currentPauseStartedAt = null;
+    if (window.speechSynthesis) speechSynthesis.resume();
+    const ctx = getAudioCtx();
+    if (ctx && masterGain && !wasMutedBeforePause) masterGain.gain.linearRampToValueAtTime(1, ctx.currentTime + 0.05);
+    const waiters = pauseWaiters;
+    pauseWaiters = [];
+    waiters.forEach(resolve => resolve());
+  }
+}
+
 function hexToRgba(hex, alpha) {
   const r = parseInt(hex.substr(0, 2), 16), g = parseInt(hex.substr(2, 2), 16), b = parseInt(hex.substr(4, 2), 16);
   return `rgba(${r},${g},${b},${alpha})`;
@@ -1078,7 +1429,12 @@ function fmtMoney(n) { return '$' + n.toLocaleString('en-US'); }
 // shows the level it's currently at, not just "on".
 const FF_LEVELS = [1, 2, 4];
 let ffLevelIndex = 0;
-function sleep(ms) { return new Promise(r => setTimeout(r, ms / FF_LEVELS[ffLevelIndex])); }
+// Chained through waitWhilePaused (see the Pause block above) so every one
+// of the hundreds of sleep() calls throughout this file -- nearly all
+// presentation pacing funnels through here -- doubles as a pause point:
+// if Pause is active when this timer would otherwise fire, resolution
+// holds until resume instead of firing on schedule.
+function sleep(ms) { return new Promise(r => setTimeout(r, ms / FF_LEVELS[ffLevelIndex])).then(waitWhilePaused); }
 // Player IDs are 0-indexed internally throughout the engine (array/dict
 // keys, color palette indexing, board ownership), that's plumbing and
 // stays as-is. The audience should never see "Player 0" though, so every
@@ -1100,36 +1456,54 @@ function playerLabel(id) { return 'Player ' + (id + 1); }
 // number per Scott's earlier ask) -- those stay on playerLabel on purpose.
 function displayName(id) { return playerKingdom[id] || playerLabel(id); }
 
-// Avoids the exact same line firing twice in a row out of any given pool
-// -- Scott: "I've definitely seen and heard some repeats in answers and
-// questions on all fronts." Keyed per-pool (a caller-chosen string, e.g.
-// the HOST_LINES category or the interview phase), not globally, so
-// unrelated pools don't affect each other's variety. Falls back to a
-// plain random pick whenever there's nothing to vary against (a
-// single-entry pool, or this key's first-ever pick).
-const _lastPick = {};
+// Avoids a line repeating too soon out of any given pool -- Scott:
+// "I've definitely seen and heard some repeats in answers and questions on
+// all fronts," and separately, "the host has some really canned lines."
+// Keyed per-pool (a caller-chosen string, e.g. the HOST_LINES category or
+// the interview phase), not globally, so unrelated pools don't affect each
+// other's variety. Falls back to a plain random pick whenever there's
+// nothing to vary against (a single-entry pool, or this key's first-ever
+// pick).
+//
+// Revision 23: remembers the last TWO picks per key now, not just the last
+// one. Most of these pools only have 3-6 lines and get called dozens of
+// times across a single show (a plain "avoid only the immediately-previous
+// pick" rule still lets a 4-line pool land on the same line every OTHER
+// turn) -- avoiding the last 2 stretches out the real gap between repeats
+// noticeably for exactly the small pools Scott flagged as reading canned,
+// while still scaling down automatically for tiny pools (a 2-line pool
+// still needs to alternate, not lock up avoiding its own entire contents).
+const _recentPicks = {};
 function pickVaried(pool, key) {
   if (!pool || !pool.length) return undefined;
   if (pool.length === 1) return pool[0];
-  let choice;
-  do {
-    choice = pool[Math.floor(Math.random() * pool.length)];
-  } while (choice === _lastPick[key]);
-  _lastPick[key] = choice;
+  const recent = _recentPicks[key] || [];
+  const avoidCount = Math.min(recent.length, pool.length - 1);
+  const toAvoid = recent.slice(recent.length - avoidCount);
+  const candidates = pool.filter(line => !toAvoid.includes(line));
+  const choice = candidates.length
+    ? candidates[Math.floor(Math.random() * candidates.length)]
+    : pool[Math.floor(Math.random() * pool.length)];
+  _recentPicks[key] = [...recent, choice].slice(-2);
   return choice;
 }
 
-// Pre-show viewer prediction (Scott: "maybe a human could make a
-// prediction before the game starts, like maybe the model that will win or
-// player #"). The draft that actually assigns a real Ollama model to each
-// numbered slot happens engine-side, after Start is clicked -- so a player
-// NUMBER (matching PLAYER_COUNT below, same fixed cast size as
-// engine/game.py) is the only thing there is to predict beforehand.
-// Entirely optional -- viewerPrediction stays null if nobody picks one, and
-// the finale simply skips the callout in that case.
+// Post-draft viewer prediction (Scott: originally "maybe a human could make
+// a prediction before the game starts," later corrected -- Revision 22:
+// "it would be better to let the human pick the prediction after player
+// roster is set." The draft that actually assigns a real Ollama model,
+// kingdom name, and domain to each numbered slot happens engine-side after
+// Start is clicked; waiting until it finishes (see waitForPostDraftPrediction
+// below, called from runShowPlayback once every draw_assignment has landed)
+// means the pick can be an informed one -- a real name/model/domain to bet
+// on, not a blind player number. Entirely optional -- viewerPrediction stays
+// null if nobody picks one, and the finale simply skips the callout.
 const PLAYER_COUNT_FRONTEND = 13;
 let viewerPrediction = null; // 0-indexed player id, or null
-let activeShowPrediction = null; // the pick actually locked in when Start was clicked
+let activeShowPrediction = null; // the pick actually locked in once the post-draft overlay closes
+const predictionOverlay = document.getElementById('predictionOverlay');
+const predictionContinueBtn = document.getElementById('predictionContinueBtn');
+const PREDICTION_AUTO_CONTINUE_MS = 12000; // never blocks the show forever if nobody engages
 function buildPredictionGrid() {
   predictionGridEl.innerHTML = '';
   for (let id = 0; id < PLAYER_COUNT_FRONTEND; id++) {
@@ -1137,6 +1511,16 @@ function buildPredictionGrid() {
     btn.type = 'button';
     btn.className = 'prediction-btn';
     btn.textContent = String(id + 1);
+    // Once the draft has run, playerKingdom/playerModel/playerStartDomain
+    // are all populated -- surfaced as a tooltip so the pick can actually be
+    // informed (which model, which real expertise) rather than a bare
+    // number, without needing 13 wide buttons crammed into the grid.
+    const kingdom = playerKingdom[id];
+    if (kingdom) {
+      const model = modelInfoByTag[playerModel[id]];
+      const modelName = model ? model.display_name : (playerModel[id] || '');
+      btn.title = `${kingdom} -- ${modelName}, expertise: ${playerStartDomain[id] || 'unknown'}`;
+    }
     btn.addEventListener('click', () => {
       // Clicking the already-picked number clears the prediction rather
       // than being a no-op -- viewers should be able to back out of a pick.
@@ -1153,9 +1537,264 @@ function renderPredictionGrid() {
   });
   predictionStatusEl.textContent = viewerPrediction == null
     ? 'No prediction made'
-    : `Your prediction: ${playerLabel(viewerPrediction)}`;
+    : `Your prediction: ${displayName(viewerPrediction)}`;
 }
-buildPredictionGrid();
+// Pauses the show right after the draft finishes so the viewer can make an
+// informed pick -- resolves either on the "LOCK IT IN" click or a timeout,
+// so a viewer who's stepped away never blocks the show indefinitely.
+// Incoming engine events keep buffering in the EventQueue while this awaits,
+// exactly like playCurtainIntro's existing buffering pattern -- nothing here
+// pauses the actual engine run, just when the frontend starts consuming it.
+function waitForPostDraftPrediction() {
+  return new Promise(resolve => {
+    buildPredictionGrid();
+    predictionOverlay.classList.add('show');
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      predictionOverlay.classList.remove('show');
+      activeShowPrediction = viewerPrediction;
+      predictionContinueBtn.removeEventListener('click', finish);
+      resolve();
+    };
+    predictionContinueBtn.addEventListener('click', finish);
+    const timer = setTimeout(finish, PREDICTION_AUTO_CONTINUE_MS);
+  });
+}
+
+// The model roster panel (see #modelRoster) -- Scott's ask, after running
+// `ollama ps` himself and seeing nothing listed, for a persistent left-side
+// list of the actual local Ollama models tonight's contestants draw from
+// (server.py's /api/models cross-references engine/ollama_agent.py's
+// TEXT_MODELS against Ollama's own /api/tags). Two views share this one
+// panel: before a draft has happened, it previews the 4 distinct models
+// available; once draw_assignment events start streaming (see the
+// pre_duel_intro/draw handler below, which calls renderModelRosterPlayers
+// after setting playerModel[id]), it switches to one row per PLAYER --
+// "P1: Llama 3.2 3.2B" -- since that's what actually makes each of the 13
+// contestants a distinct, identifiable entity, not just a name. Scott:
+// "I was thinking more like P1: llama 3.2 3.2B, etc, to be more clear. We
+// show each player is unique this way. We list all players and their
+// models." modelInfoByTag caches the last /api/models fetch so the
+// per-player view (which fires many times during a single draft) doesn't
+// need its own network round trip -- only the 20s poll below re-fetches.
+const modelRosterListEl = document.getElementById('modelRosterList');
+const modelActivityStatEl = document.getElementById('modelActivityStat');
+// Running totals for THIS show only -- how many trivia-answering calls
+// (duel_turn events) actually came back live from Ollama vs. silently fell
+// back to ScriptedAgent's canned behavior (engine/agents.py's
+// AnswerAttempt.live, default False, only ever True when OllamaAgent got a
+// real usable reply -- see attempt_question). Reset in startShow(); only
+// covers the attempt-answering decision specifically, not choose_target/
+// decide_continue/intro_line_combined, which don't currently carry their
+// own live/fallback signal on their events.
+let liveAttemptCount = 0;
+let fallbackAttemptCount = 0;
+function renderModelActivityStat() {
+  const total = liveAttemptCount + fallbackAttemptCount;
+  if (!total) { modelActivityStatEl.textContent = ''; return; }
+  modelActivityStatEl.textContent =
+    `Live answers: ${liveAttemptCount} / ${total} (${fallbackAttemptCount} fell back to scripted)`;
+}
+const MODEL_ROSTER_POLL_MS = 20000;
+let modelInfoByTag = {};
+let modelRosterOllamaReachable = false;
+// player_id -> true while that player's model has a live decision call
+// actually in flight -- mirrors the existing #agentThinkingEl banner but
+// scoped per row, since Scott liked the idea of surfacing it right on the
+// roster instead of only in the one shared banner above the stage. Set in
+// the agent_thinking handler below, cleared (all at once -- this engine
+// only ever has one live call in flight at a time) wherever that handler
+// already clears agentThinkingEl itself.
+let playerThinking = {};
+// player_id -> true once that player has actually lost a duel (see
+// duel_result below) -- Scott: "as players are eliminated, they should be
+// taken off the roster." Every duel loss is a full elimination in this
+// format (game.py: loser.active = False, single loss and you're out), so
+// once a player shows up here they're gone from the Player Roster panel
+// for the rest of this show, not just visually greyed out.
+let playerEliminated = {};
+// A genuinely fast model (a small quantized one, or one already warm) can
+// answer well under a second -- Scott's report that the roster's thinking
+// tag "doesn't show... when actively polled" even with real models running.
+// A flat clear-on-next-event was correct but gave zero floor on how long
+// the "on" state actually has to be visible before something clears it, so
+// a fast enough response could set-then-clear within the same render pass,
+// or close enough together that a human just can't perceive it. This pair
+// enforces a real minimum, deferring the clear (never the initial ON set,
+// which should always land immediately) via setTimeout -- a genuine
+// macrotask boundary guarantees the browser gets a paint in between,
+// unlike two synchronous DOM writes in the same tick.
+let playerThinkingSetAt = 0;
+let playerThinkingClearTimer = null;
+const PLAYER_THINKING_MIN_MS = 650;
+// The recurring persona preamble every one of this player's live prompts
+// actually opens with (see ollama_agent.py's own prompt strings, e.g.
+// "You are {kingdom_name}, a {profession}, playing style: {temperament}...
+// Your one real subject is {origin_domain}") -- Scott's clarified "prep?"
+// ask: visibility into the contextual startup instructions given to each
+// agent. Worth being precise about what this actually is: the engine has
+// no single one-time "system prompt" at game start -- every decision
+// (target choice, push/retreat, trivia attempt, interview line) gets its
+// own fresh prompt built from the player's fixed traits plus that
+// decision's own specifics. This reconstructs the FIXED part shared by
+// every one of those calls, which is the closest real thing to a
+// "startup briefing" this architecture has. Shown as a native tooltip on
+// hover rather than permanent on-screen text, since it's detail, not a
+// headline.
+function playerPersonaLine(id) {
+  const kingdom = playerKingdom[id] || playerLabel(id);
+  const profession = playerProfession[id] || 'contestant';
+  const temperament = (playerTemperament[id] || 'Balanced').toLowerCase();
+  const origin = playerStartDomain[id] || 'an unknown domain';
+  return `"You are ${kingdom}, a ${profession}, playing style: ${temperament}. `
+    + `Your one real subject is ${origin}." `
+    + `(the fixed persona opening every one of this player's live prompts)`;
+}
+function renderModelRosterModels() {
+  modelRosterListEl.innerHTML = '';
+  if (!modelRosterOllamaReachable) {
+    const note = document.createElement('div');
+    note.className = 'model-roster-status';
+    note.textContent = 'Ollama offline -- scripted fallback active';
+    modelRosterListEl.appendChild(note);
+  }
+  for (const tag of Object.keys(modelInfoByTag)) {
+    modelRosterListEl.appendChild(modelRosterRow(modelInfoByTag[tag], tag, null, null, false, null));
+  }
+}
+// Called once per draw_assignment (see the handler below) -- rebuilds the
+// whole list from scratch each time rather than patching one row in, since
+// it's only ever up to 13 short rows and staying simple here is worth more
+// than a marginal render saving.
+function renderModelRosterPlayers() {
+  // Eliminated players are filtered out here rather than at the call site
+  // -- every caller (draw_assignment, agent_thinking, duel_result, the
+  // /api/models poll) already just calls this one function to refresh the
+  // whole list, so this is the single place that has to know about
+  // elimination at all.
+  const assigned = Object.keys(playerModel).filter(id => !playerEliminated[id]);
+  if (!assigned.length) { renderModelRosterModels(); return; }
+  modelRosterListEl.innerHTML = '';
+  if (!modelRosterOllamaReachable) {
+    const note = document.createElement('div');
+    note.className = 'model-roster-status';
+    note.textContent = 'Ollama offline -- scripted fallback active';
+    modelRosterListEl.appendChild(note);
+  }
+  for (const idStr of assigned.sort((a, b) => a - b)) {
+    const id = Number(idStr);
+    const tag = playerModel[id];
+    const info = modelInfoByTag[tag] || { display_name: tag, parameter_size: '', online: false };
+    // "P1", not the kingdom name, leads each row -- this panel's whole
+    // point is a plain, technical roster of who's running what, distinct
+    // from the flavor names used everywhere else in the show. The kingdom
+    // name still gets appended at the end of the line per Scott's own
+    // requested format ("P1: Llama 3.2 3.2B, Kingdom") -- it's useful
+    // context for tying this row back to a specific contestant on the
+    // board, just not the headline.
+    modelRosterListEl.appendChild(
+      modelRosterRow(info, tag, `P${id + 1}`, playerKingdom[id] || null,
+        !!playerThinking[id], playerPersonaLine(id)));
+  }
+}
+function modelRosterRow(info, tag, playerTag, kingdomName, isThinking, personaTooltip) {
+  const row = document.createElement('div');
+  row.className = 'model-roster-row';
+  row.title = personaTooltip ? (tag + '\n' + personaTooltip) : tag;
+  // Scott: "I thought the green online indicator would simply toggle to
+  // the brain when thinking instead of a separate line" -- isThinking
+  // takes over the SAME dot rather than adding a second element. A player
+  // can only be mid-live-call if their model is actually online, so
+  // "thinking" and "online" never need to be shown at once.
+  const dot = document.createElement('span');
+  dot.className = 'model-roster-dot ' + (isThinking ? 'thinking' : (info.online ? 'online' : 'offline'));
+  if (isThinking) dot.textContent = '\u{1F9E0}';
+  row.appendChild(dot);
+  if (playerTag) {
+    const player = document.createElement('span');
+    player.className = 'model-roster-player';
+    player.textContent = playerTag + ':';
+    row.appendChild(player);
+  }
+  const label = document.createElement('span');
+  label.className = 'model-roster-name';
+  label.textContent = info.display_name;
+  const params = document.createElement('span');
+  params.className = 'model-roster-params';
+  params.textContent = info.parameter_size + (kingdomName ? ',' : '');
+  row.append(label, params);
+  if (kingdomName) {
+    const kingdom = document.createElement('span');
+    kingdom.className = 'model-roster-kingdom';
+    kingdom.textContent = kingdomName;
+    row.appendChild(kingdom);
+  }
+  return row;
+}
+async function refreshModelRoster() {
+  try {
+    const res = await fetch('/api/models');
+    const data = await res.json();
+    modelRosterOllamaReachable = !!data.ollama_reachable;
+    modelInfoByTag = {};
+    for (const m of (data.models || [])) modelInfoByTag[m.tag] = m;
+    // Re-render whichever view is currently relevant -- keeps the poll
+    // from clobbering the per-player view back to the pre-draft preview
+    // mid-show.
+    if (Object.keys(playerModel).length) renderModelRosterPlayers();
+    else renderModelRosterModels();
+    renderOllamaStartCheck();
+  } catch (e) {
+    // The Dominion server itself is unreachable (page just loaded before
+    // it's up, or it died) -- distinct from Ollama being offline, which
+    // the try block above already reports as a normal in-panel state.
+    modelRosterListEl.innerHTML = '<div class="model-roster-status">Roster unavailable</div>';
+  }
+}
+// Title-screen Ollama check -- Scott: "add a start ollama or an automatic
+// check or launch of it to insure the best experience, maybe a check mark
+// on the black start page." Deliberately checked here rather than trusting
+// the in-show Player Roster's "Ollama offline" note: that note reads off
+// the exact same /api/models data, but mid-show Ollama can be genuinely
+// busy serving a real generate() call, which starves this same lightweight
+// /api/tags check for several seconds -- it reads as "offline" even while
+// live answers are actively landing elsewhere (confirmed in a live run:
+// the panel said offline the entire show, but 43 of 285 answers still came
+// back live). Before Start is clicked, though, nothing is asking Ollama for
+// anything, so a "reachable" or "not reachable" reading here is trustworthy.
+// Revision 30 -- Scott: "I wanted that choice on the 'tap to start' page to
+// be really upfront and prepped." Two identical-looking status elements now
+// exist: the original one inside #heroStage, and a duplicate inside
+// #preShowTitleCard (the very first thing anyone sees, before the first
+// click/tap dismisses it -- see that markup's own comment for why it was
+// otherwise invisible until after that first interaction). Both are driven
+// from this one function so there's exactly one source of truth.
+// Revision 31 -- this used to also drive a "Start Ollama" button that
+// POSTed to /api/start-ollama and silently launched `ollama serve` as a
+// background process. Scott: it "started via a terminal popup
+// unexpectedly... we simply need to tell them to run the setup.py" --
+// dropped the whole silent-launch endpoint and button in favor of just
+// telling the person what to do themselves, in their own terminal, where
+// they can actually see what's happening.
+const ollamaStatusEls = [
+  document.getElementById('ollamaStatusText'),
+  document.getElementById('preShowOllamaStatusText'),
+];
+function renderOllamaStartCheck() {
+  if (showStarted) return; // only meaningful pre-show; left as last-known state once running
+  const online = modelRosterOllamaReachable;
+  for (const el of ollamaStatusEls) {
+    el.textContent = online
+      ? '✓ Ollama ready -- live models will play tonight'
+      : '✗ Ollama offline -- run "python setup.py" (or "python3 setup.py") in a terminal to get it ready, or just continue on the scripted fallback.';
+    el.className = online ? 'ollama-online' : 'ollama-offline';
+  }
+}
+refreshModelRoster();
+setInterval(refreshModelRoster, MODEL_ROSTER_POLL_MS);
 
 let playersRemainingCount = 13;
 function updatePlayersRemaining(n) {
@@ -1204,17 +1843,71 @@ const PASS_REACTIONS = [
   "Ohh, passing on that one.", "A pass. Bold or bailing?", "There's the pass.",
   "Not touching that one.", "Playing it safe there.", "They're punting on this one.",
 ];
+// Generic reactions, used when clock_remaining isn't known or doesn't
+// clearly favor one read over another. NOT "passing to save the clock" --
+// Scott's correction: a pass costs the SAME player's own clock exactly
+// like any other attempt (duel.py's chess-clock rules), it never saves
+// time. The real tradeoff is dodging a question you don't know before
+// burning several MORE attempts guessing wrong at it, which is only a
+// good bet with time to spare -- see passHostLine below, which picks a
+// clock-aware line instead of a blind random one.
 const PASS_HOST_LINES = [
   "Interesting call.", "A bold pass, right there.", "Smart, or just stalling?",
-  "We'll see if that pays off.", "Passing to save the clock, maybe.",
+  "We'll see if that pays off.",
 ];
+const PASS_HOST_LINES_LOW_CLOCK = [
+  "Risky, with that little time left.", "Can they really afford to gamble right now?",
+  "That clock is not their friend on a pass like this.",
+];
+const PASS_HOST_LINES_HIGH_CLOCK = [
+  "Plenty of time to gamble on a fresh one.", "They can afford to be picky right now.",
+  "With that much clock banked, why not roll the dice.",
+];
+function passHostLine(clockRemaining) {
+  if (typeof clockRemaining === 'number' && clockRemaining < 8) {
+    return pickVaried(PASS_HOST_LINES_LOW_CLOCK, 'hostPassLow');
+  }
+  if (typeof clockRemaining === 'number' && clockRemaining > 15) {
+    return pickVaried(PASS_HOST_LINES_HIGH_CLOCK, 'hostPassHigh');
+  }
+  return pickVaried(PASS_HOST_LINES, 'hostPass');
+}
 
 // --- Host banner: canned commentary lines tied to key beats. Real
 // generative host narration is later-phase work (Section 7/11), this
 // gives a visible, audible-feeling host presence in the meantime rather
-// than the show playing out with no host at all. Coverage was widened
-// this pass to more event types (domain tax, burst prize, milestone) since
-// the host previously stayed quiet through several notable beats. ---
+// than the show playing out with no host at all.
+//
+// Revision 23: Scott: "the host has some really canned lines... can we
+// examine and bolster its static/dynamic dialog/script?" Two real problems
+// found on inspection, not just "needs more variety":
+//
+// 1. A genuine event/line MISMATCH, not just staleness. Every 3rd win
+//    streak (engine/game.py) resolves ONE of two mutually exclusive ways:
+//    an 80% roll fires `domain_tax_applied` (seize a domain), a 20% roll
+//    fires `time_bonus_banked` (quietly bank +5s for later). The frontend
+//    had these backwards: `domain_tax_applied` got NO host line at all
+//    (silent), while `time_bonus_banked` -- just banking time, nothing
+//    seized -- fired this pool's old "Ruthless! Domain tax! Somebody's
+//    night just got harder" text. The host was narrating a seizure that
+//    never happened while staying silent on the one that did. Fixed below:
+//    domainTaxHostLine now actually fires on `domain_tax_applied`, and a
+//    new, correctly-flavored bankedBonusHostLine fires on
+//    `time_bonus_banked` instead.
+// 2. Purely random, anonymous filler on beats that already have real names
+//    and numbers sitting right there in the event payload -- the pool
+//    fired regardless of WHO or WHAT, so by mid-show by-then-familiar lines
+//    ("Somebody is on a roll tonight!") repeat with nothing tying them to
+//    what just actually happened. Most of the old static pools below are
+//    now dynamic functions (winHostLine, winCloseHostLine, winUpsetHostLine,
+//    advantageHostLine, milestoneHostLine, burstHostLine, scrambleHostLine,
+//    bonusSpentHostLine, domainTaxHostLine, bankedBonusHostLine,
+//    finaleHostLine, preduelHostLine -- see the dynamic host-line section
+//    below, alongside hostPreduelQuestion/hostContinueBuildup) that name
+//    the actual player, domain, streak, or territory count involved, same
+//    pattern as the pre-duel question and draftCommentaryLine already used.
+//    Genuinely anonymous, whole-show beats (the pre-show welcome, "still
+//    thinking") stay as plain pools here -- there's no "who" to attach.
 const HOST_LINES = {
   // Said the instant Start is clicked, before anything else -- a short,
   // decisive beat as the button itself gets "struck" to kick things off.
@@ -1222,69 +1915,16 @@ const HOST_LINES = {
   intro: [
     "Welcome, welcome, welcome to Dominion!", "Good evening, everybody. Let's build this board!",
     "Thirteen contestants, one board, one champion. Let's go!", "Here we go, folks, this is the one you've been waiting for!",
-  ],
-  preduel: [
-    "Ooh, this one's got stakes.", "Here we go, folks!", "This could get interesting fast.", "Let's see what they've got.",
-    "Now THIS is a matchup.", "Both sides look ready.", "Let's find out who wants it more.",
-    "The board's holding its breath on this one.", "Let's hear what they've got to say first.",
-    "Two contestants, one domain. Let's go.", "This is the matchup nobody was expecting.",
-  ],
-  bonus: [
-    "Ooh, cashing in the banked bonus. Bold move!", "A saved-up bonus, spent at just the right moment!",
-    "They've been holding onto that, and now's the time!",
-    "That bonus has been sitting there all night, cashed in right when it counts!",
-    "A calculated move. Spending the bonus here.",
-  ],
-  // Plain win: a normal decisive result, neither a nail-biter nor an upset.
-  win: [
-    "And that's the ballgame!", "What a finish!", "Territory changes hands!", "So close, but not close enough!",
-    "Clean and decisive!", "That's how it's done!", "No doubt about that one!",
-  ],
-  // A close call: the clocks were nearly even at the buzzer.
-  winClose: [
-    "Down to the wire. What a finish!", "You could not squeeze a second between them!",
-    "That's as close as it gets, folks!", "Right down to the final tick of the clock!",
-  ],
-  // A real underdog win: the winner held meaningfully less territory than
-  // the loser going in (see isUpset in celebrateDuelWinner).
-  winUpset: [
-    "What an UPSET! Nobody saw that coming!", "The little kingdom just took down the giant!",
-    "That is exactly the kind of underdog moment this show is built for!", "Hold on, did that really just happen?!",
-  ],
-  advantage: [
-    "Somebody is on a roll tonight!", "Look at that streak build!", "They cannot be stopped right now!",
-    "That's momentum, folks!",
-  ],
-  tax: [
-    "Oh, a domain tax! That's a real gut punch.", "Trading domains. Bold, and a little mean!", "That's going to sting for a while.",
-    "Ruthless! Absolutely ruthless!",
-    "That's a power move if I've ever seen one.", "Domain tax! Somebody's night just got harder.",
-  ],
-  burst: [
-    "Let's check the leaderboard. Big stakes right now!", "A checkpoint prize, and the territory race is tight!",
-    "Everybody's watching this leaderboard now!",
-    "Time for a checkpoint. Let's see where things stand.", "The race for the board is getting tighter by the minute.",
-  ],
-  milestone: [
-    "Five tiles and counting. That's real money on the board!", "A territory milestone! The bank just opened up a little.",
-    "That's a real empire forming right there!",
-    "Milestone reached. The bank is paying out!", "That's a serious chunk of the board now.",
-  ],
-  scramble: [
-    "Hold onto your hats, the board is changing shape!", "Here comes the Scramble, everybody!",
-    "Everything you thought you knew about this board is about to change!",
-    "Nobody's territory is safe now!", "The whole board just got shaken up!",
-  ],
-  finale: [
-    "Ladies and gentlemen, we have our champion!", "And there it is. Sole owner of the board!",
-    "What a run! What a show! We have our champion!",
-    "One board, one champion, and here they are!", "That's the whole board, folks. We have a winner!",
+    "Thirteen kingdoms are about to be born. Let's watch them fight for it!",
+    "One board, thirteen rivals, and only one walks away with it all.",
   ],
   // While a live model is genuinely taking its time on a decision -- the
   // host holding the floor a beat longer than usual for a real wait rather
   // than a scripted one.
   stillThinking: [
     "Take your time... or don't.", "The suspense is real tonight.", "We'll wait. We've got nowhere to be.",
+    "Somewhere out there, a model is really thinking this one over.",
+    "This is the kind of pause that makes an audience lean in.",
   ],
   // Deliberately short and a little restrained: the host holds the floor
   // during a live duel (Section 7), but between duels can afford to just
@@ -1302,10 +1942,15 @@ const HOST_LINES = {
 // audio on top, it doesn't slow anything down. ---
 let hostVoice = null;
 // Tried in order; whichever is actually installed on this machine wins.
-// These lean flatter/more mechanical on their respective platforms (Windows,
-// Mac) than the typical default voice, but this is a preference list, not a
-// requirement -- pickHostVoice() below falls back gracefully if none exist.
-const HOST_VOICE_NAME_PREFERENCES = ['Microsoft David', 'Microsoft Mark', 'Google UK English Male', 'Fred', 'Alex'];
+// Reordered toward warmer, more American-announcer-toned voices -- Scott's
+// ask for something more "Dick Clark and Drew Carey"-like, not the flatter/
+// more mechanical read the original ask wanted. Alex (macOS) in particular
+// is a genuinely natural, expressive voice; Fred (also macOS, a novelty
+// monotone voice) is demoted to last resort rather than sitting mid-list,
+// and the flatter "Google UK English Male" option is dropped entirely --
+// this is a preference list, not a requirement, so pickHostVoice() below
+// still falls back gracefully if none of these exist on a given machine.
+const HOST_VOICE_NAME_PREFERENCES = ['Microsoft Mark', 'Microsoft David', 'Google US English', 'Alex', 'Fred'];
 function pickHostVoice() {
   if (!window.speechSynthesis) return null;
   const voices = speechSynthesis.getVoices();
@@ -1361,12 +2006,43 @@ function estimateSpeechMs(text, minMs = 1200, maxMs = 12000, rate = 1) {
 function speakUtterance(text, voice, rate, pitch) {
   if (!window.speechSynthesis || muted) return Promise.resolve();
   speechSynthesis.cancel();
+  // A near-silent primer queued immediately ahead of EVERY real utterance
+  // now, not just the very first one on the page (see warmUpSpeechEngine
+  // below, which only ever fires once, on first interaction). Scott
+  // reported the fade was STILL happening on every host line even after
+  // the pause()/resume() keep-alive was removed -- which means the
+  // cold-start artifact isn't a one-time thing on this machine's voice, it
+  // recurs on every fresh utterance after any gap of silence, and speech
+  // in this show is never truly continuous (there's always a gap between
+  // lines). Browsers queue and play multiple speak() calls back to back
+  // with no audible gap between them, so whatever ramp-up/fade the engine
+  // does lands on this inaudible primer instead of clipping the real line
+  // that follows right after it.
+  if (voice) {
+    const primer = new SpeechSynthesisUtterance('.');
+    primer.voice = voice;
+    primer.volume = 0.01;
+    primer.rate = Math.max(rate || 1, 2);
+    speechSynthesis.speak(primer);
+  }
   return new Promise(resolve => {
     const utter = new SpeechSynthesisUtterance(text);
     if (voice) utter.voice = voice;
     utter.rate = rate;
     utter.pitch = pitch;
     let done = false;
+    // NOTE: previously tried a periodic pause()/resume() "keep-alive" here
+    // as a workaround for a documented Chrome bug where long utterances
+    // can silently stop partway through. Reverted -- Scott reported actual
+    // voice fading that "wasn't doing that before," and the timing lines
+    // up exactly with this keep-alive landing: on this machine's voices
+    // (Windows SAPI, e.g. Microsoft Mark/David), pause()/resume() is
+    // NOT silent the way the workaround assumes -- it audibly dips/refades
+    // the voice, which is a worse, more frequent problem (every 12s on any
+    // longer line) than the rare browser bug it was meant to guard
+    // against. Cut cleanly rather than tuning the interval, since the
+    // premise ("neither call is audible") was simply wrong for the voices
+    // actually in use here.
     const finish = () => { if (!done) { done = true; resolve(); } };
     utter.onend = finish;
     utter.onerror = finish;
@@ -1378,8 +2054,28 @@ function speakUtterance(text, voice, rate, pitch) {
     // within what an uninstructed live model can return even when asked
     // for "one short sentence" -- exactly Scott's report that voices were
     // "still being clipped a little, especially on long responses."
-    setTimeout(finish, estimateSpeechMs(text, 1500, 30000, rate));
+    // Routed through waitWhilePaused too -- without it, a pause lasting
+    // longer than the estimated speech duration could let this safety net
+    // fire and resolve as "done speaking" while speechSynthesis.pause()
+    // still has the utterance genuinely frozen mid-word.
+    setTimeout(() => { waitWhilePaused().then(finish); }, estimateSpeechMs(text, 1500, 30000, rate));
   });
+}
+// A one-shot, near-silent warm-up utterance fired the instant audio
+// actually unlocks (see waitForFirstInteraction below) -- separate from
+// the mid-speech keep-alive above, this targets a COLD-START artifact:
+// several TTS engines/voices have a soft fade-in or a dropped first
+// syllable on the very first utterance spoken after the page has sat idle,
+// which reads as the host's opening line starting muffled or clipped no
+// matter how the timing is tuned. Priming the pipeline with a throwaway,
+// near-silent utterance first means the real first line always lands on
+// an already-warm engine instead of being the one that pays that cost.
+function warmUpSpeechEngine() {
+  if (!window.speechSynthesis) return;
+  const utter = new SpeechSynthesisUtterance('.');
+  utter.volume = 0.01;
+  utter.rate = 3;
+  speechSynthesis.speak(utter);
 }
 // Waits for BOTH a minimum on-screen hold (so even an instant TTS reply
 // still gives a human a moment to read the text, not just hear it) AND the
@@ -1390,7 +2086,13 @@ function speakAndHold(speakPromise, minMs) {
   return Promise.all([sleep(minMs), speakPromise]);
 }
 function speakHostLine(text) {
-  return speakUtterance(text, hostVoice, 0.98, 0.85); // a touch lower/flatter than default -- reads as more mechanical
+  // Bumped up from 0.98/0.85 (deliberately lower/flatter, "mechanical") to
+  // a brighter, faster read -- Scott's ask for more Dick Clark / Drew Carey
+  // energy: a classic game-show host announcer, not a flat narrator. Web
+  // Speech API can't add real inflection, but a livelier pace and a pitch
+  // back above natural is the closest lever available, and reads as
+  // noticeably punchier than the old settings.
+  return speakUtterance(text, hostVoice, 1.08, 1.08);
 }
 
 // Each of the 13 contestants gets their own distinct voice -- Scott: "each
@@ -1430,12 +2132,33 @@ function speakPlayerLine(playerId, text) {
 // Shared with sayHost below -- factored out so the dynamic, per-duel
 // pre-duel questions (hostPreduelQuestion) can trigger the same pop
 // animation without going through the fixed HOST_LINES category pools.
+//
+// Serialized through hostSpeechChain rather than spoken immediately --
+// Scott: "host doesn't always finish and sometimes talks over itself."
+// Plenty of call sites fire a host line without awaiting it (sayHost
+// itself, the various "stillThinking"/"postduel" reactions), and since
+// every utterance shares one speechSynthesis.cancel()-then-speak()
+// pipeline, two host lines landing close together meant the second one
+// silently cut the first off mid-sentence -- the host interrupting
+// itself. Chaining onto the previous host promise means a new line always
+// waits for whatever the host was already saying to actually finish
+// first, instead of racing it. The on-screen text/pop animation still
+// updates immediately -- only the SPOKEN line waits its turn, so the
+// caption never lags behind what's about to be said. This only serializes
+// HOST lines against each other; a player's own voice can still cancel or
+// be cancelled by a host line the same way it always could, unrelated to
+// this fix.
+let hostSpeechChain = Promise.resolve();
 function sayHostText(text) {
   hostLine.textContent = text;
   hostLine.classList.remove('pop');
   void hostLine.offsetWidth;
   hostLine.classList.add('pop');
-  return speakHostLine(text);
+  const spoken = hostSpeechChain.then(() => speakHostLine(text));
+  // Swallow rejections so one failed utterance can never wedge the whole
+  // chain and silence every host line after it.
+  hostSpeechChain = spoken.catch(() => {});
+  return spoken;
 }
 function sayHost(category) {
   const lines = HOST_LINES[category];
@@ -1443,86 +2166,226 @@ function sayHost(category) {
   sayHostText(pickVaried(lines, 'host:' + category));
 }
 
-// The host directs a specific question at each player by name before they
-// answer -- makes the pre-duel beat read as an actual host<->player
-// dialogue (Scott: "has to be 2 ways") rather than a generic opening line
-// followed by two disconnected reactions. Two full rounds now, not one
-// (Scott: "several back and forth... so the models are warm to their own
-// domain and knowledge of the domain they are dueling on"): 'origin' asks
-// about the one domain this player actually drafted, 'challenge' is them
-// being told/reminded what's actually on the line tonight. The defender's
-// challenge-round question explicitly calls back to what the challenger
-// just said in THAT round, since game.py/ollama_agent.py feed the
-// challenger's actual challenge-round line into the defender's live call
-// too -- that round is meant to read as one continuous exchange, not two
-// separate monologues.
-// Occasional, temperament-flavored aside the host can tack onto a question
-// -- Scott: "the host can also use the player meta data and see if the
-// player is cautious, aggressive, balanced, etc. and lace that into the
-// conversations." Not every line gets one (50/50) so it reads as the host
-// occasionally needling a contestant about their reputation, not a robotic
-// label recited every single time.
-const TEMPERAMENT_ASIDES = {
-  Aggressive: [" You're not exactly known for playing it safe.", " Everyone here knows you never back down."],
-  Cautious: [" You're usually the careful type. Staying that way tonight?", " Or will tonight be different from your usual cautious game?"],
-  Balanced: [" You've been steady all night."],
-};
-function withTemperamentAside(line, playerId) {
-  const temperament = playerTemperament[playerId];
-  const pool = temperament && TEMPERAMENT_ASIDES[temperament];
-  if (!pool || Math.random() >= 0.5) return line;
-  return line + pickVaried(pool, 'aside:' + playerId);
+// --- Revision 23 dynamic host lines: Scott's "examine and bolster its
+// static/dynamic dialog/script" ask. Each of these replaces a formerly
+// anonymous, purely random HOST_LINES pool with one that names the actual
+// player/domain/number involved, using data already sitting in the event
+// payload or already computed at the call site -- same approach as
+// hostPreduelQuestion/hostContinueBuildup/draftCommentaryLine just below.
+// Each still rotates through several templates via pickVaried, so it isn't
+// the same sentence shape every time either. ---
+
+function winHostLine(winnerId, domain) {
+  const name = displayName(winnerId);
+  const templates = [
+    `${name} takes it! And that's the ballgame!`, `${name} seals it. What a finish!`,
+    `${domain} now belongs to ${name}. Territory changes hands!`,
+    `Clean and decisive. ${name} gets it done.`, `That's how it's done, ${name}!`,
+    `${name} closes it out. No doubt about that one!`,
+  ];
+  return pickVaried(templates, 'win');
+}
+function winCloseHostLine(winnerId, domain) {
+  const name = displayName(winnerId);
+  const templates = [
+    `${name} wins it, down to the wire! What a finish!`,
+    `You could not squeeze a second between them, but ${name} gets there first!`,
+    `That's as close as it gets, folks. ${name} takes ${domain} by a hair!`,
+    `Right down to the final tick of the clock, and ${name} comes out on top!`,
+  ];
+  return pickVaried(templates, 'winClose');
+}
+function winUpsetHostLine(winnerId, loserId) {
+  const winnerName = displayName(winnerId);
+  const loserName = displayName(loserId);
+  const templates = [
+    `What an UPSET! ${winnerName} just took down ${loserName}! Nobody saw that coming!`,
+    `The little kingdom just took down the giant. ${winnerName}, over ${loserName}!`,
+    `That is exactly the kind of underdog moment this show is built for. ${winnerName}!`,
+    `Hold on, did ${winnerName} really just beat ${loserName}?!`,
+  ];
+  return pickVaried(templates, 'winUpset');
+}
+// Fires on `advantage_earned` -- the moment a 3-win streak actually earns
+// something to spend, BEFORE the engine rolls whether that's a domain tax
+// or a banked bonus (see domainTaxHostLine/bankedBonusHostLine below for
+// the two outcomes this sets up).
+function advantageHostLine(data) {
+  const name = displayName(data.player_id);
+  const templates = [
+    `${name} is on a roll tonight. ${data.streak} in a row!`, `Look at that streak build for ${name}!`,
+    `${name} cannot be stopped right now!`, `That's real momentum for ${name}, folks!`,
+  ];
+  return pickVaried(templates, 'advantage');
+}
+// Fires on `domain_tax_applied` -- an ACTUAL domain seizure (engine/game.py:
+// an 80% roll off advantage_earned). Previously this event got no host
+// line at all; the "domain tax" flavored text used to fire on
+// `time_bonus_banked` instead, which never seizes anything -- see this
+// section's header comment for the full mismatch.
+function domainTaxHostLine(data) {
+  const fromName = displayName(data.from_id);
+  const toName = displayName(data.to_id);
+  const templates = [
+    `Oh, a domain tax! ${fromName} takes ${toName}'s ground. That's a real gut punch.`,
+    `${fromName} taxes ${toName}. Domains swap, and that's going to sting for a while.`,
+    `Ruthless! Absolutely ruthless. ${fromName} just traded domains with ${toName}.`,
+    `That's a power move from ${fromName}. ${toName}'s night just got harder.`,
+  ];
+  return pickVaried(templates, 'domainTax');
+}
+// Fires on `time_bonus_banked` -- the OTHER 20% outcome of advantage_earned:
+// nothing seized, a time bonus quietly saved for a future duel instead.
+// Distinct in tone from domainTaxHostLine on purpose -- this is the
+// cautious, patient choice, not the aggressive one.
+function bankedBonusHostLine(data) {
+  const name = displayName(data.player_id);
+  const templates = [
+    `${name} is banking that bonus instead. Something to spend later.`,
+    `Rather than a domain tax, ${name} quietly banks a time bonus for down the road.`,
+    `${name} plays the long game. Five extra seconds, saved for when it counts.`,
+    `No tax tonight. ${name} just tucks a time bonus away for later.`,
+  ];
+  return pickVaried(templates, 'bankedBonus');
+}
+// Fires when a player CASHES IN a bonus they banked earlier (challenge_declared,
+// ev.data.challenger_using_bonus) -- the payoff to bankedBonusHostLine above.
+function bonusSpentHostLine(playerId) {
+  const name = displayName(playerId);
+  const templates = [
+    `${name}, cashing in the banked bonus. Bold move!`, `${name} saved that bonus, and now's the time!`,
+    `That bonus has been sitting there all night for ${name}, cashed in right when it counts!`,
+    `A calculated move from ${name}. Spending the bonus here.`,
+  ];
+  return pickVaried(templates, 'bonusSpent');
+}
+function milestoneHostLine(data) {
+  const name = displayName(data.player_id);
+  const templates = [
+    `${name} reaches ${data.territory} tiles. That's real money on the board!`,
+    `A territory milestone for ${name}! The bank just opened up a little.`,
+    `${name} is building a real empire. ${data.territory} tiles and counting.`,
+    `Milestone reached. ${name}'s bank just grew by ${fmtMoney(data.bonus)}.`,
+  ];
+  return pickVaried(templates, 'milestone');
+}
+function burstHostLine(data) {
+  const name = displayName(data.leader_id);
+  const templates = [
+    `Checkpoint time. ${name} leads with ${data.territory} tiles, holding ${data.leader_domain}.`,
+    `Let's check the leaderboard. ${name} is out in front right now.`,
+    `${name} tops the board at this checkpoint, ${data.territory} tiles strong.`,
+    `The race for the board is tightening, but ${name} leads for now.`,
+  ];
+  return pickVaried(templates, 'burst');
+}
+function scrambleHostLine(data) {
+  const templates = [
+    "Hold onto your hats, the board is changing shape!", "Here comes the Scramble, everybody!",
+    "Everything you thought you knew about this board is about to change!",
+    "Nobody's territory is safe now!", "The whole board just got shaken up!",
+    `Down to ${data.active_players} kingdoms, and the board just redrew itself around them!`,
+    "Territory nobody earned, gone in an instant. That's the Scramble for you.",
+  ];
+  return pickVaried(templates, 'scramble');
+}
+function finaleHostLine(data) {
+  const kingdom = data.champion_kingdom || displayName(data.champion_id);
+  const templates = [
+    `Ladies and gentlemen, ${kingdom} is our champion!`, `And there it is. ${kingdom}, sole owner of the board!`,
+    `What a run! What a show! ${kingdom} takes it all!`, `One board, one champion, and it's ${kingdom}!`,
+  ];
+  return pickVaried(templates, 'finale');
+}
+// Said right as the stage opens, BEFORE hostPreduelQuestion's personalized
+// question -- Scott: "the host has some really canned lines." This used to
+// be a flat pool of pure stakes-setting filler disconnected from what was
+// actually happening, repeating constantly by mid-show. Now it leans on
+// the real streak/territory numbers openStage already has on hand
+// (leftStreak/rightStreak, stageChallengerTerritory/stageDefenderTerritory)
+// whenever there's something genuinely worth flagging, and only falls back
+// to the plain generic pool when neither side has anything notable going on.
+function preduelHostLine(challengerId, defenderId, challengerStreak, defenderStreak, challengerTerritory, defenderTerritory) {
+  const hotStreak = Math.max(challengerStreak || 0, defenderStreak || 0);
+  if (hotStreak >= 3) {
+    const hotId = (challengerStreak || 0) >= (defenderStreak || 0) ? challengerId : defenderId;
+    const name = displayName(hotId);
+    return pickVaried([
+      `${name} is riding a real streak into this one!`, `Can anybody stop ${name} tonight?`,
+      `${name} has been on fire. Let's see if it holds up.`,
+    ], 'preduelStreak');
+  }
+  const territoryGap = Math.abs((challengerTerritory || 0) - (defenderTerritory || 0));
+  if (territoryGap >= 3) {
+    const bigId = challengerTerritory > defenderTerritory ? challengerId : defenderId;
+    const smallId = challengerTerritory > defenderTerritory ? defenderId : challengerId;
+    return pickVaried([
+      `${displayName(smallId)} against the odds here, taking on ${displayName(bigId)}'s bigger kingdom.`,
+      `A real size mismatch tonight. Can the underdog pull it off?`,
+      `${displayName(bigId)} has the bigger kingdom, but the board doesn't care about that once the clock starts.`,
+    ], 'preduelGap');
+  }
+  return pickVaried([
+    "Ooh, this one's got stakes.", "Here we go, folks!", "This could get interesting fast.", "Let's see what they've got.",
+    "Now THIS is a matchup.", "Both sides look ready.", "Let's find out who wants it more.",
+    "The board's holding its breath on this one.", "Let's hear what they've got to say first.",
+    "Two contestants, one domain. Let's go.", "This is the matchup nobody was expecting.",
+  ], 'preduelGeneric');
 }
 
-function hostPreduelQuestion(playerId, role, phase, domain, opponentName, opponentId) {
+// The host directs ONE loaded question at each player before they answer --
+// makes the pre-duel beat read as an actual host<->player dialogue (Scott:
+// "has to be 2 ways") rather than a generic opening line followed by a
+// disconnected reaction. This used to be three separate rounds (origin
+// domain, tested domain, read on the opponent), but Scott found the
+// results read like three disconnected exchanges rather than one host who
+// actually knows the cast: "it doesn't seem like the agents are hearing
+// each other in conversation... player 1, I see you are a cautious expert
+// in flowers and gardens, how do you feel about competing with player 2 on
+// the subject of Farm Animals. Like that kinda." One combined question now,
+// exactly on that model: names the player's real origin-domain expertise,
+// their temperament, the actual duel domain, and the named opponent, all
+// in a single loaded ask -- "loading it with statements and a question"
+// rather than a bare "how do you feel," per Scott's own framing of the ask.
+// Revision 32 -- Scott: "the host language... talks about feelings instead
+// of talking about the general knowledge of the domain on the line." Every
+// template below used to close on an emotional check-in ("How do you feel
+// about your chances?", "How does that feel?", "How are you feeling?") --
+// that's exactly backwards from what this beat is supposed to set up: the
+// player's own reply (intro_line_combined, engine/ollama_agent.py) is
+// meant to reason about whether their real expertise actually transfers to
+// tonight's domain, not report an emotional state. Rewritten so the HOST's
+// own question already asks about knowledge/transfer, which also primes
+// the player's reply to answer in those terms instead of drifting to "I
+// feel good about this."
+// Revision 33 -- Scott flagged a batch of stock game-show phrasing as
+// stale: "built your name on," "your ground," "not your usual ground,"
+// "tonight's duel." Reworded below to plain, specific language about the
+// actual domain and matchup instead of leaning on these stock phrases.
+function hostPreduelQuestion(playerId, role, domain, opponentName, opponentId) {
   const name = displayName(playerId);
-  if (phase === 'origin') {
-    // Names their actual expertise domain directly (Scott's example: "I
-    // see you are an expert in DOMAIN") rather than a vague "what's your
-    // specialty" that makes them supply the domain themselves.
-    const originDomain = playerStartDomain[playerId] || 'your domain';
-    const originTemplates = [
-      `${name}, I see you're an expert in ${originDomain}. Tell the crowd about that.`,
-      `${name}, word is you know ${originDomain} inside and out. Is that fair to say?`,
-      `${name}, ${originDomain} is your specialty, correct? What's your story there?`,
-      `${name}, before tonight's duel, I hear ${originDomain} is your domain. True?`,
-    ];
-    return pickVaried(originTemplates, 'origin:' + playerId);
-  }
-  if (phase === 'opponent') {
-    // Round 3, added per Scott's ask: the host also prompts for a read on
-    // the SPECIFIC opponent, not just the domain -- leans on the
-    // opponent's own temperament label where available, since that's
-    // real, known information a host briefed on the cast would actually
-    // bring up.
-    const oppTemperament = playerTemperament[opponentId];
-    const oppAside = oppTemperament ? ` Word is they play it ${oppTemperament.toLowerCase()}.` : '';
-    const opponentTemplates = [
-      `${name}, what's your read on ${opponentName} going into this?${oppAside}`,
-      `${name}, any thoughts on ${opponentName} before we start the clock?${oppAside}`,
-      `${name}, what do you know about ${opponentName}?${oppAside}`,
-      `${name}, how do you size up ${opponentName} as an opponent tonight?${oppAside}`,
-    ];
-    return pickVaried(opponentTemplates, 'opponent:' + playerId);
-  }
-  // Direct per Scott's example: name the domain on the line, name the
-  // opponent, and ask readiness outright -- "How do you feel about your
-  // chances in DOMAIN? Are you ready to take on Player Y?" rather than a
-  // vaguer "how are you feeling."
+  const originDomain = playerStartDomain[playerId] || 'your domain';
+  const temperament = playerTemperament[playerId];
+  const temperamentWord = temperament ? temperament.toLowerCase() + ' ' : '';
+  const sameDomain = originDomain === domain;
+  // When this matchup happens to BE their origin domain, say so directly
+  // instead of asking a question that would sound strange restating the
+  // same domain twice ("expert in Cats... facing them on Cats?" reads odd).
+  const stakesClause = sameDomain
+    ? `and that's exactly the category up tonight`
+    : `but the category up is ${domain}, a different subject entirely`;
   const challengerTemplates = [
-    `${name}, tonight's domain on the line is ${domain}. How do you feel about your chances against ${opponentName}? Are you ready to take them on?`,
-    `${name}, you're up against ${opponentName} tonight, on ${domain}. Ready?`,
-    `${name}, ${domain} is what's at stake against ${opponentName}. How are you feeling?`,
-    `${name}, before we start the clock, are you ready to take on ${opponentName} on ${domain}?`,
+    `${name}, I hear you know ${originDomain} well. This match is on ${domain}, against ${opponentName}. Does that knowledge actually apply here?`,
+    `${name}, word is you know ${originDomain} well, ${stakesClause}. What do you really know about ${domain}?`,
+    `${name}, ${originDomain} is where you made your name. Now it's ${domain}, against ${opponentName}. Any real overlap there?`,
   ];
   const defenderTemplates = [
-    `${name}, ${opponentName} is coming for your ${domain} territory. Are you ready to defend it?`,
-    `${name}, you heard ${opponentName}. Are you ready to defend ${domain} against them?`,
-    `${name}, this is your ground to defend against ${opponentName}. Ready?`,
-    `${name}, ${opponentName} just challenged you on ${domain}. What do you say back?`,
+    `${name}, I hear you know ${originDomain} well. ${opponentName} is challenging you on ${domain}. Is that actually your strong suit?`,
+    `${name}, you know ${originDomain} well, ${stakesClause}. How much do you actually know about ${domain}?`,
+    `${name}, you're defending against ${opponentName}, on ${domain}. What do you actually know about it?`,
   ];
   const pool = role === 'challenger' ? challengerTemplates : defenderTemplates;
-  return withTemperamentAside(pickVaried(pool, 'challenge:' + playerId), playerId);
+  return pickVaried(pool, 'combined:' + playerId);
 }
 
 // The winner's push/retreat choice, announced as a real host<->player beat
@@ -1532,7 +2395,7 @@ function hostContinueBuildup(playerId) {
   const templates = [
     `${name}, big decision time. Push on, or pull back?`,
     `${name}, you're on a roll. What's the move?`,
-    `${name}, the board's watching. Keep going, or hold what you've got?`,
+    `${name}, everyone's waiting to see what you do next.`,
     `${name}, what'll it be?`,
   ];
   return pickVaried(templates, 'continueBuildup:' + playerId);
@@ -1573,14 +2436,27 @@ function draftCommentaryLine(data) {
   }
   if (Math.random() < 0.25) {
     const asides = [
-      `A ${data.profession} taking on ${data.domain}. We'll see how that plays out.`,
+      `${cap(articleFor(data.profession))} ${data.profession} taking on ${data.domain}. We'll see how that plays out.`,
       `${data.kingdom_name} on the board now, holding ${data.domain}.`,
       `Interesting pickup there for ${data.kingdom_name}.`,
-      `${data.domain} goes to a ${data.profession}. Not exactly a natural fit.`,
+      `${data.domain} goes to ${articleFor(data.profession)} ${data.profession}. Not exactly a natural fit.`,
     ];
     return pickVaried(asides, 'draftAside');
   }
   return null;
+}
+// Scott caught "A insurance underwriter taking on Dogs" in a live run --
+// wrong for any profession starting with a vowel SOUND. A plain
+// first-letter vowel check gets every entry in engine/models.py's
+// PROFESSIONS list right except one acronym: "HVAC technician" starts with
+// the consonant LETTER H but the vowel SOUND "aitch" ("an HVAC
+// technician," not "a"), so that one's called out as an explicit exception
+// rather than trusting spelling alone.
+const AN_EXCEPTIONS = ['hvac'];
+function articleFor(word) {
+  const w = (word || '').trim().toLowerCase();
+  if (AN_EXCEPTIONS.some(ex => w.startsWith(ex))) return 'an';
+  return /^[aeiou]/.test(w) ? 'an' : 'a';
 }
 
 // A short, fixed explainer that plays once automatically when the page
@@ -1591,9 +2467,25 @@ function draftCommentaryLine(data) {
 // random HOST_LINES pools -- it needs to read in order to work as an
 // explanation rather than a mood line.
 const INTRO_DIALOG = [
-  "Welcome to Dominion. Thirteen contestants draft, duel, and conquer this board for the grand prize.",
+  // Revision 23: "draft" (and "drafted" further down) read like a sports/HR
+  // term dropped into a kingdom-conquest fiction -- Scott: "I'm not sure
+  // 'draft' and all that makes perfect sense." Every other beat in this
+  // show talks about kingdoms, domains, and territory, so the opening
+  // ceremony is now "the Founding" throughout the user-facing script
+  // (spoken lines, the curtain-intro title, the finale recap card) --
+  // internal code/variable names (draftCommentaryLine, etc.) are untouched,
+  // since nobody ever sees those, only what's said and displayed.
+  "Welcome to Dominion. Thirteen contestants found their kingdoms, duel, and conquer this board for the grand prize.",
   "Every one of them is a real local AI model, thinking and answering live, right here in your browser.",
   "You're the audience tonight. Take a seat, and let's see who ends up holding the whole board.",
+  // Scott's ask: the host should tell the viewer about the prediction
+  // feature so they actually know it exists -- it was easy to miss
+  // otherwise. Revision 22: the actual pick happens later now, once the
+  // draft reveals the real roster (Scott: "let the human pick the
+  // prediction after player roster is set"), so this intro line just
+  // previews that it's coming rather than asking for a blind number pick
+  // right now, before anyone even exists to bet on.
+  "Once tonight's kingdoms have all been founded, you'll get a chance to predict the champion by name. Totally optional, just for fun.",
 ];
 // A fourth, dynamic line referencing the actual Standings data (Scott: "let's
 // let the host in on the current stats board before the show starts... a
@@ -1714,7 +2606,41 @@ function bounceAmphitheater(intensity = 4) {
   });
 }
 
-const MAX_CHATTER_LINES = 5;
+// The sparkle half of Scott's #127 ask ("the audience reacts with sparkles
+// if a player does well"): a handful of small star particles scattered
+// over the amphitheater box itself (see .aud-sparkle/position: relative
+// above), each popping and fading out over ~1s. Self-cleaning via
+// setTimeout rather than relying on animationend, matching spawnConfetti's
+// own pattern elsewhere in this file. count scales with how big the good
+// moment actually is -- a routine correct answer gets a light dusting, a
+// duel win gets a fuller burst.
+function sparkleAudience(count = 3) {
+  const rect = amphitheaterEl.getBoundingClientRect();
+  if (!rect.width) return;
+  for (let i = 0; i < count; i++) {
+    const el = document.createElement('div');
+    el.className = 'aud-sparkle';
+    el.textContent = '✨';
+    el.style.left = (8 + Math.random() * 82) + '%';
+    el.style.top = (15 + Math.random() * 65) + '%';
+    el.style.animationDelay = Math.round(Math.random() * 200) + 'ms';
+    amphitheaterEl.appendChild(el);
+    setTimeout(() => el.remove(), 1200);
+  }
+}
+
+// Was 5 -- the feed container itself already fills whatever vertical room
+// #lowerRow's stretch layout leaves next to the board (see .chatter-feed's
+// flex: 1 1 auto + overflow-y: auto), but capping content at 5 lines meant
+// most of that space just sat empty below a handful of short lines. Scott's
+// first-pass fix here added scroll + a much higher cap, but his actual ask
+// was simpler: no scrollbar at all, just stop at the board's own height
+// (see .chatter-feed's overflow: hidden above). Left generous rather than
+// reverted back to 5, since overflow: hidden means anything past the box's
+// real rendered height is just invisibly clipped anyway -- this cap only
+// matters for how much dead DOM piles up behind the scenes, not for what's
+// actually on screen.
+const MAX_CHATTER_LINES = 60;
 // label is an explicit "who's talking" prefix (e.g. "Crowd") for lines that
 // don't already name a speaker -- gossip lines already open with a named
 // player from GOSSIP_TEMPLATES, so they're left unlabeled on purpose.
@@ -1728,9 +2654,27 @@ function addChatterLine(text, cls, label) {
     line.appendChild(tag);
   }
   line.appendChild(document.createTextNode(text));
-  chatterFeedEl.appendChild(line);
+  // Scott: "the crowd updates should roll from top down, newest at the
+  // top." New lines land at the TOP now (insertBefore the current first
+  // child) rather than appended at the bottom, so the feed reads like a
+  // live ticker pushing older lines down and eventually off the bottom
+  // edge, instead of the old bottom-up chat-log order.
+  chatterFeedEl.insertBefore(line, chatterFeedEl.firstChild);
+  // Trim from the BOTTOM (oldest first, since oldest now lands there) until
+  // what's left actually fits within the box's real rendered height.
+  // overflow: hidden alone would clip whatever doesn't fit -- with the feed
+  // now growing downward from a fixed top edge, that's correctly the OLD
+  // lines at the bottom, but only once they're actually pushed past the
+  // box's height; measuring actual scrollHeight vs. clientHeight (rather
+  // than just capping at a flat line count) is what keeps exactly as many
+  // lines visible as the box next to the board can actually hold.
+  while (chatterFeedEl.children.length > 1 &&
+         chatterFeedEl.scrollHeight > chatterFeedEl.clientHeight) {
+    chatterFeedEl.removeChild(chatterFeedEl.lastChild);
+  }
+  // A hard ceiling regardless of measured height, just as a safety net.
   while (chatterFeedEl.children.length > MAX_CHATTER_LINES) {
-    chatterFeedEl.removeChild(chatterFeedEl.firstChild);
+    chatterFeedEl.removeChild(chatterFeedEl.lastChild);
   }
 }
 
@@ -1792,9 +2736,20 @@ async function maybeReactToTurn(d) {
     // the moment worth calling out every time it happens.
     addChatterLine(pickVaried(REACTION_LUCKY_BLURT, 'crowdLucky'), 'audience', 'Crowd');
     bounceAmphitheater();
+    sparkleAudience(6);
     playCrowdBlip();
+    // A lucky blurt landing is rare and genuinely surprising -- exactly the
+    // kind of beat Scott's new recorded crowd clips are for, layered on top
+    // of the existing synthesized blip rather than replacing it.
+    playCrowdBurst(0.5);
     return;
   }
+  // Sparkles specifically mark a player doing well (Scott's #127 ask),
+  // separate from bounceAmphitheater/chatter below -- always fires on a
+  // correct answer regardless of the audienceChance roll (a small, quiet
+  // flourish so it doesn't feel arbitrary that the crowd sometimes visibly
+  // enjoys a correct answer and sometimes doesn't).
+  if (d.outcome === 'correct') sparkleAudience(3);
   const audienceChance = d.outcome === 'correct' ? 0.55 : (d.outcome === 'passed' ? 0.2 : 0.4);
   if (Math.random() < audienceChance) {
     addChatterLine(pickVaried(REACTION_EXCLAIM, 'crowdExclaim'), 'audience', 'Crowd');
@@ -1842,17 +2797,54 @@ createAmphitheater();
 // runs exactly as before -- in virtually every real session that's a
 // near-instant wait, since the whole point of loading this page is to
 // interact with it.
+// Tracked so waitForTitleCard (below) can tell whether the gesture already
+// happened by the time its own 3s timer fires.
+let firstInteractionDone = false;
 function waitForFirstInteraction() {
   return new Promise(resolve => {
     const kinds = ['pointerdown', 'keydown', 'touchstart'];
     const handler = () => {
       kinds.forEach(k => document.removeEventListener(k, handler));
+      firstInteractionDone = true;
+      preShowHint.classList.remove('show');
+      warmUpSpeechEngine();
       resolve();
     };
     kinds.forEach(k => document.addEventListener(k, handler, { once: true, passive: true }));
   });
 }
-Promise.all([primeStatsIntroLine(), waitForFirstInteraction()]).then(playIntroDialog);
+// The silent 3-second title card (see #preShowTitleCard above) used to fade
+// on a fixed timer completely independent of user interaction -- but
+// speech stays gated on that same gesture (browsers block audio without
+// one), so if the card faded and the stage revealed before anyone had
+// clicked, the show looked fully loaded and running while the host stayed
+// silent with zero on-screen explanation why. Scott: "the host didn't
+// speak until I clicked an empty part of the screen" -- the gesture
+// requirement itself is real and can't be removed, but nothing told him it
+// was needed. Now the card holds past the 3s floor if no gesture has
+// landed yet, surfacing the "click or tap anywhere to begin" hint, and
+// only fades once the interaction actually happens -- so the reveal and
+// the first host line are never more than an instant apart.
+function waitForTitleCard() {
+  return new Promise(resolve => {
+    setTimeout(() => {
+      if (firstInteractionDone) {
+        preShowTitleCard.classList.add('fade');
+        resolve();
+        return;
+      }
+      preShowHint.classList.add('show');
+      const poll = setInterval(() => {
+        if (firstInteractionDone) {
+          clearInterval(poll);
+          preShowTitleCard.classList.add('fade');
+          resolve();
+        }
+      }, 120);
+    }, 3000);
+  });
+}
+Promise.all([primeStatsIntroLine(), waitForFirstInteraction(), waitForTitleCard()]).then(playIntroDialog);
 
 function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 // Professions in the data are plain lowercase ("night-shift security
@@ -1896,10 +2888,12 @@ function formatExpertiseLine(playerId) {
 // dialogue (ask, answer, reaction) instead of leaving the player's line
 // hanging with nothing acknowledging it. Deliberately generic/short: this
 // is texture between two live lines, not another thing to read carefully.
+// Revision 33 -- Scott flagged "duely noted" and bare "confident." as
+// stock/stale; dropped both, added a couple of fresher lines in their place.
 const INTERVIEW_REACTIONS = [
   "Bold words.", "We'll see if that holds up.", "Strong start.", "Noted.",
-  "That's a statement.", "Confident.", "We'll find out soon enough.",
-  "Let's see if they can back that up.", "Fair enough.", "Duly noted.",
+  "That's a statement.", "We'll find out soon enough.",
+  "Let's see if they can back that up.", "Fair enough.", "Good to know.",
 ];
 
 // Mood-matched reaction pools, sitting underneath the generic fallback
@@ -1913,22 +2907,65 @@ const INTERVIEW_REACTIONS = [
 // the six-call-per-duel cost the interview already runs -- but it's a
 // real, perceptible step up from a coin flip that ignores the content
 // entirely.
+// Revision 33 -- Scott flagged the exact line "Bold words. We'll see if
+// they can back that up." (and "measured take") as stale phrasing; reworded
+// this pool and trimmed the repeated use of "confidence."
 const REACTION_CONFIDENT = [
-  "Bold words. We'll see if they can back that up.", "Somebody's feeling good tonight.",
-  "That's the kind of confidence that either wins big or falls hard.",
-  "Strong talk. Let's see it on the board.", "No shortage of confidence there.",
+  "They came ready to play tonight.", "That kind of talk either pays off big or falls apart fast.",
+  "Strong words. Let's see them hold up.", "Not an ounce of hesitation there.",
+  "That's real confidence talking.",
 ];
 const REACTION_CAUTIOUS = [
   "A little nervous energy there, understandably.", "Respectful, and maybe a touch worried.",
-  "Playing it careful with that answer.", "That's a measured take.",
+  "Playing it safe with that answer.", "That's a careful, honest answer.",
   "Honest about the nerves, at least.",
 ];
 const REACTION_EXPERTISE = [
   "Sounds like real expertise talking.", "They know this one cold.",
-  "That's home-turf confidence, and it shows.", "Hard to argue with actual know-how.",
+  "That's real home-turf knowledge, and it shows.", "Hard to argue with actual know-how.",
+];
+// A player admitting they're OUT of their depth (the common "outside
+// their home turf... just an amateur guess" challenge-round line) is its
+// own real signal, not a failure to match anything else -- reacting to it
+// like uncertain honesty rather than either flat confidence or expertise.
+const REACTION_AMATEUR = [
+  "Fair enough, an honest admission.", "No shame in that.",
+  "We'll see if instinct can carry them anyway.", "Going in as the underdog on this one.",
+  "Nothing like flying blind for real drama.",
+];
+// Revision 32 -- Scott: "he doesn't really seem to understand their
+// responses" combined with the new push toward players actually reasoning
+// about cross-domain connections (e.g. "my farm knowledge might help with
+// ocean animals, they're both animal categories" -- see the
+// PROFESSION_DOMAIN_AFFINITY/DOMAIN_CATEGORIES tiers in ollama_agent.py's
+// intro_line_combined). Without a dedicated bucket, that kind of answer
+// fell through to the flat INTERVIEW_REACTIONS pool below, which reads as
+// the host not having tracked what was actually a fairly specific claim.
+const REACTION_CONNECTION = [
+  "That's a real connection, not just a guess.", "Clever angle, tying those together.",
+  "Making the leap between the two look easy.", "That's some genuine cross-domain thinking.",
+  "Didn't expect that link, but it tracks.",
 ];
 function reactionPoolFor(text) {
   const lower = (text || '').toLowerCase();
+  // Checked FIRST and disqualifies the expertise match below: the canned
+  // "tonight tests X, outside their home turf. Just an amateur guess from
+  // here" line contains the literal phrase "home turf" while explicitly
+  // saying the OPPOSITE of expertise -- Scott's report of the host
+  // praising "expertise in action" right after a player admits to a
+  // guess was exactly this: a naive keyword match with no notion of
+  // negation.
+  if (/amateur|outside (their|your|his|her) home turf|no more informed|not (their|your|his|her) (subject|domain|specialty)/.test(lower)) {
+    return { pool: REACTION_AMATEUR, key: 'interviewReaction:amateur' };
+  }
+  // Also checked before the plain expertise match -- a connection claim
+  // ("both animal categories", "carries over", "overlap") often ALSO
+  // contains "expert"/"know" language about the origin domain, but the
+  // more specific, more interesting thing being said is the cross-domain
+  // link itself.
+  if (/carr(y|ies) over|both (are|have|involve|deal with)|overlap|edge here|real edge|connection|similar (to|enough)|transfers?\b|not (so|that) different|same (category|kind of|type of)/.test(lower)) {
+    return { pool: REACTION_CONNECTION, key: 'interviewReaction:connection' };
+  }
   if (/expert|inside and out|home turf|know this|specialty|studied/.test(lower)) {
     return { pool: REACTION_EXPERTISE, key: 'interviewReaction:expertise' };
   }
@@ -2034,6 +3071,17 @@ const SOUND_FILES = {
   fanfare: 'sounds/fanfare.mp3',
   countdown: 'sounds/countdown-pulse.mp3',
   victory: 'sounds/victory-jingle.mp3',
+  // Scott's 3 new real recorded crowd tracks ("I've added the directory
+  // audience to our sounds directory... incorporate into the dead airtime
+  // and reactions"). Unlike the three ~2-2.5min music tracks above, these
+  // are short one-shot crowd hits, not underscore -- crowdRally/crowdConcert
+  // are each ~1.07s (a quick burst of cheering/chanting), crowdApplause is
+  // ~4.08s (a bigger, sustained round of applause). Reused via the same
+  // getSoundNode/playRecordedSound machinery -- no need for a separate
+  // playback path just because these happen to be short.
+  crowdRally: 'sounds/audience/crowd-rally.mp3',
+  crowdConcert: 'sounds/audience/crowd-concert.mp3',
+  crowdApplause: 'sounds/audience/crowd-applause.mp3',
 };
 const soundNodes = {}; // key -> { audioEl } -- lazily created, reused across plays
 
@@ -2100,6 +3148,35 @@ function stopLoopingSound(key, fadeMs = 500) {
   if (!node) return;
   node.audioEl.loop = false;
   fadeOutAndStop(node.audioEl, fadeMs);
+}
+
+// A quick, real crowd burst -- the two short ~1.07s tracks (crowdRally,
+// crowdConcert) alternated via pickVaried so back-to-back reactions don't
+// obviously repeat the same clip. For punctuating a single "the crowd
+// audibly reacted right here" beat: lucky blurts, dead-air draft picks,
+// bonus/milestone moments -- NOT the frequent per-turn playCrowdBlip above,
+// which fires often enough that a full recorded clip there would get
+// repetitive fast (that's exactly why playCrowdBlip stays a tiny
+// synthesized murmur instead).
+const CROWD_BURST_KEYS = ['crowdRally', 'crowdConcert'];
+function playCrowdBurst(volume = 0.55) {
+  const key = pickVaried(CROWD_BURST_KEYS, 'crowdBurst');
+  playRecordedSound(key, { volume });
+}
+
+// The bigger ~4.08s "Thunderous applause" track, played to completion but
+// deliberately clipped short at a RANDOMIZED point most of the time --
+// Scott: "they probably run a little long but can be clipped at different
+// intervals for some variance." Reusing fadeOutAndStop (already built for
+// the full music tracks above) rather than pre-slicing the file into
+// multiple physical clips -- one source file, a different real stopping
+// point almost every time it plays, so the same track never sounds
+// identical twice in a row. minMs/maxMs let the caller bias how big a
+// moment this is (an upset duel win gets more of the full swell than an
+// ordinary one, see celebrateDuelWinner).
+function playCrowdApplause(minMs = 1200, maxMs = 4000, volume = 0.6) {
+  const clipMs = Math.min(4000, minMs + Math.random() * Math.max(0, maxMs - minMs));
+  playRecordedSound('crowdApplause', { volume, fadeOutAfterMs: Math.max(0, clipMs - 350), fadeMs: 350 });
 }
 
 function playTone(freq, startDelay, duration, type = 'triangle', peak = 0.22) {
@@ -2245,7 +3322,9 @@ async function playCountdownIntro() {
 // once per duel (right after the countdown beat); stopped (with a fade, not
 // a hard cutoff) the instant a winner is decided, in celebrateDuelWinner.
 function startDramaMusic() {
-  playRecordedSound('countdown', { volume: 0.45, loop: true });
+  // Trimmed from 0.45 -- Scott: "game background music is just a touch
+  // too loud," specifically the looping duel/gameplay track.
+  playRecordedSound('countdown', { volume: 0.34, loop: true });
 }
 
 function stopDramaMusic() {
@@ -2387,7 +3466,7 @@ async function playCurtainIntro() {
   // draw (domains staked out first, then drafted) now lives here instead,
   // as a couple of title beats shown once during setup rather than text
   // that sat under the board for the entire rest of the game.
-  const beats = ['Pre-Production', 'Domains Take The Board', 'Now The Draft Begins'];
+  const beats = ['Pre-Production', 'Domains Take The Board', 'Now The Founding Begins'];
   for (const line of beats) {
     curtainText.textContent = line;
     curtainText.classList.add('show');
@@ -2480,7 +3559,7 @@ function finaleCard(d, extra) {
   el.className = 'card finale';
   let startLine = '';
   if (extra.startingDomain && extra.startingDomain !== d.champion_domain) {
-    startLine = `<div class="body-line dim">Drafted <b>${extra.startingDomain}</b> at the start${extra.startedOnStage ? ', right onto the Challenge Stage' : ''}, before the board carried them here.</div>`;
+    startLine = `<div class="body-line dim">Founded on <b>${extra.startingDomain}</b> at the start${extra.startedOnStage ? ', right onto the Challenge Stage' : ''}, before the board carried them here.</div>`;
   } else if (extra.startingDomain) {
     startLine = `<div class="body-line dim">Defended <b>${extra.startingDomain}</b> the entire show, start to finish${extra.startedOnStage ? ', from the Challenge Stage on down' : ''}.</div>`;
   }
@@ -2969,6 +4048,10 @@ async function animateClock(clockEl, fromVal, toVal, ms) {
   const clampedFrom = Math.max(0, fromVal);
   const span = clampedFrom - clampedTo;
   const start = Date.now();
+  // Snapshot of all pause time accrued BEFORE this animation started --
+  // pausedAwareElapsed only ever subtracts pause time accrued after this
+  // point, so an old pause from an earlier duel can't leak in here.
+  const pausedBaseline = totalPausedMs();
   return new Promise(resolve => {
     // Driven by setInterval + Date.now() elapsed time, NOT
     // requestAnimationFrame: rAF is fully suspended the instant a tab isn't
@@ -2998,7 +4081,11 @@ async function animateClock(clockEl, fromVal, toVal, ms) {
     };
     const tick = () => {
       if (done) return;
-      const t = Math.min(1, (Date.now() - start) / ms);
+      // Also floored at 0 -- belt and suspenders against any timer ever
+      // reading as having gone "backwards" (e.g. a pause toggled at the
+      // exact instant this animation starts), which would otherwise show
+      // the clock briefly ABOVE its true starting value.
+      const t = Math.min(1, Math.max(0, pausedAwareElapsed(start, pausedBaseline) / ms));
       const val = Math.max(0, clampedFrom - span * t);
       clockEl.textContent = String(displaySeconds(val));
       if (t >= 1) finish();
@@ -3033,6 +4120,46 @@ let stageDefenderTerritory = 0;
 function countTerritory(playerId) {
   return Object.values(tileOwner).filter(owner => owner === playerId).length;
 }
+// A literal traveling marker from the challenger's actual board tile to
+// the duel stage badge -- Scott's #127 ask: "when a player is choosing
+// their competition... it would be cool if they walked off the board and
+// into the other badge." tileEls (populated by renderBoard) gives a real
+// on-page element per board node, and playerColorNode[playerId] gives
+// which node that player actually stands on, so this isn't a fake/generic
+// travel path -- it starts from exactly where that contestant's own tile
+// is rendered right now. Silently resolves and does nothing if the tile
+// isn't resolvable for any reason (very first duel before a node is known,
+// a layout mid-transition, etc.) -- this is a bonus flourish layered on
+// top of the existing toddle-in waddle, never something openStage's
+// sequencing can depend on succeeding.
+function flyToStage(playerId, destEl) {
+  const node = playerColorNode[playerId];
+  const tileEl = (node != null && tileEls[node]) ? tileEls[node] : null;
+  if (!tileEl || !destEl) return Promise.resolve();
+  const srcRect = tileEl.getBoundingClientRect();
+  const destRect = destEl.getBoundingClientRect();
+  if (!srcRect.width || !destRect.width) return Promise.resolve();
+  const avatar = document.createElement('div');
+  avatar.className = 'board-travel-avatar';
+  avatar.style.background = '#' + playerColor(playerId);
+  avatar.style.left = (srcRect.left + srcRect.width / 2 - 9) + 'px';
+  avatar.style.top = (srcRect.top + srcRect.height / 2 - 9) + 'px';
+  document.body.appendChild(avatar);
+  return new Promise(resolve => {
+    // Two nested rAFs: the first commits the starting position as an
+    // actually-painted frame, the second (one frame later) applies the
+    // destination -- changing both in the same tick would just snap
+    // straight there with no transition, since the browser never gets a
+    // chance to render the "before" state.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        avatar.style.left = (destRect.left + destRect.width / 2 - 9) + 'px';
+        avatar.style.top = (destRect.top + destRect.height / 2 - 9) + 'px';
+      });
+    });
+    setTimeout(() => { avatar.remove(); resolve(); }, 900);
+  });
+}
 let clockState = { left: BASE_CLOCK, right: BASE_CLOCK };
 // Tracks whatever prompt is currently on screen so the reveal animation
 // only replays when the image actually changes (a fresh question after a
@@ -3054,8 +4181,14 @@ async function openStage(d) {
   stageTestedDomain = d.tested_domain;
   stageChallengerTerritory = countTerritory(d.challenger_id);
   stageDefenderTerritory = countTerritory(d.defender_id);
-  nameLeft.textContent = displayName(d.challenger_id);
-  nameRight.textContent = displayName(d.defender_id);
+  // "P#: Kingdom" rather than just the kingdom name -- Scott: the badge was
+  // "missing" the player number, making it hard to trace the same
+  // contestant across the roster panel (which leads with P#), the board,
+  // and this Challenge Stage badge. Kingdom name stays, since that's still
+  // the friendlier on-air identity -- the number is just added back as the
+  // plain cross-reference key.
+  nameLeft.textContent = `P${d.challenger_id + 1}: ${displayName(d.challenger_id)}`;
+  nameRight.textContent = `P${d.defender_id + 1}: ${displayName(d.defender_id)}`;
   faceLeft.innerHTML = buildPixelFace(d.challenger_id);
   faceRight.innerHTML = buildPixelFace(d.defender_id);
   // Toddle-in only for a challenger RNGG genuinely just called up fresh
@@ -3138,13 +4271,18 @@ async function openStage(d) {
   duelStage.classList.add('active');
   duelStage.scrollIntoView({ behavior: 'smooth', block: 'center' });
   if (shouldToddle) {
-    // Give the smooth scroll a beat to actually arrive before playing a
-    // 0.9s animation the audience needs to already be looking at.
+    // Give the smooth scroll a beat to actually arrive before playing an
+    // animation the audience needs to already be looking at. flyToStage
+    // first (the real cross-page walk from the board tile to this badge --
+    // Scott: "it would be cool if they walked off the board and into the
+    // other badge"), THEN the existing local toddle-in waddle plays as the
+    // "landing" flourish once they've actually arrived.
     await sleep(350);
+    await flyToStage(d.challenger_id, faceLeft);
     void faceLeft.offsetWidth; // force reflow so the animation replays every time
     faceLeft.classList.add('toddle-in');
   }
-  sayHost('preduel');
+  sayHostText(preduelHostLine(d.challenger_id, d.defender_id, leftStreak, rightStreak, stageChallengerTerritory, stageDefenderTerritory));
   // Countdown/music are deferred to the first duel_turn event -- see
   // duelCountdownPending -- so the two pre_duel_intro lines that stream in
   // next (challenger, then defender) get their moment first.
@@ -3212,6 +4350,7 @@ function startRapidFireGuesses(playerId, distractors, totalMs, lucky, answer) {
   };
   flick();
   const timerId = setInterval(() => {
+    if (isPaused) return; // skip this tick while paused; resumes flicking automatically once unpaused
     if (i >= order.length) { clearInterval(timerId); return; }
     flick();
   }, interval);
@@ -3299,7 +4438,7 @@ async function playDuelTurn(d) {
     playCrowdBlip();
     addChatterLine(pickVaried(PASS_REACTIONS, 'crowdPass'), 'audience', 'Crowd');
     if (Math.random() < 0.35) {
-      sayHostText(pickVaried(PASS_HOST_LINES, 'hostPass'));
+      sayHostText(passHostLine(d.clock_remaining));
     }
     await sleep(300);
     activeEl.classList.add('flash-pass');
@@ -3380,12 +4519,23 @@ async function celebrateDuelWinner(d) {
     winnerTagEl.innerHTML = '&#127881; UPSET WIN!';
     playUpsetFanfare();
     spawnConfetti(40);
-    sayHost('winUpset');
+    sayHostText(winUpsetHostLine(winnerId, d.loser_id));
   } else {
     winnerTagEl.innerHTML = '&#127942; WINS!';
     playDuelCompleteSound();
-    sayHost(isClose ? 'winClose' : 'win');
+    sayHostText(isClose ? winCloseHostLine(winnerId, stageTestedDomain) : winHostLine(winnerId, stageTestedDomain));
   }
+  // Winning a duel is the clearest "did well" moment in the whole show --
+  // gets a bigger sparkle burst than an ordinary correct answer regardless
+  // of upset status (spawnConfetti above already sets upsets apart with
+  // its own full-page treatment; this is on top of that, not instead).
+  sparkleAudience(isUpset ? 9 : 5);
+  // Scott's new recorded applause track, layered under the existing
+  // synthesized win stings above -- every duel win gets some of it, an
+  // upset gets a longer stretch of the real swell (playCrowdApplause clips
+  // the same source file at a randomized point each time, so 12 wins in one
+  // show never sound like the exact same loop -- see that function).
+  playCrowdApplause(isUpset ? 2200 : 1000, isUpset ? 4000 : 2200, isUpset ? 0.65 : 0.5);
 
   winEl.classList.add('victory');
   await sleep(isUpset ? 2500 : 1900); // upsets get an even longer beat
@@ -3397,15 +4547,21 @@ async function celebrateDuelWinner(d) {
 // off screen, re-spot light on Winner." %s is replaced with the loser's
 // playerLabel. Deliberately a little warm/wistful rather than mocking --
 // this is a contestant's whole run ending, not a gag.
+// Scott: "losers are not getting dismissed out loud... we need a real
+// announced Goodbye! Thanks for playing player! kinda moment." The old
+// pool WAS spoken (sayHostText below always was), but every line stayed
+// vague ("the end of the road," "takes a bow") rather than an explicit,
+// unambiguous farewell -- easy to half-hear as just more color commentary
+// rather than the show formally confirming this contestant is out. Every
+// line now leads or closes with an actual "goodbye"/"thanks for playing"
+// beat, name included, so there's no mistaking it for anything else.
 const ELIMINATION_LINES = [
-  "And that's the end of the road for %s.",
-  "%s takes a bow. What a run it was.",
-  "%s's kingdom falls, but they gave it everything.",
-  "That's a wrap for %s tonight.",
-  "%s exits the board. The dream ends here.",
-  "One last look at %s before they go.",
-  "%s's journey ends, but not without a fight.",
-  "The board says goodbye to %s.",
+  "Goodbye, %s! Thanks for playing tonight.",
+  "That's it for %s. Thanks for playing, and take a bow.",
+  "%s is eliminated. Thanks for playing tonight!",
+  "Goodbye, %s! Your run ends here tonight.",
+  "Thanks for playing, %s! The board says goodbye.",
+  "%s, you're out. Thanks for playing tonight!",
 ];
 
 // Runs between celebrateDuelWinner() and interDuelReactionBeat(): the loser
@@ -3428,7 +4584,16 @@ async function eliminationBeat(loserId, winnerId) {
 
   loseEl.classList.add(exitClass);
   winEl.classList.add('spotlight-solo');
-  await sleep(950);
+  // Held to actually cover the toddle-off's full 1.6s exit, PLUS real
+  // slack afterward -- Revision 28, Scott: "the new picks and dismissals
+  // get lost and aren't given enough time [for] other player[s] to get a
+  // roster update." 1650ms only just covered the animation itself with no
+  // room left to actually read the goodbye line or notice the Player
+  // Roster panel had already dropped this contestant (renderModelRosterPlayers
+  // runs the instant duel_result lands, before this beat even starts --
+  // see the duel_result handler above). Holding longer here is what makes
+  // that already-correct roster update actually visible on screen.
+  await sleep(2400);
   loseEl.classList.remove(exitClass);
   winEl.classList.remove('spotlight-solo');
 }
@@ -3439,7 +4604,7 @@ async function closeStage() {
   await sleep(350);
 }
 
-const THINKING_LABEL = { target: 'choosing a target', continue: 'deciding whether to push on', tax: 'choosing a domain tax target', intro: 'weighing in on tonight’s domain' };
+const THINKING_LABEL = { target: 'choosing a target', continue: 'deciding whether to push on', tax: 'choosing a domain tax target', intro: 'weighing in on tonight’s domain', attempt: 'answering the question' };
 
 // A growing queue fed by the streaming /api/run-show response (see
 // startShow) -- events can now take real, variable time to produce (a
@@ -3478,6 +4643,34 @@ const STILL_WAITING_LINES = [
 ];
 let stillThinkingTimer = null;
 
+// Only auto-follows new feed cards down the page if the viewer hasn't
+// deliberately scrolled away to read back through history -- Scott's
+// report that scrolling "isn't going all the way down or all the way up"
+// was this: with 500+ events streaming through a single show,
+// unconditionally calling scrollIntoView() on every single new card
+// fights any attempt to scroll up (the next card snaps the page back
+// down before you get far), and scrolling one specific ephemeral element
+// into view -- rather than the page's actual bottom -- can undershoot
+// when another card gets appended moments later, changing the true page
+// height out from under an already-in-flight smooth scroll. "Near
+// bottom" is captured BEFORE the append, not after, since appending a
+// tall card changes the page height and would otherwise make an
+// already-following viewer look like they'd fallen behind.
+function isNearPageBottom() {
+  return window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 140;
+}
+function appendFeedCard(el) {
+  if (!el) return;
+  const wasAtBottom = isNearPageBottom();
+  stage.appendChild(el);
+  if (wasAtBottom) {
+    // Scrolls the page's actual bottom, not just this element into view,
+    // so a burst of several cards landing close together still ends up
+    // at the true end instead of wherever the first of them happened to sit.
+    window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+  }
+}
+
 async function runShowPlayback(queue) {
   const events = queue.items;
   for (let i = 0; ; i++) {
@@ -3495,6 +4688,17 @@ async function runShowPlayback(queue) {
       // the stream -- nothing to sleep for here, just surface who's live.
       agentThinkingEl.textContent = `\u{1F9E0} ${ev.data.model} is ${THINKING_LABEL[ev.data.decision] || 'deciding'}…`;
       agentThinkingEl.classList.add('show');
+      // Echoes the same live-call status right on that player's own
+      // Player Roster row -- Scott liked this idea enough to ask for it
+      // explicitly. Only one player is ever actually thinking at a time in
+      // this engine, so a flat reset-then-set is enough (no need to track
+      // per-player timing beyond "is it THIS one right now"). Cancels any
+      // still-pending clear from the PREVIOUS player's thinking beat so it
+      // can't fire late and wipe out this new one.
+      clearTimeout(playerThinkingClearTimer);
+      playerThinking = { [ev.data.player_id]: true };
+      playerThinkingSetAt = Date.now();
+      renderModelRosterPlayers();
       clearTimeout(stillThinkingTimer);
       // Only worth a reaction if the wait is genuinely still going after a
       // few real seconds -- guarded so this can never fire once the
@@ -3511,6 +4715,22 @@ async function runShowPlayback(queue) {
     if (agentThinkingEl.classList.contains('show')) {
       agentThinkingEl.classList.remove('show');
       clearTimeout(stillThinkingTimer);
+      if (Object.keys(playerThinking).length) {
+        // Deferred to at least PLAYER_THINKING_MIN_MS after it was set, not
+        // cleared immediately -- a fast enough model reply could otherwise
+        // set-then-clear the roster's thinking tag close enough together
+        // that it never actually gets perceived, which was Scott's report.
+        // The setTimeout itself (a real macrotask boundary), not just the
+        // delay, is what guarantees the browser gets a chance to paint the
+        // "on" state at all before it's wiped.
+        const elapsed = Date.now() - playerThinkingSetAt;
+        const wait = Math.max(0, PLAYER_THINKING_MIN_MS - elapsed);
+        clearTimeout(playerThinkingClearTimer);
+        playerThinkingClearTimer = setTimeout(() => {
+          playerThinking = {};
+          renderModelRosterPlayers();
+        }, wait);
+      }
     }
     if (ev.type === 'show_start') {
       // Don't reveal a count yet -- no one has actually been placed on
@@ -3554,6 +4774,9 @@ async function runShowPlayback(queue) {
       playerStartDomain[ev.data.player_id] = ev.data.origin_domain;
       playerTemperament[ev.data.player_id] = ev.data.temperament_label;
       playerModel[ev.data.player_id] = ev.data.model;
+      // Live-updates the left-side roster panel as each pick lands, one
+      // "P{n}: model param-size" row at a time -- see renderModelRosterPlayers.
+      renderModelRosterPlayers();
       playerColorNode[ev.data.player_id] = ev.data.node;
       fillTile(ev.data.node, ev.data.player_id);
       playDraftChime();
@@ -3563,14 +4786,34 @@ async function runShowPlayback(queue) {
       // earned it -- see the function itself for what counts as notable.
       const draftLine = draftCommentaryLine(ev.data);
       if (draftLine) {
-        await speakAndHold(sayHostText(draftLine), 900);
+        // Revision 28 -- Scott: "the new picks and dismissals get lost and
+        // aren't given enough time [for] other player[s] to get a roster
+        // update." 900ms was barely enough to register the tile filling
+        // in, let alone read the new Player Roster row before the next
+        // pick started -- raised so the pick genuinely holds on screen.
+        await speakAndHold(sayHostText(draftLine), 1500);
       } else {
-        await sleep(480);
+        // Scott: "incorporate [the new crowd clips] into the dead
+        // airtime" -- most picks are silent (draftCommentaryLine only
+        // speaks up for the notable ones), which otherwise reads as a
+        // real quiet stretch with just a chime. A modest, not-every-time
+        // chance at a quick crowd burst here fills some of that without
+        // turning every single one of the 13 picks into a cheering match.
+        // Also raised (480ms -> 850ms) alongside the commentary case above,
+        // same reasoning -- a silent pick still needs enough hold time for
+        // its own new roster row to actually be readable.
+        if (Math.random() < 0.3) playCrowdBurst(0.4);
+        await sleep(850);
       }
       if (ev.data.remaining_after === 0) {
         // The full cast is now on the board -- first moment a "players
         // remaining" count actually describes something real.
         updatePlayersRemaining(playersRemainingCount);
+        // Revision 22: this is also the first moment there's a real roster
+        // to predict against -- pause here for the viewer's pick (see
+        // waitForPostDraftPrediction above) instead of asking for one
+        // blind, before Start, back when only bare player numbers existed.
+        await waitForPostDraftPrediction();
       }
       continue;
     }
@@ -3582,10 +4825,7 @@ async function runShowPlayback(queue) {
       // card too (cardFor below), this doesn't replace that.
       pendingSpotlightToddlePid = ev.data.player_id;
       const spotlightEl = cardFor(ev);
-      if (spotlightEl) {
-        stage.appendChild(spotlightEl);
-        spotlightEl.scrollIntoView({ behavior: 'smooth', block: 'end' });
-      }
+      appendFeedCard(spotlightEl);
       continue;
     }
     if (ev.type === 'challenge_declared') {
@@ -3595,38 +4835,41 @@ async function runShowPlayback(queue) {
         // something invoked mid-turn.
         const el = card('advantage prize-highlight', 'Bonus Cashed In',
           `${displayName(ev.data.challenger_id)} tells the host: cashing in the banked bonus for this duel.`, '&#9889;');
-        stage.appendChild(el);
-        el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        appendFeedCard(el);
         playBonusCrescendo();
-        sayHost('bonus');
+        sayHostText(bonusSpentHostLine(ev.data.challenger_id));
         await sleep(800);
       }
       await openStage(ev.data);
       continue;
     }
     if (ev.type === 'pre_duel_intro') {
-      // Host intro for BOTH sides, THREE rounds each now (origin domain,
-      // the domain actually being challenged, and -- newest -- their read
-      // on the specific opponent), streamed as its own event per game.py --
-      // shown before the countdown, which duel_turn below is responsible
-      // for kicking off once all six have run. A directed host question
-      // comes first (see hostPreduelQuestion), held long enough to
-      // actually read, THEN the player's answer -- together this is the
-      // real 2-way host<->player exchange Scott asked for.
-      // Both sides get the opponent's name (and id, for the temperament
-      // callout in the 'opponent' phase) -- Scott's direct-question
-      // example asks the CHALLENGER "are you ready to take on Player Y?"
-      // too, which needs the defender's name in hand either way.
+      // Host intro for BOTH sides, ONE combined round each now, streamed as
+      // its own event per game.py -- shown before the countdown, which
+      // duel_turn below is responsible for kicking off once both have run.
+      // Used to be three separate rounds (origin domain, tested domain,
+      // read on the opponent) but Scott reported it read like three
+      // disconnected exchanges rather than one host who actually knows the
+      // cast, and asked for it condensed into a single loaded question --
+      // see hostPreduelQuestion's own comment for his exact example. A
+      // directed host question comes first, held long enough to actually
+      // read, THEN the player's answer -- together this is the real 2-way
+      // host<->player exchange Scott asked for.
       const opponentId = ev.data.role === 'defender' ? stageChallengerId : stageDefenderId;
       const opponentName = displayName(opponentId);
-      await speakAndHold(sayHostText(hostPreduelQuestion(ev.data.player_id, ev.data.role, ev.data.phase, stageTestedDomain, opponentName, opponentId)), 1200);
+      await speakAndHold(sayHostText(hostPreduelQuestion(ev.data.player_id, ev.data.role, stageTestedDomain, opponentName, opponentId)), 1200);
       await showDomainIntro(ev.data.player_id, ev.data.role, ev.data.text);
       continue;
     }
     if (ev.type === 'duel_turn') {
       if (duelCountdownPending) {
         duelCountdownPending = false;
-        await sleep(200);
+        // Scott: "the last thing the host should say before the 'get
+        // ready' shows is 'Get ready to compete!'" -- a fixed line, not
+        // a varied pool, since this is a specific closing cue the host
+        // hits every single duel right as the interview beat hands off
+        // to the countdown visual.
+        await speakAndHold(sayHostText('Get ready to compete!'), 200);
         await playCountdownIntro();
         startDramaMusic();
       }
@@ -3634,11 +4877,27 @@ async function runShowPlayback(queue) {
       if (ev.data.outcome === 'correct') { s.correct++; s.totalCorrectSeconds += ev.data.seconds_used; }
       else if (ev.data.outcome === 'incorrect') { s.incorrect++; }
       else if (ev.data.outcome === 'passed') { s.passed++; }
+      // lucky_blurt attempts never call the agent at all (duel.py) so
+      // they're excluded from the live/fallback tally entirely -- neither
+      // a real live call nor a scripted fallback happened, there's simply
+      // nothing to count here.
+      if (!ev.data.lucky_blurt) {
+        if (ev.data.live) liveAttemptCount++; else fallbackAttemptCount++;
+        renderModelActivityStat();
+      }
       await playDuelTurn(ev.data);
       continue;
     }
     if (ev.type === 'duel_result') {
       ensureStats(ev.data.winner_id).wins++;
+      // Scott: "as players are eliminated, they should be taken off the
+      // roster." Marked the instant the result lands, before any of the
+      // celebration/send-off beats play out, and the roster re-rendered
+      // right away rather than waiting for eliminationBeat's animation to
+      // finish -- the Player Roster panel is a status list, not part of the
+      // stage drama, so it should update as soon as the fact is true.
+      playerEliminated[ev.data.loser_id] = true;
+      renderModelRosterPlayers();
       await celebrateDuelWinner(ev.data);
       // The loser's send-off -- a spoken goodbye line + a "toddling off
       // screen" exit animation, with the winner re-spotlighted alone --
@@ -3674,10 +4933,10 @@ async function runShowPlayback(queue) {
     if (ev.type === 'territory_milestone') {
       const el = card('advantage prize-highlight', 'Territory Milestone',
         `${displayName(ev.data.player_id)} reaches <b>${ev.data.territory} tiles</b> and banks a <b>${fmtMoney(ev.data.bonus)}</b> milestone bonus.`, '&#128176;');
-      stage.appendChild(el);
-      el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      appendFeedCard(el);
       playBonusCrescendo();
-      sayHost('milestone');
+      playCrowdBurst(0.5);
+      sayHostText(milestoneHostLine(ev.data));
       await sleep(700);
       continue;
     }
@@ -3686,8 +4945,9 @@ async function runShowPlayback(queue) {
       // player has just earned a real advantage, before seeing which one
       // they choose to spend it on.
       const el = cardFor(ev);
-      if (el) { stage.appendChild(el); el.scrollIntoView({ behavior: 'smooth', block: 'end' }); }
-      sayHost('advantage');
+      appendFeedCard(el);
+      playCrowdBurst(0.45);
+      sayHostText(advantageHostLine(ev.data));
       await sleep(850);
       continue;
     }
@@ -3697,28 +4957,34 @@ async function runShowPlayback(queue) {
       relabelPlayerTiles(ev.data.from_id);
       relabelPlayerTiles(ev.data.to_id);
       const el = cardFor(ev);
-      if (el) { stage.appendChild(el); el.scrollIntoView({ behavior: 'smooth', block: 'end' }); }
+      appendFeedCard(el);
+      // Was silent here -- see this section's HOST_LINES header comment:
+      // the "domain tax, ruthless" flavored line used to fire on
+      // time_bonus_banked below instead, which never seizes anything. This
+      // is the event that actually seizes a domain, so it's the one that
+      // should get that line.
+      sayHostText(domainTaxHostLine(ev.data));
       await sleep(700);
       continue;
     }
     if (ev.type === 'time_bonus_banked') {
       const el = cardFor(ev);
-      if (el) { stage.appendChild(el); el.scrollIntoView({ behavior: 'smooth', block: 'end' }); }
-      sayHost('tax');
+      appendFeedCard(el);
+      sayHostText(bankedBonusHostLine(ev.data));
       await sleep(700);
       continue;
     }
     if (ev.type === 'burst_prize') {
       const el = cardFor(ev);
-      if (el) { stage.appendChild(el); el.scrollIntoView({ behavior: 'smooth', block: 'end' }); }
-      sayHost('burst');
+      appendFeedCard(el);
+      sayHostText(burstHostLine(ev.data));
       await sleep(700);
       continue;
     }
     if (ev.type === 'scramble') {
       const el = cardFor(ev);
-      if (el) { stage.appendChild(el); el.scrollIntoView({ behavior: 'smooth', block: 'end' }); }
-      sayHost('scramble');
+      appendFeedCard(el);
+      sayHostText(scrambleHostLine(ev.data));
       await rebuildBoardAfterScramble(ev.data);
       continue;
     }
@@ -3743,6 +5009,10 @@ async function runShowPlayback(queue) {
       };
       const el = finaleCard(ev.data, extra);
       stage.appendChild(el);
+      // Unconditional, unlike appendFeedCard elsewhere -- the champion
+      // reveal is worth pulling a viewer's attention back down for even if
+      // they'd scrolled up to read history, the one moment in the whole
+      // show that's worse to miss than to be interrupted for.
       el.scrollIntoView({ behavior: 'smooth', block: 'end' });
       // A second copy (not the same node -- it's still live in the
       // scrolling feed above) goes into the New Game popup, so the winner
@@ -3750,12 +5020,17 @@ async function runShowPlayback(queue) {
       // attention, rather than needing to scroll back up to see it again.
       overlayFinaleContent.innerHTML = '';
       overlayFinaleContent.appendChild(finaleCard(ev.data, extra));
-      sayHost('finale');
+      sayHostText(finaleHostLine(ev.data));
       // The one moment in the whole show that gets a real produced needle
       // drop instead of a synthesized sting -- the grand prize win, held
       // roughly as long as the New Game popup takes to appear (6s) so it
       // doesn't cut off abruptly right as new content shows up on screen.
       playRecordedSound('victory', { volume: 0.75, fadeOutAfterMs: 6000, fadeMs: 700 });
+      // The grand prize win is the single biggest moment in the whole show
+      // -- gets the crowd applause at close to its full ~4s length rather
+      // than the shorter clips used for an ordinary duel win, layered under
+      // the victory jingle above rather than instead of it.
+      playCrowdApplause(3200, 4000, 0.6);
       spawnConfetti();
       scheduleNewGamePopup();
       continue;
@@ -3791,31 +5066,49 @@ async function runShowPlayback(queue) {
       interviewBannerEl.classList.remove('show', 'decision', 'push', 'retreat');
       interviewTagEl.textContent = '🎤 Interview';
       const decisionEl = cardFor(ev);
-      if (decisionEl) {
-        stage.appendChild(decisionEl);
-        decisionEl.scrollIntoView({ behavior: 'smooth', block: 'end' });
-      }
+      appendFeedCard(decisionEl);
       continue;
     }
     const el = cardFor(ev);
-    if (el) {
-      stage.appendChild(el);
-      el.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    }
+    appendFeedCard(el);
     await sleep(el ? 160 : 20);
   }
 }
 
 async function startShow() {
+  // Bug Scott caught: "the host talks over himself in the beginning
+  // especially." Real cause: playIntroDialog's pre-show welcome lines are
+  // gated on Promise.all([...]).then(playIntroDialog), which waits for the
+  // page's first user interaction of ANY kind (waitForFirstInteraction
+  // listens on the whole document). For a first-time viewer, that very
+  // first interaction is very often the click on THIS Start button --
+  // meaning the same user gesture can both (a) resolve that wait, letting
+  // playIntroDialog queue its opening welcome line onto hostSpeechChain,
+  // and (b) fire this handler, which immediately queues sayHost('letsBegin')
+  // then sayHost('intro') right behind it. showStarted's guard inside
+  // playIntroDialog's loop only stops lines that haven't STARTED yet -- it
+  // doesn't help here because Promise.all's microtask can resolve and
+  // queue that first welcome line before this click handler has even run.
+  // Both ends are technically serialized through the same hostSpeechChain
+  // (never literally simultaneous audio), but stale "welcome to the show"
+  // banter landing back-to-back with "let's begin!" right as the real show
+  // kicks off reads exactly like the host interrupting himself. Fix: treat
+  // clicking Start as a hard reset point -- cancel whatever's currently
+  // speaking or queued and reset the chain fresh, so the real show's own
+  // opening lines are always the first thing anyone actually hears.
+  if (window.speechSynthesis) speechSynthesis.cancel();
+  hostSpeechChain = Promise.resolve();
   showStarted = true;
   quitRequested = false;
   showAbortController = new AbortController();
   quitBtn.disabled = false;
-  // Lock in whatever pick (if any) is currently showing in the prediction
-  // grid as THIS show's prediction, then clear it so the next round starts
-  // from a clean slate rather than silently reusing a stale pick.
-  activeShowPrediction = viewerPrediction;
+  pauseBtn.disabled = false;
+  // Revision 22: the pick itself no longer locks in here -- that now
+  // happens in waitForPostDraftPrediction, once the draft actually finishes
+  // and there's a real roster to predict against. Just clear any stale
+  // state left over from a previous round so this one starts clean.
   viewerPrediction = null;
+  activeShowPrediction = null;
   clearTimeout(newGamePopupTimer);
   stopDramaMusic(); // defensive: never carry a lingering loop into a new game
   newGameOverlay.classList.remove('show');
@@ -3844,6 +5137,12 @@ async function startShow() {
   playerStreak = {};
   playerTemperament = {};
   playerModel = {};
+  playerThinking = {};
+  playerEliminated = {};
+  liveAttemptCount = 0;
+  fallbackAttemptCount = 0;
+  renderModelActivityStat();
+  renderModelRosterModels();
   playerColorNode = {};
   playerStats = {};
   interviewBannerEl.classList.remove('show');
@@ -3902,23 +5201,30 @@ async function startShow() {
   } finally {
     startBtn.disabled = false;
     quitBtn.disabled = true;
+    pauseBtn.disabled = true;
+    if (isPaused) setPaused(false); // never leave the page frozen/silenced after a show ends
   }
 }
 
 startBtn.addEventListener('click', startShow);
-newGameBtn.addEventListener('click', () => {
-  // Previously called startShow() immediately here, which meant the hero
-  // panel (and the prediction grid living inside it) was only ever visible
-  // for the ~880ms of its own push-away animation on every round after the
-  // first -- no real chance to make a pick. Now it just brings the panel
-  // back and waits for the viewer to make a prediction (optional) and hit
-  // Start themselves, same as the very first round.
+// Shared by both ways of leaving the end-of-show popup -- Scott: "the
+// button on the popup doesn't take us back to the title screen." That was
+// overlayCloseBtn (the corner X) specifically: it only ever removed the
+// popup's own 'show' class and nothing else, so closing it that way left
+// heroStage still display:none from the last startShow() call -- an empty
+// stage with no visible way to start another game. newGameBtn ("NEW GAME")
+// already did the full restoration correctly; pulling it out here so both
+// buttons genuinely return to the title/start screen, not just one of them.
+function returnToTitleScreen() {
   newGameOverlay.classList.remove('show');
   heroStage.style.display = '';
   heroStage.classList.remove('pushed');
   startBtn.classList.remove('slam');
-  buildPredictionGrid();
-});
+  // No prediction grid to rebuild here anymore (Revision 22) -- it's built
+  // fresh in waitForPostDraftPrediction once the next show's draft actually
+  // finishes, not eagerly at the title screen.
+}
+newGameBtn.addEventListener('click', returnToTitleScreen);
 muteBtn.addEventListener('click', toggleMute);
 ffBtn.addEventListener('click', () => {
   ffLevelIndex = (ffLevelIndex + 1) % FF_LEVELS.length;
@@ -3926,12 +5232,13 @@ ffBtn.addEventListener('click', () => {
   ffBtn.classList.toggle('active', level > 1);
   ffBtn.textContent = level > 1 ? `\u{23E9} Fast Forward ${level}x` : '\u{23E9} Fast Forward';
 });
-overlayCloseBtn.addEventListener('click', () => {
-  newGameOverlay.classList.remove('show');
-});
+overlayCloseBtn.addEventListener('click', returnToTitleScreen);
+pauseBtn.addEventListener('click', () => setPaused(!isPaused));
 quitBtn.addEventListener('click', () => {
   quitRequested = true;
   quitBtn.disabled = true;
+  pauseBtn.disabled = true;
+  if (isPaused) setPaused(false); // don't quit into a still-frozen/silenced page
   statusEl.textContent = 'Stopping the show...';
   if (showAbortController) showAbortController.abort();
   // A full reload rather than trying to hand-reset every piece of
