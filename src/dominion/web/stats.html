@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Dominion — Standings</title>
+<style>
+  :root {
+    --gold: #f5c542; --purple: #6b3fa0; --bg: #0b0714; --card: #17102a;
+    --text: #f2ecff; --dim: #a996c9; --green: #58d18f; --red: #e0555f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: 'Segoe UI', system-ui, sans-serif;
+    background: radial-gradient(circle at 50% 0%, #241640 0%, var(--bg) 60%);
+    color: var(--text); min-height: 100vh; padding: 32px 16px 80px; font-size: 17px;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+  h1 {
+    font-size: 2.6em; margin: 0; letter-spacing: 3px; text-align: center;
+    background: linear-gradient(90deg, var(--gold), #fff6d8, var(--gold));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    text-shadow: 0 0 40px rgba(245,197,66,0.35);
+  }
+  .subtitle { color: var(--dim); letter-spacing: 2px; text-align: center; margin-top: 4px; margin-bottom: 8px; }
+  .backlink { display: block; text-align: center; color: var(--dim); margin-bottom: 28px; text-decoration: none; }
+  .backlink:hover { color: var(--gold); }
+
+  .summary-bar {
+    display: flex; justify-content: center; gap: 28px; flex-wrap: wrap;
+    background: var(--card); border: 1px solid #35234f; border-radius: 14px;
+    padding: 16px 24px; margin-bottom: 28px;
+  }
+  .summary-stat { text-align: center; }
+  .summary-stat .num { font-size: 1.6em; font-weight: 700; color: var(--gold); }
+  .summary-stat .label { font-size: 0.8em; color: var(--dim); letter-spacing: 0.5px; }
+
+  /* Defender-vs-challenger home-turf note: duel.py tests the DEFENDER's own
+     held domain every duel (that's the territory actually at stake, so it
+     can't be changed without breaking the conquest fiction -- Scott caught
+     an earlier attempt to coin-flip this, since testing the challenger's
+     own domain made no narrative sense). The real structural edge this
+     produced (measured at 56.5%/43.5% across the first 18 shows -- see
+     README.md) is driven by domain_record/_domain_familiarity_line, not the
+     domain choice itself. duel.py briefly compensated with a flat clock
+     handicap for the challenger (CHALLENGER_HOME_TURF_HANDICAP), but that
+     was removed too -- Scott, after watching more shows: "honestly, I
+     don't think they need that home-field advantage." This panel now
+     exists purely to keep tracking the live split across every recorded
+     show as an observed stat, not a target the engine tunes toward. */
+  .home-turf {
+    background: var(--card); border: 1px solid #35234f; border-radius: 14px;
+    padding: 16px 24px; margin-bottom: 28px; font-size: 0.92em; color: var(--dim);
+  }
+  .home-turf b { color: var(--text); }
+  .home-turf .bar-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .home-turf .bar-track { flex: 1; height: 14px; border-radius: 7px; background: #241634; overflow: hidden; display: flex; }
+  .home-turf .bar-challenger { background: linear-gradient(90deg, #4fa3d1, #6bc3f1); height: 100%; }
+  .home-turf .bar-defender { background: linear-gradient(90deg, var(--gold), #ffd76b); height: 100%; }
+
+  h2 { letter-spacing: 2px; color: var(--gold); border-bottom: 1px solid #35234f; padding-bottom: 8px; margin-top: 36px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+  th, td { padding: 8px 10px; text-align: right; border-bottom: 1px solid #241634; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--dim); font-weight: 600; letter-spacing: 0.5px; font-size: 0.85em; }
+  tr:hover td { background: rgba(107,63,160,0.15); }
+  .rank-1 { color: var(--gold); font-weight: 700; }
+
+  /* The "baseball cards" -- one per model, a compact stat-block grid. */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 18px; margin-top: 18px; }
+  .card {
+    background: linear-gradient(180deg, #1d1436, #140d26); border: 1px solid #35234f;
+    border-radius: 14px; padding: 18px 20px; position: relative; overflow: hidden;
+  }
+  .card::before {
+    content: ""; position: absolute; top: -30%; right: -30%; width: 120px; height: 120px;
+    background: radial-gradient(circle, rgba(245,197,66,0.18), transparent 70%);
+  }
+  .card .model-name { font-size: 1.15em; font-weight: 700; color: var(--gold); letter-spacing: 0.5px; }
+  .card .champ-badge { font-size: 0.8em; color: var(--dim); margin-top: 2px; }
+  .card .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin-top: 14px; }
+  .card .stat { }
+  .card .stat .v { font-size: 1.2em; font-weight: 700; }
+  .card .stat .l { font-size: 0.72em; color: var(--dim); letter-spacing: 0.5px; text-transform: uppercase; }
+  .card .role-split { margin-top: 14px; font-size: 0.8em; color: var(--dim); display: flex; justify-content: space-between; }
+
+  .empty { text-align: center; color: var(--dim); margin-top: 60px; font-size: 1.1em; }
+
+  /* Board domain frequency: a horizontal bar per domain, sorted by how
+     often it's actually been drawn onto the board across every recorded
+     show -- see history.py's board_domains table. */
+  .domain-freq-note { color: var(--dim); font-size: 0.88em; margin-bottom: 14px; }
+  .domain-freq-note b { color: var(--text); }
+  .domain-bars { display: flex; flex-direction: column; gap: 5px; }
+  .domain-bar-row { display: grid; grid-template-columns: 160px 1fr 34px; align-items: center; gap: 10px; font-size: 0.82em; }
+  .domain-bar-row .dname { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .domain-bar-track { height: 10px; border-radius: 5px; background: #241634; overflow: hidden; }
+  .domain-bar-fill { height: 100%; background: linear-gradient(90deg, var(--purple), #8b5fc9); border-radius: 5px; }
+  .domain-bar-row .dcount { text-align: right; color: var(--text); }
+  .domain-bar-row.below-expected .domain-bar-fill { background: linear-gradient(90deg, #4fa3d1, #6bc3f1); }
+
+  /* Backend tag -- shown next to a model name everywhere the leaderboard
+     and cards list one, and as its own column header in the head-to-head
+     table. Distinct fixed colors per backend (not per-model, unlike
+     PLAYER_COLORS elsewhere) since this is the actual axis being compared
+     here, and needs to read the same way in every section of this page. */
+  .backend-tag { font-size: 0.72em; padding: 2px 7px; border-radius: 6px; letter-spacing: 0.5px; }
+  .backend-tag.ollama { background: rgba(79,163,209,0.18); color: #6bc3f1; }
+  .backend-tag.llamacpp { background: rgba(245,197,66,0.18); color: var(--gold); }
+  .backend-tag.scripted { background: rgba(169,150,201,0.18); color: var(--dim); }
+
+  /* Head-to-head: one row per model family that has recorded data under
+     BOTH backends (see MODEL_FAMILIES below) -- the actual side-by-side
+     comparison this whole port exists to produce. */
+  .h2h-table td, .h2h-table th { text-align: center; }
+  .h2h-table th:first-child, .h2h-table td:first-child { text-align: left; }
+  .h2h-note { color: var(--dim); font-size: 0.88em; margin-bottom: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>STANDINGS</h1>
+  <div class="subtitle">Every recorded show, aggregated by model</div>
+  <a class="backlink" href="/">&larr; Back to Dominion</a>
+
+  <div id="content"></div>
+</div>
+
+<script>
+function pct(x) { return x === null || x === undefined ? '—' : Math.round(x * 100) + '%'; }
+function num(x, digits = 0) { return x === null || x === undefined ? '—' : Number(x).toFixed(digits); }
+function backendTag(backend) {
+  const label = backend === 'llamacpp' ? 'llama.cpp' : backend === 'scripted' ? 'scripted' : 'Ollama';
+  return `<span class="backend-tag ${backend}">${label}</span>`;
+}
+// Ollama tags and llama.cpp identifiers (inference/config.py's
+// LLAMACPP_MODELS) are deliberately different naming schemes for the same
+// underlying weights -- this pairs them up for the head-to-head section
+// below. Edit this alongside LLAMACPP_MODELS if that registry changes;
+// there's no way to derive the pairing from the data alone since the two
+// namespace's strings don't share a pattern to match on.
+const MODEL_FAMILIES = [
+  { family: 'Llama 3.2 3B', ollama: 'llama3.2:latest', llamacpp: 'llama-3.2-3b-instruct' },
+  { family: 'Qwen 2.5 3B', ollama: 'qwen2.5:3b', llamacpp: 'qwen2.5-3b-instruct' },
+  { family: 'Gemma 2 2B', ollama: 'gemma2:2b', llamacpp: 'gemma-2-2b-it' },
+  { family: 'Phi-3 Mini', ollama: 'phi3:mini', llamacpp: 'phi-3-mini-4k-instruct' },
+];
+
+async function load() {
+  const content = document.getElementById('content');
+  let data;
+  try {
+    const res = await fetch('/api/stats');
+    data = await res.json();
+  } catch (e) {
+    content.innerHTML = '<div class="empty">Could not reach the Dominion server. Is it running?</div>';
+    return;
+  }
+  if (!data.shows_recorded) {
+    content.innerHTML = '<div class="empty">No shows recorded yet — play at least one full show, then check back here.</div>';
+    return;
+  }
+
+  const timeoutRow = data.by_reason.timeout || { total: 0, challenger_wins: 0, defender_wins: 0 };
+  const capRow = data.by_reason.question_cap || { total: 0, challenger_wins: 0, defender_wins: 0 };
+  const allDuels = data.duels_recorded || 1;
+  const totalChallengerWins = (timeoutRow.challenger_wins || 0) + (capRow.challenger_wins || 0);
+  const totalDefenderWins = (timeoutRow.defender_wins || 0) + (capRow.defender_wins || 0);
+
+  let html = '';
+  html += `<div class="summary-bar">
+    <div class="summary-stat"><div class="num">${data.shows_recorded}</div><div class="label">Shows Recorded</div></div>
+    <div class="summary-stat"><div class="num">${data.duels_recorded}</div><div class="label">Duels Recorded</div></div>
+    <div class="summary-stat"><div class="num">${data.models.length}</div><div class="label">Models Tracked</div></div>
+  </div>`;
+
+  html += `<div class="home-turf">
+    <div><b>Home-turf note:</b> every duel still tests the
+    <b>defender's own held domain</b> -- that's the territory actually at
+    stake. Defenders build a real, concentrated track record on that one
+    domain from defending it duel after duel, a genuine experience edge
+    over challengers, whose attacks land on a different domain each time.
+    A compensating clock handicap for challengers was tried and then
+    removed (Scott: "honestly, I don't think they need that home-field
+    advantage") -- this edge is now a known, accepted asymmetry rather than
+    something the engine corrects for. Across all recorded duels, the
+    defender has won <b>${pct(totalDefenderWins / allDuels)}</b> of the
+    time vs the challenger's <b>${pct(totalChallengerWins / allDuels)}</b>.</div>
+    <div class="bar-row">
+      <div style="width:70px; font-size:0.8em;">Challenger</div>
+      <div class="bar-track">
+        <div class="bar-challenger" style="width:${(totalChallengerWins / allDuels) * 100}%"></div>
+        <div class="bar-defender" style="width:${(totalDefenderWins / allDuels) * 100}%"></div>
+      </div>
+      <div style="width:70px; font-size:0.8em; text-align:right;">Defender</div>
+    </div>
+  </div>`;
+
+  html += `<h2>Leaderboard</h2>`;
+  html += `<table><thead><tr>
+    <th>Model</th><th>Backend</th><th>Shows</th><th>Duels</th><th>Wins</th><th>Win %</th><th>Accuracy</th>
+    <th>Avg Correct (s)</th><th>Fallback %</th><th>Avg Latency (s)</th><th>Champs</th><th>Push %</th>
+  </tr></thead><tbody>`;
+  data.models.forEach((m, i) => {
+    html += `<tr class="${i === 0 ? 'rank-1' : ''}">
+      <td>${i === 0 ? '\u{1F451} ' : ''}${m.model}</td>
+      <td>${backendTag(m.backend)}</td>
+      <td>${m.games_played}</td>
+      <td>${m.as_challenger + m.as_defender}</td>
+      <td>${m.wins}</td>
+      <td>${pct(m.win_rate)}</td>
+      <td>${pct(m.accuracy)}</td>
+      <td>${num(m.avg_correct_seconds, 2)}</td>
+      <td>${pct(m.fallback_rate)}</td>
+      <td>${num(m.avg_raw_latency_seconds, 2)}</td>
+      <td>${m.championships}</td>
+      <td>${pct(m.push_rate)}</td>
+    </tr>`;
+  });
+  html += `</tbody></table>`;
+
+  // Head-to-head: only rows for a MODEL_FAMILIES pair where at least one
+  // side has real recorded data -- an empty page-wide section would be
+  // noise before any llama.cpp shows exist yet, but a family with only
+  // Ollama data so far is still worth showing (with the other side as —).
+  const byKey = {};
+  data.models.forEach(m => { byKey[`${m.backend}:${m.model}`] = m; });
+  const h2hRows = MODEL_FAMILIES
+    .map(f => ({ ...f, o: byKey[`ollama:${f.ollama}`], l: byKey[`llamacpp:${f.llamacpp}`] }))
+    .filter(r => r.o || r.l);
+  if (h2hRows.length) {
+    html += `<h2>Backend Head-to-Head</h2>`;
+    html += `<div class="h2h-note">Same weights, two backends -- each family
+      pairs an Ollama tag with its llama.cpp counterpart
+      (${backendTag('ollama')} vs ${backendTag('llamacpp')}) so a difference here is the
+      backend, not the model. <b>Fallback %</b> is the reliability claim behind
+      llama.cpp's grammar-constrained decisions: how often a reply fell back to
+      the scripted agent instead of being used live. <b>Avg Latency</b> is real,
+      uncharged wall-clock call time, distinct from the charged clock cost shown
+      elsewhere on this page.</div>`;
+    html += `<table class="h2h-table"><thead><tr>
+      <th>Family</th><th>Backend</th><th>Win %</th><th>Accuracy</th><th>Fallback %</th><th>Avg Latency (s)</th>
+    </tr></thead><tbody>`;
+    h2hRows.forEach(r => {
+      [['ollama', r.o], ['llamacpp', r.l]].forEach(([backend, m]) => {
+        html += `<tr>
+          <td>${r.family}</td>
+          <td>${backendTag(backend)}</td>
+          <td>${m ? pct(m.win_rate) : '—'}</td>
+          <td>${m ? pct(m.accuracy) : '—'}</td>
+          <td>${m ? pct(m.fallback_rate) : '—'}</td>
+          <td>${m ? num(m.avg_raw_latency_seconds, 2) : '—'}</td>
+        </tr>`;
+      });
+    });
+    html += `</tbody></table>`;
+  }
+
+  html += `<div class="domain-freq-note">
+    <b>Push %:</b> after winning a duel, how often a model chooses to keep pushing
+    for more territory instead of retreating to defend what it has. Each player's
+    assigned playing style (Cautious/Balanced/Aggressive) is randomized fresh every
+    show, so a model genuinely following that label should land somewhere in the
+    middle and vary show to show — a rate parked near 0% or 100% regardless of
+    volume means the model isn't really tracking the label it's been given, not
+    that it's an unusually extreme player. First noticed with a direct test:
+    qwen2.5:3b answered retreat 8 of 9 times even when told to play aggressive;
+    llama3.2:latest answered push 9 of 9 times even when told to play cautious.
+  </div>`;
+
+  html += `<h2>Player Cards</h2><div class="cards">`;
+  data.models.forEach(m => {
+    html += `<div class="card">
+      <div class="model-name">${m.model}</div>
+      <div class="champ-badge">${m.championships} championship${m.championships === 1 ? '' : 's'} &middot; ${m.games_played} games played</div>
+      <div class="stat-grid">
+        <div class="stat"><div class="v">${m.wins}</div><div class="l">Duel Wins</div></div>
+        <div class="stat"><div class="v">${pct(m.win_rate)}</div><div class="l">Win Rate</div></div>
+        <div class="stat"><div class="v">${pct(m.accuracy)}</div><div class="l">Accuracy</div></div>
+        <div class="stat"><div class="v">${num(m.avg_correct_seconds, 2)}s</div><div class="l">Avg Correct Time</div></div>
+      </div>
+      <div class="role-split">
+        <span>As challenger: ${pct(m.challenger_win_rate)} (${m.as_challenger})</span>
+        <span>As defender: ${pct(m.defender_win_rate)} (${m.as_defender})</span>
+      </div>
+      <div class="role-split" style="margin-top:6px;">
+        <span>Push rate: ${pct(m.push_rate)} (${m.pushes}&#8594;/${m.retreats}&#8592;)</span>
+      </div>
+    </div>`;
+  });
+  html += `</div>`;
+
+  if (data.board_domain_counts && data.board_domain_counts.length) {
+    const domains = data.board_domain_counts;
+    const maxCount = domains[0].count;
+    const expected = data.board_draws_total / domains.length;
+    html += `<h2>Board Domain Frequency</h2>`;
+    html += `<div class="domain-freq-note">Every domain drawn onto a board across all recorded shows
+      (${data.board_draws_total} total draws over ${domains.length} distinct domains). With 13 of ~39
+      library domains drawn each show, meaningful-looking overlap across just a handful of shows is
+      expected from sampling alone — this list is the real check, not a guess. Expected count per
+      domain if the draw is uniform: <b>${expected.toFixed(1)}</b>. Bars below that line are shown in blue.</div>`;
+    html += `<div class="domain-bars">`;
+    domains.forEach(d => {
+      const belowExpected = d.count < expected;
+      html += `<div class="domain-bar-row${belowExpected ? ' below-expected' : ''}">
+        <div class="dname">${d.domain}</div>
+        <div class="domain-bar-track"><div class="domain-bar-fill" style="width:${(d.count / maxCount) * 100}%"></div></div>
+        <div class="dcount">${d.count}</div>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  content.innerHTML = html;
+}
+
+load();
+</script>
+</body>
+</html>

@@ -4,5 +4,12 @@ __pycache__/
 .DS_Store
 Thumbs.db
 .claude/settings.local.json
-prototype/engine/dominion_history.db
-prototype/sounds/audience
+src/dominion/engine/dominion_history.db
+src/dominion/agents/player_memos.log
+.venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

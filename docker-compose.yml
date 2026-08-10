@@ -1,0 +1,36 @@
+# Ollama itself is deliberately NOT a service here -- it's normally
+# installed directly on the host (see README.md's Requirements section),
+# and containerizing it well needs real GPU passthrough configuration this
+# compose file isn't trying to own. Point DOMINION_OLLAMA_URL at your
+# host-run Ollama instead (see the app service's environment below).
+services:
+  app:
+    build: .
+    ports:
+      - "8765:8765"
+    environment:
+      # host.docker.internal resolves to the host from inside the
+      # container on Docker Desktop (Windows/Mac); on Linux, run with
+      # `--add-host=host.docker.internal:host-gateway` or point this at
+      # the host's real LAN/bridge IP instead.
+      - DOMINION_OLLAMA_URL=http://host.docker.internal:11434
+      - DOMINION_LLAMACPP_URL=http://llama-server:8080
+    volumes:
+      - dominion-data:/data
+    depends_on:
+      - llama-server
+
+  # Router mode -- one process/port serving every GGUF in ./models, the
+  # direct analog of Ollama's own multi-model swapping. See README.md's
+  # "llama.cpp setup" section for where to get GGUF files and how their
+  # filenames need to match inference/config.py's LLAMACPP_MODELS registry.
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    command: ["--models-dir", "/models", "--models-max", "4", "--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/models:ro
+
+volumes:
+  dominion-data:

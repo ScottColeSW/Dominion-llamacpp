@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dominion"
+version = "0.1.0"
+description = "Dominion (Agent vs. Agent) -- multi-backend (Ollama / llama.cpp) AI game show simulator"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+# This is a deliberate, explicit break from the original Ollama-only
+# prototype's zero-pip-dependency design (see docs/ENGINE_NOTES.md and the
+# root README's "Two implementations" section) -- this fork trades that for
+# production service scaffolding: an async web framework, structured config,
+# structured logging, and metrics. The engine package (dominion.engine)
+# itself still has zero third-party imports; every dependency below is
+# service/transport-layer only.
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    "pydantic-settings>=2.4",
+    "structlog>=24.1",
+    "prometheus-client>=0.20",
+    "psutil>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+dominion = ["engine/image_library.json", "web/**/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# Deliberately narrow: E/F/I catch real bugs (unused names, unsorted
+# imports, syntax issues) without fighting this codebase's own established,
+# intentional conventions -- typing.Dict/Optional (not `dict | None`) used
+# consistently throughout (UP006/UP035/UP045), and several deliberate
+# broad `except Exception: pass` blocks documented inline as "never let a
+# side channel (history/logging) crash a live show" (B/BLE/S). Widen this
+# only alongside an actual decision to change one of those conventions,
+# not as a lint-tool default.
+select = ["E", "F"]
+# This codebase's prose comments/docstrings wrap by hand at a narrower,
+# readable width than code lines do; an f-string or a long dotted call
+# chain routinely lands past 100 without being a real problem. Line-length
+# is a style opinion, not a bug -- E/F's other checks (unused names,
+# undefined names, syntax) are the actual signal this config is for.
+# "I" (isort) is deliberately not selected either: every existing module's
+# import order (stdlib/typing/local, not alphabetized within each group)
+# predates this config and is consistent throughout -- enabling it would
+# reformat every pre-existing file's imports for zero functional benefit.
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true

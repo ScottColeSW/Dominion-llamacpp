@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "dominion-server",
-      "runtimeExecutable": "python",
-      "runtimeArgs": ["prototype/server.py"],
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "dominion.server.app:app", "--port", "8765"],
       "port": 8765
     }
   ]

@@ -1,0 +1,15 @@
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+tests
+docs
+design
+Dominion-Video
+.claude
+src/dominion/engine/dominion_history.db
+src/dominion/agents/player_memos.log
