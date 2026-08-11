@@ -137,9 +137,27 @@ def _note_recall_line(player: Player) -> str:
     empty string if this player has never left a note yet (early in the
     show, or every past call happened to skip the MEMO: line), which is the
     common case and exactly why every prompt below only adds this when
-    there's actually something to recall."""
+    there's actually something to recall.
+
+    Scott caught the real gap here live: a player's own old note (e.g.
+    "Player 4 folds under pressure, target them next") can keep naming a
+    specific opponent who's since been eliminated by someone else
+    entirely -- these are free-text strings (Player.private_notes), never
+    checked against game.active_ids, so nothing here actually knows
+    whether that name is stale. The choice itself is never at risk
+    (choose_target/choose_tax_target only ever offer real, currently
+    active options -- see their own candidate lists), but the model's
+    STATED reasoning could still reference someone who's already gone,
+    which is exactly the "still seeing eliminated players as competition"
+    read Scott reported. Cheaper and more robust than trying to parse a
+    kingdom name back out of free text: a plain caveat that the note may
+    be stale, right where it's recalled."""
     notes = player.recent_notes_text()
-    return f" Private notes you left yourself earlier tonight: {notes}." if notes else ""
+    return (
+        f" Private notes you left yourself earlier tonight: {notes}. (Careful -- "
+        f"anyone named in that note may already be eliminated and gone by now; "
+        f"check who's actually still active before acting on it.)" if notes else ""
+    )
 
 
 # Where every player's private MEMO note gets logged -- Scott: "people

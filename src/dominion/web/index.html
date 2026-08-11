@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>Dominion</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='18' fill='%230b0714'/%3E%3Ctext x='50' y='68' font-size='58' text-anchor='middle'%3E%F0%9F%91%91%3C/text%3E%3C/svg%3E">
 <style>
   :root {
     --gold: #f5c542;
@@ -1209,6 +1210,12 @@
     <button id="pauseBtn" disabled title="Freeze all show action -- resumes exactly where it left off">&#9208; Pause</button>
     <button id="ffBtn" title="Speed through presentation pacing (not real model wait time)">&#9193; Fast Forward</button>
     <a id="standingsLink" href="/stats.html" target="_blank" rel="noopener noreferrer" title="Model stats and standings across every recorded show">&#127942; Standings</a>
+    <!-- Scott: "I don't see the 'big picture' page." The link always
+         existed (showcase.html, footer), just buried below a whole show's
+         worth of content -- duplicated up here, always visible, same
+         target="_blank" treatment as Standings so opening it never
+         interrupts or navigates away from a running show. -->
+    <a id="bigPictureLink" href="/showcase.html" target="_blank" rel="noopener noreferrer" title="What we built, how, and where this could go">&#128065; Big Picture</a>
     <button id="quitBtn" disabled title="Stop the current show and return to the start screen">&#9209; Quit / Halt</button>
     <div id="modelRoster" title="The local Ollama models tonight's contestants draw from">
       <div class="model-roster-label">Player Roster</div>
@@ -1384,9 +1391,9 @@
   <div id="stage"></div>
 
   <footer id="siteFooter">
-    <a href="showcase.html">What we built &amp; the vision</a>
+    <a href="showcase.html" target="_blank" rel="noopener noreferrer">What we built &amp; the vision</a>
     &middot;
-    <a href="about.html">About the creator</a>
+    <a href="about.html" target="_blank" rel="noopener noreferrer">About the creator</a>
   </footer>
 
   <div id="newGameOverlay">
@@ -4371,12 +4378,17 @@ function buildPixelFace(playerId) {
 // engine recorded, not a compressed or stretched stand-in for it. Display
 // is whole seconds only, ticking down integer by integer.
 // One real second of animation per simulated second, per Scott's original
-// real-time request -- but capped at 2.5s so a single slow turn (the
-// engine's own range tops out at 4.5s for an answer) never visibly drags;
-// the relative fast/slow feel between turns is preserved, just the worst
-// case is bounded.
+// real-time request, scaled ONLY by the FF selection below -- no
+// additional compression on top of that. Revision (Scott, live-testing):
+// "player clocks are going down too fast, at 1x, it should be 1
+// wall-clock second flow" -- the previous 2.5s cap was silently
+// compressing anything above it (a normal scripted turn can charge up to
+// ~4.5s, see ScriptedAgent.attempt_question's blurts formula), so a
+// "1x" turn was often visibly running faster than real time despite the
+// comment above claiming otherwise. 8s is a safety ceiling only (nothing
+// in the engine's own range should ever reach it), not a normal-case cap.
 function tickDuration(secondsUsed) {
-  const ms = Math.min(2500, Math.max(120, secondsUsed * 1000));
+  const ms = Math.min(8000, Math.max(120, secondsUsed * 1000));
   return ms / FF_LEVELS[ffLevelIndex];
 }
 // A live turn's seconds_used is real time a live Ollama call already spent

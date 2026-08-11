@@ -27,9 +27,30 @@ import structlog
 
 from ..observability.metrics import record_inference_call
 from .base import GenerationResult
+from .config import LLAMACPP_MODELS
 from .retry import CircuitBreaker, CircuitOpenError, call_with_retry
 
 logger = structlog.get_logger(__name__)
+
+
+def _server_alias(model: str) -> str:
+    """Translate a LLAMACPP_MODELS registry identifier (e.g.
+    "llama-3.2-3b-instruct", what every player draw and every log/metric/
+    history record actually uses -- the friendly identifier, same role
+    Ollama's own tags play) into the alias llama-server's router mode
+    actually recognizes: the GGUF basename with the extension stripped
+    (e.g. "Llama-3.2-3B-Instruct-Q4_K_M"). These two strings were never
+    the same, at any point -- every real llama.cpp show has been sending
+    the registry identifier straight through as the "model" field,
+    which llama-server rejects with an HTTP 400 ("model '...' not
+    found"), caught below by the exact same broad exception handler a
+    genuine network failure hits -- so every single call silently fell
+    back to ScriptedAgent, indistinguishable in logs from a normal
+    fallback. Falls back to the input unchanged for any identifier not
+    in the registry (a caller that already passes a real alias directly,
+    e.g. an ad-hoc script, still works)."""
+    gguf_name = LLAMACPP_MODELS.get(model, model)
+    return gguf_name[:-len(".gguf")] if gguf_name.endswith(".gguf") else gguf_name
 
 
 class LlamaCppInferenceClient:
@@ -62,7 +83,11 @@ class LlamaCppInferenceClient:
         num_predict: Optional[int] = None,
         grammar: Optional[str] = None,
     ) -> GenerationResult:
-        payload: Dict[str, Any] = {"model": model, "prompt": prompt}
+        # payload["model"] must be llama-server's own alias (the GGUF
+        # basename), NOT the registry identifier every caller/log/metric
+        # otherwise uses -- see _server_alias's docstring for why these
+        # two were never the same string.
+        payload: Dict[str, Any] = {"model": _server_alias(model), "prompt": prompt}
         if num_predict is not None:
             payload["n_predict"] = num_predict
         if grammar is not None:

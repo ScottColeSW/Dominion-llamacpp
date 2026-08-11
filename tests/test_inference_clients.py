@@ -6,6 +6,8 @@ that the circuit breaker actually stops issuing requests once open.
 """
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 import respx
@@ -94,6 +96,44 @@ async def test_llamacpp_generate_success_with_grammar() -> None:
     assert result.think_seconds == pytest.approx(0.25)
     sent_body = route.calls.last.request.content
     assert b"grammar" in sent_body
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_llamacpp_generate_sends_server_alias_not_registry_key() -> None:
+    # Regression test for a real, previously-silent bug: llama-server's
+    # router only recognizes the GGUF basename (e.g.
+    # "Qwen2.5-3B-Instruct-Q4_K_M") as a model alias, never
+    # LLAMACPP_MODELS' own registry key ("qwen2.5-3b-instruct") -- every
+    # real llama.cpp show was sending the wrong string and getting a
+    # silent HTTP 400, indistinguishable from any other fallback. This
+    # mock actually inspects the sent body instead of just returning a
+    # canned response regardless of it, which is exactly why the original
+    # test above never caught this.
+    route = respx.post(f"{LLAMACPP_URL}/completion").mock(
+        return_value=httpx.Response(200, json={"content": "ok"})
+    )
+    client = LlamaCppInferenceClient(LLAMACPP_URL)
+    result = await client.generate("qwen2.5-3b-instruct", "prompt", timeout=5.0)
+    await client.aclose()
+    assert result.text == "ok"
+    sent_model = json.loads(route.calls.last.request.content)["model"]
+    assert sent_model == "Qwen2.5-3B-Instruct-Q4_K_M"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_llamacpp_generate_passes_through_an_already_real_alias() -> None:
+    # A caller that already passes a real llama-server alias directly
+    # (not a LLAMACPP_MODELS registry key) must keep working unchanged.
+    route = respx.post(f"{LLAMACPP_URL}/completion").mock(
+        return_value=httpx.Response(200, json={"content": "ok"})
+    )
+    client = LlamaCppInferenceClient(LLAMACPP_URL)
+    await client.generate("Some-Custom-Model-Q4_K_M", "prompt", timeout=5.0)
+    await client.aclose()
+    sent_model = json.loads(route.calls.last.request.content)["model"]
+    assert sent_model == "Some-Custom-Model-Q4_K_M"
 
 
 @pytest.mark.asyncio

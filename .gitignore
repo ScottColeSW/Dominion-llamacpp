@@ -13,3 +13,8 @@ dist/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Multi-gigabyte model weights (README.md's "llama.cpp setup" section --
+# these are downloaded/placed locally, never committed; way over GitHub's
+# 100MB per-file limit anyway).
+models/*.gguf
