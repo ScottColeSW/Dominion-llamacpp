@@ -2559,37 +2559,13 @@ function sayCommentatorText(text) {
 // Each still rotates through several templates via pickVaried, so it isn't
 // the same sentence shape every time either. ---
 
-function winHostLine(winnerId, domain) {
-  const name = displayName(winnerId);
-  const templates = [
-    `${name} takes it! And that's the ballgame!`, `${name} seals it. What a finish!`,
-    `${domain} now belongs to ${name}. Territory changes hands!`,
-    `Clean and decisive. ${name} gets it done.`, `That's how it's done, ${name}!`,
-    `${name} closes it out. No doubt about that one!`,
-  ];
-  return pickVaried(templates, 'win');
-}
-function winCloseHostLine(winnerId, domain) {
-  const name = displayName(winnerId);
-  const templates = [
-    `${name} wins it, down to the wire! What a finish!`,
-    `You could not squeeze a second between them, but ${name} gets there first!`,
-    `That's as close as it gets, folks. ${name} takes ${domain} by a hair!`,
-    `Right down to the final tick of the clock, and ${name} comes out on top!`,
-  ];
-  return pickVaried(templates, 'winClose');
-}
-function winUpsetHostLine(winnerId, loserId) {
-  const winnerName = displayName(winnerId);
-  const loserName = displayName(loserId);
-  const templates = [
-    `What an UPSET! ${winnerName} just took down ${loserName}! Nobody saw that coming!`,
-    `The little kingdom just took down the giant. ${winnerName}, over ${loserName}!`,
-    `That is exactly the kind of underdog moment this show is built for. ${winnerName}!`,
-    `Hold on, did ${winnerName} really just beat ${loserName}?!`,
-  ];
-  return pickVaried(templates, 'winUpset');
-}
+// winHostLine/winCloseHostLine/winUpsetHostLine used to live here, plus
+// ELIMINATION_LINES near eliminationBeat -- 4 separate scripted pools
+// for what's really one moment (the win reaction, blended with a
+// goodbye to the loser). M32 Fix 2 merged all of it into one live call,
+// agents/host_agent.py's announce_duel_result, consumed via the
+// host_line event (moment: 'duel_result') that fires just before
+// duel_result itself -- see celebrateDuelWinner/eliminationBeat.
 // Fires on `advantage_earned` -- the moment a 3-win streak actually earns
 // something to spend, BEFORE the engine rolls whether that's a domain tax
 // or a banked bonus (see domainTaxHostLine/bankedBonusHostLine below for
@@ -2676,41 +2652,14 @@ function scrambleHostLine(data) {
 // finaleHostLine used to live here -- replaced by the Host as a real
 // agent (M9, agents/host_agent.py's announce_finale), consumed via the
 // host_line event (moment: 'finale') instead of a local template pick.
-// Said right as the stage opens, BEFORE the host's actual challenge
-// announcement -- Scott: "the host has some really canned lines." This used to
-// be a flat pool of pure stakes-setting filler disconnected from what was
-// actually happening, repeating constantly by mid-show. Now it leans on
-// the real streak/territory numbers openStage already has on hand
-// (leftStreak/rightStreak, stageChallengerTerritory/stageDefenderTerritory)
-// whenever there's something genuinely worth flagging, and only falls back
-// to the plain generic pool when neither side has anything notable going on.
-function preduelHostLine(challengerId, defenderId, challengerStreak, defenderStreak, challengerTerritory, defenderTerritory) {
-  const hotStreak = Math.max(challengerStreak || 0, defenderStreak || 0);
-  if (hotStreak >= 3) {
-    const hotId = (challengerStreak || 0) >= (defenderStreak || 0) ? challengerId : defenderId;
-    const name = displayName(hotId);
-    return pickVaried([
-      `${name} is riding a real streak into this one!`, `Can anybody stop ${name} tonight?`,
-      `${name} has been on fire. Let's see if it holds up.`,
-    ], 'preduelStreak');
-  }
-  const territoryGap = Math.abs((challengerTerritory || 0) - (defenderTerritory || 0));
-  if (territoryGap >= 3) {
-    const bigId = challengerTerritory > defenderTerritory ? challengerId : defenderId;
-    const smallId = challengerTerritory > defenderTerritory ? defenderId : challengerId;
-    return pickVaried([
-      `${displayName(smallId)} against the odds here, taking on ${displayName(bigId)}'s bigger kingdom.`,
-      `A real size mismatch tonight. Can the underdog pull it off?`,
-      `${displayName(bigId)} has the bigger kingdom, but the board doesn't care about that once the clock starts.`,
-    ], 'preduelGap');
-  }
-  return pickVaried([
-    "Ooh, this one's got stakes.", "Here we go, folks!", "This could get interesting fast.", "Let's see what they've got.",
-    "Now THIS is a matchup.", "Both sides look ready.", "Let's find out who wants it more.",
-    "The board's holding its breath on this one.", "Let's hear what they've got to say first.",
-    "Two contestants, one domain. Let's go.", "This is the matchup nobody was expecting.",
-  ], 'preduelGeneric');
-}
+// preduelHostLine also used to live here: a SEPARATE scripted line that
+// fired right as the stage opened, BEFORE the host's actual challenge
+// announcement -- the Host speaking twice per duel through two
+// disconnected code paths (Scott's M32 investigation flagged this as
+// the likely real cause of "the host... doesn't vary what they say
+// enough"). Its streak/territory-aware tiered logic now lives directly
+// in agents/host_agent.py's announce_challenge, folded into the one
+// real host_line (moment: 'challenge') instead of a second local pick.
 
 // hostPreduelQuestion used to live here: the host's ONE loaded question
 // per side before each duel (this JS-only template pool's long revision
@@ -2739,17 +2688,11 @@ function hostContinueBuildup(playerId) {
   ];
   return pickVaried(templates, 'continueBuildup:' + playerId);
 }
-function hostContinueReaction(playerId, keepGoing) {
-  const name = displayName(playerId);
-  const pushTemplates = [
-    `${name} pushes on!`, `${name} is not done yet!`, `${name} stays in it!`, `Onward for ${name}!`,
-  ];
-  const retreatTemplates = [
-    `${name} pulls back to defend!`, `${name} plays it safe!`, `${name} holds the line!`, `${name} calls it there!`,
-  ];
-  const pool = keepGoing ? pushTemplates : retreatTemplates;
-  return pickVaried(pool, 'continueReaction:' + playerId + ':' + keepGoing);
-}
+// hostContinueReaction used to live here -- M32 Fix 3 replaced it with a
+// live call, agents/host_agent.py's announce_continue_decision, which
+// reacts to the SAME real decide_continue outcome/reason instead of a
+// generic scripted push/retreat pool, delivered via the host_line event
+// (moment: 'continue_reaction') right after continues/retreats.
 
 // Occasional, data-grounded host commentary as the board fills in during
 // the draft -- Scott: "the host could make insightful commentary on the
@@ -4664,7 +4607,11 @@ async function openStage(d) {
     void faceLeft.offsetWidth; // force reflow so the animation replays every time
     faceLeft.classList.add('toddle-in');
   }
-  sayHostText(preduelHostLine(d.challenger_id, d.defender_id, leftStreak, rightStreak, stageChallengerTerritory, stageDefenderTerritory));
+  // M32 Fix 1: preduelHostLine used to fire its own separate scripted
+  // line right here -- the Host speaking twice per duel through two
+  // disconnected code paths. That streak/territory-aware logic now
+  // lives in agents/host_agent.py's announce_challenge itself, consumed
+  // via the host_line event (moment: 'challenge') the same as always.
   // Countdown/music are deferred to the first duel_turn event -- see
   // duelCountdownPending -- so the two pre_duel_intro lines that stream in
   // next (challenger, then defender) get their moment first.
@@ -4882,31 +4829,27 @@ async function celebrateDuelWinner(d) {
     await sleep(200);
   }
 
-  // A real underdog win: the winner held meaningfully LESS territory than
-  // the loser going into this duel -- visible on the board, and rare enough
-  // to actually mean something. (Previously this compared the winner's
-  // ORIGINAL draft domain to the domain under test, which drifts away from
-  // a player's starting pick constantly by mid-show via conquest/tax, so it
-  // fired on most duels for no reason a viewer could see -- Scott's report.)
-  const winnerTerritory = isChallenger ? stageChallengerTerritory : stageDefenderTerritory;
-  const loserTerritory = isChallenger ? stageDefenderTerritory : stageChallengerTerritory;
-  const isUpset = loserTerritory - winnerTerritory >= 2;
-  // A nail-biter: the clocks were nearly even when this one resolved, a
-  // different kind of drama than an upset (which is about territory size,
-  // not margin) -- worth its own host reaction rather than the plain default.
-  const isClose = d.clocks_remaining && !isUpset &&
-    Math.abs((d.clocks_remaining[d.winner_id] ?? 0) - (d.clocks_remaining[d.loser_id] ?? 0)) < 3;
+  // M32 Fix 2: is_upset/is_close now come from the server (engine/
+  // game.py computes them once, authoritatively, from pre-duel
+  // territory snapshotted right after challenge_declared) instead of
+  // being recomputed here from stageChallengerTerritory/
+  // stageDefenderTerritory -- same definitions as before, just no
+  // longer a second, potentially-drifting copy of the same logic.
+  const isUpset = d.is_upset;
+  const isClose = d.is_close;
 
   if (isUpset) {
     winnerTagEl.innerHTML = '&#127881; UPSET WIN!';
     playUpsetFanfare();
     spawnConfetti(40);
-    sayHostText(winUpsetHostLine(winnerId, d.loser_id));
   } else {
     winnerTagEl.innerHTML = '&#127942; WINS!';
     playDuelCompleteSound();
-    sayHostText(isClose ? winCloseHostLine(winnerId, stageTestedDomain) : winHostLine(winnerId, stageTestedDomain));
   }
+  // The Host's own reaction (win framing blended with a goodbye to the
+  // loser) already arrived as a separate host_line event (moment:
+  // 'duel_result') just before this one landed -- see the host_line
+  // dispatcher below. Not spoken here anymore.
   // Winning a duel is the clearest "did well" moment in the whole show --
   // gets a bigger sparkle burst than an ordinary correct answer regardless
   // of upset status (spawnConfetti above already sets upsets apart with
@@ -4924,27 +4867,15 @@ async function celebrateDuelWinner(d) {
   winEl.classList.remove('victory');
 }
 
-// Elimination send-off lines -- Scott: "the player that loses is gone from
-// the game, but we need to celebrate their departure more; words, toddling
-// off screen, re-spot light on Winner." %s is replaced with the loser's
-// playerLabel. Deliberately a little warm/wistful rather than mocking --
-// this is a contestant's whole run ending, not a gag.
-// Scott: "losers are not getting dismissed out loud... we need a real
-// announced Goodbye! Thanks for playing player! kinda moment." The old
-// pool WAS spoken (sayHostText below always was), but every line stayed
-// vague ("the end of the road," "takes a bow") rather than an explicit,
-// unambiguous farewell -- easy to half-hear as just more color commentary
-// rather than the show formally confirming this contestant is out. Every
-// line now leads or closes with an actual "goodbye"/"thanks for playing"
-// beat, name included, so there's no mistaking it for anything else.
-const ELIMINATION_LINES = [
-  "Goodbye, %s! Thanks for playing tonight.",
-  "That's it for %s. Thanks for playing, and take a bow.",
-  "%s is eliminated. Thanks for playing tonight!",
-  "Goodbye, %s! Your run ends here tonight.",
-  "Thanks for playing, %s! The board says goodbye.",
-  "%s, you're out. Thanks for playing tonight!",
-];
+// Elimination send-off -- Scott: "the player that loses is gone from the
+// game, but we need to celebrate their departure more; words, toddling
+// off screen, re-spot light on Winner." The goodbye words themselves used
+// to live in a separate ELIMINATION_LINES pool, spoken right here -- M32
+// Fix 2 merged that into agents/host_agent.py's announce_duel_result
+// (one live call covering both the win reaction AND the goodbye,
+// delivered via the host_line event, moment: 'duel_result', that already
+// arrived before this beat runs), so this function keeps only the visual
+// toddle-off/re-spotlight choreography now.
 
 // Runs between celebrateDuelWinner() and interDuelReactionBeat(): the loser
 // gets a real, held goodbye beat (a spoken line + a "toddling off screen"
@@ -4959,10 +4890,6 @@ async function eliminationBeat(loserId, winnerId) {
   const loseEl = isLoserChallenger ? playerLeft : playerRight;
   const winEl = isLoserChallenger ? playerRight : playerLeft;
   const exitClass = isLoserChallenger ? 'eliminated-left' : 'eliminated-right';
-
-  const line = pickVaried(ELIMINATION_LINES, 'elimination')
-    .replace('%s', displayName(loserId));
-  sayHostText(line);
 
   loseEl.classList.add(exitClass);
   winEl.classList.add('spotlight-solo');
@@ -5238,6 +5165,18 @@ async function runShowPlayback(queue) {
         await speakAndHold(sayHostText(ev.data.text), 1200);
       } else if (ev.data.moment === 'finale') {
         sayHostText(ev.data.text);
+      } else if (ev.data.moment === 'duel_result') {
+        // M32 Fix 2: win reaction + elimination goodbye, merged into one
+        // live call. Fire-and-forget like 'finale', not held like
+        // 'challenge' -- celebrateDuelWinner's visual FX (confetti/
+        // sound/classes) fire right after this, unawaited, on the very
+        // next event (duel_result), so the spoken line and the
+        // celebration land together instead of sequentially.
+        sayHostText(ev.data.text);
+      } else if (ev.data.moment === 'continue_reaction') {
+        // M32 Fix 3: replaces hostContinueReaction's own scripted call
+        // -- held the same 1300ms that call used to hold for.
+        await speakAndHold(sayHostText(ev.data.text), 1300);
       }
       continue;
     }
@@ -5480,7 +5419,11 @@ async function runShowPlayback(queue) {
       interviewBannerEl.classList.add('show');
       await speakAndHold(speakPlayerLine(ev.data.player_id, ev.data.reason), 1800);
       playContinueDecisionSting(keepGoing);
-      await speakAndHold(sayHostText(hostContinueReaction(ev.data.player_id, keepGoing)), 1300);
+      // M32 Fix 3: the Host's reaction to this exact decision already
+      // arrived as its own host_line event (moment: 'continue_reaction'),
+      // held for the same 1300ms hostContinueReaction used to hold for
+      // -- see the host_line dispatcher above. hostContinueBuildup (the
+      // pre-decision hype line, above) stays scripted, untouched.
       interviewBannerEl.classList.remove('show', 'decision', 'push', 'retreat');
       interviewTagEl.textContent = '🎤 Interview';
       const decisionEl = cardFor(ev);

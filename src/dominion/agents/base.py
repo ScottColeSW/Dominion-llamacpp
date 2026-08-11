@@ -49,13 +49,20 @@ class Agent(Protocol):
 class HostAgent(Protocol):
     """The Host's interface -- ScriptedHostAgent/LLMHostAgent
     (host_agent.py). Deliberately separate from Agent above: the Host
-    isn't a player (no domain, no elimination, no territory), just two
-    announcement points for v1 -- see host_agent.py's module docstring."""
+    isn't a player (no domain, no elimination, no territory)."""
 
     async def announce_challenge(self, challenger: Player, defender: Player,
-                                  tested_domain: str) -> str: ...
+                                  tested_domain: str, challenger_streak: int = 0,
+                                  defender_streak: int = 0, challenger_territory: int = 0,
+                                  defender_territory: int = 0) -> str: ...
 
     async def announce_finale(self, champion: Player, total_duels: int, prize: int) -> str: ...
+
+    async def announce_duel_result(self, winner: Player, loser: Player, tested_domain: str,
+                                    is_upset: bool, is_close: bool) -> str: ...
+
+    async def announce_continue_decision(self, player: Player, keep_going: bool,
+                                          reason: str) -> str: ...
 
 
 class CommentatorAgent(Protocol):

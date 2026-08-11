@@ -61,6 +61,31 @@ class ShowSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(not e.data["live"] for e in host_lines))  # SCRIPTED_ONLY
         self.assertTrue(all(e.data["text"] for e in host_lines))
 
+    async def test_host_line_events_appear_for_m32_duel_result_and_continue_reaction(self) -> None:
+        # M32 Fix 2/3: announce_duel_result fires once per duel (every
+        # elimination gets the Host's merged win/goodbye reaction, even
+        # the final one -- just deferred, see the ordering test below);
+        # announce_continue_decision fires once per non-final duel (the
+        # loop breaks before reaching it on the show's very last duel).
+        _, log = await self._run(3)
+        host_lines = [e for e in log if e.type == "host_line"]
+        moments = [e.data["moment"] for e in host_lines]
+        self.assertEqual(moments.count("duel_result"), PLAYER_COUNT - 1)
+        self.assertEqual(moments.count("continue_reaction"), PLAYER_COUNT - 2)
+
+    async def test_duel_result_events_carry_is_upset_and_is_close(self) -> None:
+        # M32 Fix 2: computed once, authoritatively, server-side -- the
+        # frontend used to recompute an equivalent pair of booleans from
+        # client-tracked territory state.
+        _, log = await self._run(3)
+        duel_results = [e for e in log if e.type == "duel_result"]
+        self.assertEqual(len(duel_results), PLAYER_COUNT - 1)
+        for e in duel_results:
+            self.assertIn("is_upset", e.data)
+            self.assertIn("is_close", e.data)
+            self.assertIsInstance(e.data["is_upset"], bool)
+            self.assertIsInstance(e.data["is_close"], bool)
+
     async def test_commentator_line_events_appear_for_every_matchup(self) -> None:
         # M11: the Commentator is a second real agent (agents/
         # commentator_agent.py) -- proves the wiring end to end even in
@@ -100,15 +125,20 @@ class ShowSmokeTest(unittest.IsolatedAsyncioTestCase):
         # its spoken line would audibly overlap that music. Every OTHER
         # elimination's exit_interview still fires immediately (right
         # after its own duel_result, unchanged) -- only the very last one
-        # is held to this order: host_line(finale) < exit_interview <
-        # finale.
+        # is held to this order: host_line(finale) < host_line(duel_result)
+        # < exit_interview < finale -- M32 Fix 2 added the middle step,
+        # deferred the same way exit_interview already was.
         _, log = await self._run(3)
         finale_host_index = next(
             i for i, e in enumerate(log)
             if e.type == "host_line" and e.data["moment"] == "finale")
         finale_index = next(i for i, e in enumerate(log) if e.type == "finale")
         last_exit_index = max(i for i, e in enumerate(log) if e.type == "exit_interview")
-        self.assertLess(finale_host_index, last_exit_index)
+        last_duel_result_host_index = max(
+            i for i, e in enumerate(log)
+            if e.type == "host_line" and e.data["moment"] == "duel_result")
+        self.assertLess(finale_host_index, last_duel_result_host_index)
+        self.assertLess(last_duel_result_host_index, last_exit_index)
         self.assertLess(last_exit_index, finale_index)
 
     async def test_custom_models_list_overrides_the_fixed_roster(self) -> None:

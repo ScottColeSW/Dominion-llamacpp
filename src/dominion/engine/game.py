@@ -358,6 +358,14 @@ async def _run_show(seed: Optional[int] = None, log=None,
         emit("challenge_declared", challenger_id=active_pid, defender_id=target_id,
              tested_domain=tested_domain, challenger_using_bonus=challenger_bonus,
              defender_using_bonus=False, base_clock=BASE_CLOCK)
+        # M32 Fix 2: snapshotted here, BEFORE run_duel/territory transfer
+        # touches anything, so announce_duel_result's is_upset check
+        # below can compare each side's territory as it genuinely stood
+        # going into this duel -- the same definition celebrateDuelWinner's
+        # old client-side isUpset calc used, just computed once,
+        # authoritatively, here instead of duplicated in JS.
+        challenger_territory_pre = len(active_player.territory)
+        defender_territory_pre = len(defender.territory)
 
         # The Host, as a real agent (M9) -- one announcement, generated
         # once, that's both what's actually spoken/shown on screen (the
@@ -365,7 +373,18 @@ async def _run_show(seed: Optional[int] = None, log=None,
         # intro_line_combined calls react to as host_announcement. Before
         # this, those were two different, disconnected texts -- see
         # agents/host_agent.py's module docstring.
-        host_line = await host_agent.announce_challenge(active_player, defender, tested_domain)
+        #
+        # M32 Fix 1: streak/territory context passed in here too, folded
+        # into this ONE call instead of a separate scripted
+        # preduelHostLine firing a second, disconnected line right
+        # before this one (the Host was speaking twice per duel through
+        # two different code paths -- see host_agent.py's
+        # announce_challenge for the ported tiered logic).
+        host_line = await host_agent.announce_challenge(
+            active_player, defender, tested_domain,
+            challenger_streak=active_player.push_streak, defender_streak=defender.push_streak,
+            challenger_territory=len(active_player.territory),
+            defender_territory=len(defender.territory))
         emit("host_line", moment="challenge", text=host_line, live=not SCRIPTED_ONLY)
 
         # The Commentator (M11) -- a second AI voice, a beat after the
@@ -457,6 +476,22 @@ async def _run_show(seed: Optional[int] = None, log=None,
         winner_id, loser_id = result.winner_id, result.loser_id
         winner, loser = players[winner_id], players[loser_id]
 
+        # M32 Fix 2: is_upset/is_close computed here, before territory
+        # transfer below touches anything, from the PRE-duel snapshot
+        # taken right after challenge_declared -- same definitions
+        # celebrateDuelWinner's old client-side JS used (loser held >=2
+        # more tiles going in = upset; clocks within 3s of each other =
+        # close), just computed once, authoritatively, server-side, and
+        # carried on duel_result below so the frontend no longer needs
+        # its own parallel calculation.
+        winner_territory_pre = (
+            challenger_territory_pre if winner_id == active_pid else defender_territory_pre)
+        loser_territory_pre = (
+            defender_territory_pre if winner_id == active_pid else challenger_territory_pre)
+        is_upset = (loser_territory_pre - winner_territory_pre) >= 2
+        is_close = not is_upset and abs(
+            result.clocks_remaining.get(winner_id, 0) - result.clocks_remaining.get(loser_id, 0)) < 3
+
         # Territory transfer -- split rather than blind merge. The loser's
         # territory is split into connected pieces (per the current board
         # graph); only the piece(s) actually touching the winner's own
@@ -505,13 +540,23 @@ async def _run_show(seed: Optional[int] = None, log=None,
         loser.active = False
         game.active_ids.discard(loser_id)
 
+        # M32 Fix 2: the Host's own reaction to this duel -- win/upset/
+        # close framing blended with a genuine goodbye to the loser in
+        # one call (agents/host_agent.py's announce_duel_result),
+        # replacing 4 separate scripted pools (winHostLine/
+        # winCloseHostLine/winUpsetHostLine/ELIMINATION_LINES) that used
+        # to fire across two different beats for what's really one
+        # moment. Computed here, before the same final_elimination gate
+        # M12's exit_interview already uses below.
+        duel_result_host_line = await host_agent.announce_duel_result(
+            winner, loser, tested_domain, is_upset, is_close)
+
         # M12: the loser's own last word, live on air, before the send-off
-        # (web/index.html's ELIMINATION_LINES/eliminationBeat) plays --
-        # right now elimination is otherwise silent past that scripted
-        # goodbye template. Emitted before duel_result below so the
-        # frontend can air it while this player is still visibly on stage,
-        # ahead of the toddle-off exit animation duel_result's own handler
-        # triggers.
+        # plays -- right now elimination is otherwise silent past a
+        # scripted goodbye template. Emitted before duel_result below so
+        # the frontend can air it while this player is still visibly on
+        # stage, ahead of the toddle-off exit animation duel_result's own
+        # handler triggers.
         #
         # Scott caught a real sequencing bug here: on the show's very
         # last duel, this fired before the Host's own finale
@@ -521,13 +566,18 @@ async def _run_show(seed: Optional[int] = None, log=None,
         # exit interview." final_elimination checks sole_owner() right
         # here, with loser.active already False above, so it correctly
         # reflects whether THIS elimination is the one that ends the
-        # show. Every other (non-final) elimination emits immediately,
-        # unchanged; only the last one is held back, until after the
-        # finale host_line/finale events below.
+        # show. Every other (non-final) elimination emits both lines
+        # immediately, unchanged; only the very last one holds BOTH
+        # back, until after the finale host_line/finale events below --
+        # the Host's duel-result line goes first, then the loser's own
+        # exit interview, preserving the same "Host formally closes,
+        # then the loser's own word" order M12 already established.
         loser_agent = agents[loser_id]
         exit_line = await loser_agent.exit_interview(loser, winner, tested_domain)
         final_elimination = game.sole_owner() is not None
         if not final_elimination:
+            emit("host_line", moment="duel_result", text=duel_result_host_line,
+                 live=not SCRIPTED_ONLY)
             emit("exit_interview", player_id=loser_id, text=exit_line, live=not SCRIPTED_ONLY)
 
         # Streak tracking: every win extends it, regardless of whether the
@@ -547,7 +597,8 @@ async def _run_show(seed: Optional[int] = None, log=None,
         emit("duel_result", winner_id=winner_id, loser_id=loser_id, reason=result.reason,
              winner_domain_after=winner.domain, questions_seen=result.questions_seen,
              clocks_remaining=result.clocks_remaining, turns=len(result.turns_log),
-             territory_gained=territory_gained, winner_streak=winner.push_streak)
+             territory_gained=territory_gained, winner_streak=winner.push_streak,
+             is_upset=is_upset, is_close=is_close)
 
         # Show-wide memory (Scott: "everyone, all agents, will be more and
         # more informed as the game proceeds") -- a plain-English fact any
@@ -645,6 +696,21 @@ async def _run_show(seed: Optional[int] = None, log=None,
             game.excluded_from_pick = winner_id
             emit("retreats", player_id=winner_id, model=winner.model, reason=continue_reason,
                  temperament=winner.temperament, temperament_label=winner.temperament_label())
+        # M32 Fix 3: emitted AFTER continues/retreats, not before -- the
+        # frontend's own handler for that event plays the buildup
+        # question and the player's real stated reason FIRST
+        # (hostContinueBuildup, then the interview banner), and the
+        # Host's reaction has to land after that setup, not before it.
+        # Reacts to the EFFECTIVE outcome (whether the winner actually
+        # keeps going), not the raw keep_going flag alone -- keep_going
+        # =True with no adjacent opponents left still ends in a retreat
+        # on the board, and the Host's line should match what viewers
+        # actually see happen.
+        effective_keep_going = keep_going and bool(game.adjacent_opponents(winner_id))
+        continue_reaction_line = await host_agent.announce_continue_decision(
+            winner, effective_keep_going, continue_reason)
+        emit("host_line", moment="continue_reaction", text=continue_reaction_line,
+             live=not SCRIPTED_ONLY)
 
     champion_id = game.sole_owner()
     # The while loop above only exits once sole_owner() is no longer None
@@ -667,6 +733,8 @@ async def _run_show(seed: Optional[int] = None, log=None,
     # order gives a clean beat sequence: Host's formal close, then the
     # loser's last word, then the actual celebration.
     if final_elimination:
+        emit("host_line", moment="duel_result", text=duel_result_host_line,
+             live=not SCRIPTED_ONLY)
         emit("exit_interview", player_id=loser_id, text=exit_line, live=not SCRIPTED_ONLY)
     emit("finale", champion_id=champion_id, champion_domain=champion.domain,
          champion_kingdom=champion.kingdom_name, champion_profession=champion.profession,
