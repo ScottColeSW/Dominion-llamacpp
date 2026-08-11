@@ -325,6 +325,32 @@
   .host-line.pop { animation: hostPop .4s ease; }
   @keyframes hostPop { from { opacity: 0.2; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 
+  /* --- Commentator banner (M11): deliberately NOT a reskinned
+     .host-banner or .interview-banner -- a teal/cyan "lower third"
+     treatment (real broadcast color for a stats/analysis chyron) so it
+     reads as a genuinely different on-screen voice from the Host's
+     purple-and-gold banner at a glance, not a recolored duplicate. --- */
+  .commentator-banner {
+    width: 100%; max-width: 820px; margin-top: 10px;
+    display: flex; align-items: center; gap: 12px;
+    background: rgba(10,38,42,0.65); border: 1px solid #1f6d73; border-radius: 14px;
+    padding: 10px 20px;
+  }
+  .commentator-avatar {
+    font-size: 1.8em; flex-shrink: 0; width: 40px; height: 40px;
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(circle, #103d40, var(--card)); border-radius: 50%;
+    border: 1px solid #4fd1d9;
+  }
+  .commentator-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .commentator-tag {
+    font-size: 0.72em; text-transform: uppercase; letter-spacing: 2px;
+    color: #4fd1d9; font-weight: 700;
+  }
+  .commentator-line { color: var(--text); font-style: italic; font-size: 1.05em; min-height: 1.4em; }
+  .commentator-line.pop { animation: commentatorPop .4s ease; }
+  @keyframes commentatorPop { from { opacity: 0.2; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
   /* The pre-duel interview: a host question directed at each player, then
      their own live answer -- a real two-way beat, not backstage color,
      so it gets its own card with real visual weight (matching
@@ -483,6 +509,43 @@
   .chatter-line.gossip { color: #e0a3c9; font-style: italic; }
   .chatter-label { font-weight: 700; text-transform: uppercase; font-size: 0.85em; letter-spacing: 0.5px; }
   @keyframes chatterIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* --- Real-time territory scoreboard: mirrors .audience-panel's shell
+     on the OTHER side of the board (same background/border/stretch
+     treatment) so the board reads as flanked symmetrically rather than
+     the new panel looking bolted on. Ranked live off tileOwner -- see
+     renderScoreboard(). --- */
+  .scoreboard-panel {
+    width: 100%; max-width: 300px; flex: 1 1 220px;
+    background: rgba(23,16,42,0.5); border: 1px solid #2c1f45; border-radius: 14px;
+    padding: 10px 16px 12px;
+    display: flex; flex-direction: column;
+  }
+  .scoreboard-label {
+    font-size: 0.78em; text-transform: uppercase; letter-spacing: 2px;
+    color: var(--gold); text-align: center; margin-bottom: 8px; opacity: 0.85;
+  }
+  .scoreboard-list { display: flex; flex-direction: column; gap: 5px; overflow: hidden; }
+  .scoreboard-row {
+    display: flex; align-items: center; gap: 8px; font-size: 0.85em;
+    animation: chatterIn .3s ease both;
+  }
+  .scoreboard-rank { color: var(--dim); font-size: 0.85em; width: 1.4em; flex-shrink: 0; }
+  .scoreboard-dot {
+    width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0;
+    border: 1px solid rgba(255,255,255,0.25);
+  }
+  .scoreboard-name {
+    flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; color: var(--text);
+  }
+  .scoreboard-count { color: var(--gold); font-weight: 700; flex-shrink: 0; }
+  /* The very top of the board -- highlighted the same way a leaderboard
+     leader usually is, since "who's actually winning right now" is the
+     whole point of this panel existing. */
+  .scoreboard-row.leader .scoreboard-name, .scoreboard-row.leader .scoreboard-count {
+    color: var(--gold);
+  }
 
   #stage { width: 100%; max-width: 820px; margin-top: 18px; display: flex; flex-direction: column; gap: 10px; }
 
@@ -725,13 +788,17 @@
      its own max-width is left high enough that it keeps growing on wide
      viewports. --- */
   #boardWrap {
-    width: 100%; max-width: 760px; display: flex; justify-content: center;
+    width: 100%; max-width: 680px; display: flex; justify-content: center;
     align-items: flex-start;
     /* Trimmed from 3:1 down to 2:1 against the audience panel, and the hard
        max-width down from 1100px -- Scott's ask to balance the two panels
        more evenly (board smaller, audience bigger) rather than the board
-       dominating at roughly triple the panel's width. */
-    flex: 2 1 380px; min-width: 0;
+       dominating at roughly triple the panel's width. Trimmed again
+       (760px -> 680px) once the territory scoreboard added a THIRD
+       column on the other side -- keeps the board comfortably in the
+       middle, flanked on both sides, instead of the new panel just
+       shrinking whatever width was left over. */
+    flex: 2 1 340px; min-width: 0;
   }
   /* The row itself: the audience panel on the left (fixed, modest width),
      board on the right getting the lion's share. Wider than the ~820-860px
@@ -751,6 +818,14 @@
     display: flex; align-items: stretch; justify-content: center; gap: 18px;
   }
   #lowerRow .audience-panel { margin-top: 0; }
+  @media (max-width: 1180px) {
+    /* The scoreboard is the least essential of the three columns (a
+       recap of information the board itself already shows via tile
+       color) -- it's the first to drop to full-width-stacked as the
+       viewport narrows, before the audience panel has to. */
+    #lowerRow { flex-wrap: wrap; }
+    #lowerRow .scoreboard-panel { max-width: 820px; width: 100%; order: 3; flex: 1 1 100%; }
+  }
   @media (max-width: 980px) {
     #lowerRow { flex-direction: column; align-items: center; }
     #lowerRow .audience-panel { max-width: 820px; width: 100%; }
@@ -1166,6 +1241,20 @@
     </div>
   </div>
 
+  <!-- M11: the Commentator -- a second AI voice, distinct from the Host
+       above (own color scheme, own icon, own voice profile) specifically
+       so the two are never mistaken for one speaker. Grounded in real
+       cross-show history when a live show has any recorded yet (see
+       agents/commentator_agent.py); the fixed idle line below is only
+       ever shown before the first real commentator_line event lands. -->
+  <div class="commentator-banner">
+    <div class="commentator-avatar">&#128202;</div>
+    <div class="commentator-text">
+      <div class="commentator-tag">Commentator</div>
+      <div class="commentator-line" id="commentatorLine">Standing by with tonight's numbers...</div>
+    </div>
+  </div>
+
   <!-- The pre-show "hero" panel: Start Show is the one thing on stage here,
        styled to match #duelStage's own panel treatment (same width, same
        gradient/radius) so clicking it visually reads as swapping THIS
@@ -1279,6 +1368,17 @@
         <g id="tileLayer"></g>
       </svg>
     </div>
+    <!-- Real-time territory scoreboard: recomputed from tileOwner (the
+         same node->player_id map fillTile/captureTiles already maintain)
+         any time a tile changes hands, so it's always exactly what's on
+         the board, not a second source of truth to keep in sync by hand.
+         Squeezes the board toward the middle, same balanced-columns
+         treatment #lowerRow already gives the audience panel on the
+         other side. -->
+    <div class="scoreboard-panel" id="scoreboardPanel">
+      <div class="scoreboard-label">Territory</div>
+      <div class="scoreboard-list" id="scoreboardList"></div>
+    </div>
   </div>
 
   <div id="stage"></div>
@@ -1334,12 +1434,14 @@ const ffBtn = document.getElementById('ffBtn');
 const statusEl = document.getElementById('status');
 const playersRemainingEl = document.getElementById('playersRemaining');
 const hostLine = document.getElementById('hostLine');
+const commentatorLine = document.getElementById('commentatorLine');
 const interviewEl = document.getElementById('interviewLine');
 const interviewBannerEl = document.getElementById('interviewBanner');
 const interviewTagEl = document.getElementById('interviewTag');
 const agentThinkingEl = document.getElementById('agentThinkingLine');
 const amphitheaterEl = document.getElementById('amphitheater');
 const chatterFeedEl = document.getElementById('chatterFeed');
+const scoreboardListEl = document.getElementById('scoreboardList');
 const stage = document.getElementById('stage');
 const duelStage = document.getElementById('duelStage');
 const playerLeft = document.getElementById('playerLeft');
@@ -2192,6 +2294,30 @@ if (window.speechSynthesis) {
   speechSynthesis.onvoiceschanged = () => { hostVoice = pickHostVoice(); };
   hostVoice = pickHostVoice();
 }
+
+// M11: the Commentator gets its own voice, deliberately distinct from
+// hostVoice (excluded below) so the two AI voices are told apart by ear,
+// not just by the banner's own color -- same "excluding whichever one the
+// host is using" approach pickPlayerVoiceProfile already takes.
+let commentatorVoice = null;
+const COMMENTATOR_VOICE_NAME_PREFERENCES = ['Microsoft Zira', 'Google UK English Female', 'Samantha', 'Google US English'];
+function pickCommentatorVoice() {
+  if (!window.speechSynthesis) return null;
+  const voices = speechSynthesis.getVoices();
+  if (!voices.length) return null;
+  for (const name of COMMENTATOR_VOICE_NAME_PREFERENCES) {
+    const match = voices.find(v => v.name.includes(name) && v !== hostVoice);
+    if (match) return match;
+  }
+  return voices.find(v => v.lang && v.lang.startsWith('en') && v !== hostVoice) || voices[0];
+}
+if (window.speechSynthesis) {
+  speechSynthesis.onvoiceschanged = () => {
+    hostVoice = pickHostVoice();
+    commentatorVoice = pickCommentatorVoice();
+  };
+  commentatorVoice = pickCommentatorVoice();
+}
 // Shared by the host and every contestant below -- one utterance at a time
 // (cancel() before each speak()) so a fast run of lines doesn't pile up and
 // read as a delayed backlog; the tradeoff is a still-talking line gets cut
@@ -2317,6 +2443,13 @@ function speakHostLine(text) {
   // noticeably punchier than the old settings.
   return speakUtterance(text, hostVoice, 1.08, 1.08);
 }
+// A calmer, slightly lower-pitched read than the host's energetic
+// announcer pace -- reads as analysis, not hype, matching the
+// stats-grounded content the Commentator actually says (see
+// agents/commentator_agent.py).
+function speakCommentatorLine(text) {
+  return speakUtterance(text, commentatorVoice, 1.0, 0.95);
+}
 
 // Each of the 13 contestants gets their own distinct voice -- Scott: "each
 // contestant should also answer in a different voice." Assigned once per
@@ -2387,6 +2520,21 @@ function sayHost(category) {
   const lines = HOST_LINES[category];
   if (!lines || !lines.length) return;
   sayHostText(pickVaried(lines, 'host:' + category));
+}
+
+// Same pop/serialize pattern as sayHostText, its own independent chain --
+// a commentator line should never wait on (or block) whatever the host is
+// currently saying, since the two are meant to read as two people talking
+// over the same broadcast, not one voice taking turns.
+let commentatorSpeechChain = Promise.resolve();
+function sayCommentatorText(text) {
+  commentatorLine.textContent = text;
+  commentatorLine.classList.remove('pop');
+  void commentatorLine.offsetWidth;
+  commentatorLine.classList.add('pop');
+  const spoken = commentatorSpeechChain.then(() => speakCommentatorLine(text));
+  commentatorSpeechChain = spoken.catch(() => {});
+  return spoken;
 }
 
 // --- Revision 23 dynamic host lines: Scott's "examine and bolster its
@@ -2512,16 +2660,11 @@ function scrambleHostLine(data) {
   ];
   return pickVaried(templates, 'scramble');
 }
-function finaleHostLine(data) {
-  const kingdom = data.champion_kingdom || displayName(data.champion_id);
-  const templates = [
-    `Ladies and gentlemen, ${kingdom} is our champion!`, `And there it is. ${kingdom}, sole owner of the board!`,
-    `What a run! What a show! ${kingdom} takes it all!`, `One board, one champion, and it's ${kingdom}!`,
-  ];
-  return pickVaried(templates, 'finale');
-}
-// Said right as the stage opens, BEFORE hostPreduelQuestion's personalized
-// question -- Scott: "the host has some really canned lines." This used to
+// finaleHostLine used to live here -- replaced by the Host as a real
+// agent (M9, agents/host_agent.py's announce_finale), consumed via the
+// host_line event (moment: 'finale') instead of a local template pick.
+// Said right as the stage opens, BEFORE the host's actual challenge
+// announcement -- Scott: "the host has some really canned lines." This used to
 // be a flat pool of pure stakes-setting filler disconnected from what was
 // actually happening, repeating constantly by mid-show. Now it leans on
 // the real streak/territory numbers openStage already has on hand
@@ -2556,60 +2699,20 @@ function preduelHostLine(challengerId, defenderId, challengerStreak, defenderStr
   ], 'preduelGeneric');
 }
 
-// The host directs ONE loaded question at each player before they answer --
-// makes the pre-duel beat read as an actual host<->player dialogue (Scott:
-// "has to be 2 ways") rather than a generic opening line followed by a
-// disconnected reaction. This used to be three separate rounds (origin
-// domain, tested domain, read on the opponent), but Scott found the
-// results read like three disconnected exchanges rather than one host who
-// actually knows the cast: "it doesn't seem like the agents are hearing
-// each other in conversation... player 1, I see you are a cautious expert
-// in flowers and gardens, how do you feel about competing with player 2 on
-// the subject of Farm Animals. Like that kinda." One combined question now,
-// exactly on that model: names the player's real origin-domain expertise,
-// their temperament, the actual duel domain, and the named opponent, all
-// in a single loaded ask -- "loading it with statements and a question"
-// rather than a bare "how do you feel," per Scott's own framing of the ask.
-// Revision 32 -- Scott: "the host language... talks about feelings instead
-// of talking about the general knowledge of the domain on the line." Every
-// template below used to close on an emotional check-in ("How do you feel
-// about your chances?", "How does that feel?", "How are you feeling?") --
-// that's exactly backwards from what this beat is supposed to set up: the
-// player's own reply (intro_line_combined, engine/ollama_agent.py) is
-// meant to reason about whether their real expertise actually transfers to
-// tonight's domain, not report an emotional state. Rewritten so the HOST's
-// own question already asks about knowledge/transfer, which also primes
-// the player's reply to answer in those terms instead of drifting to "I
-// feel good about this."
-// Revision 33 -- Scott flagged a batch of stock game-show phrasing as
-// stale: "built your name on," "your ground," "not your usual ground,"
-// "tonight's duel." Reworded below to plain, specific language about the
-// actual domain and matchup instead of leaning on these stock phrases.
-function hostPreduelQuestion(playerId, role, domain, opponentName, opponentId) {
-  const name = displayName(playerId);
-  const originDomain = playerStartDomain[playerId] || 'your domain';
-  const temperament = playerTemperament[playerId];
-  const temperamentWord = temperament ? temperament.toLowerCase() + ' ' : '';
-  const sameDomain = originDomain === domain;
-  // When this matchup happens to BE their origin domain, say so directly
-  // instead of asking a question that would sound strange restating the
-  // same domain twice ("expert in Cats... facing them on Cats?" reads odd).
-  const stakesClause = sameDomain
-    ? `and that's exactly the category up tonight`
-    : `but the category up is ${domain}, a different subject entirely`;
-  const challengerTemplates = [
-    `${name}, I hear you know ${originDomain} well. This match is on ${domain}, against ${opponentName}. Does that knowledge actually apply here?`,
-    `${name}, word is you know ${originDomain} well, ${stakesClause}. What do you really know about ${domain}?`,
-    `${name}, ${originDomain} is where you made your name. Now it's ${domain}, against ${opponentName}. Any real overlap there?`,
-  ];
-  const defenderTemplates = [
-    `${name}, I hear you know ${originDomain} well. ${opponentName} is challenging you on ${domain}. Is that actually your strong suit?`,
-    `${name}, you know ${originDomain} well, ${stakesClause}. How much do you actually know about ${domain}?`,
-    `${name}, you're defending against ${opponentName}, on ${domain}. What do you actually know about it?`,
-  ];
-  const pool = role === 'challenger' ? challengerTemplates : defenderTemplates;
-  return pickVaried(pool, 'combined:' + playerId);
-}
+// hostPreduelQuestion used to live here: the host's ONE loaded question
+// per side before each duel (this JS-only template pool's long revision
+// history -- "has to be 2 ways," the emotional-check-in rewrite, the
+// stock-phrasing cleanup -- is preserved in git history, not repeated
+// here). M9 replaced it: the Host is a real agent now
+// (agents/host_agent.py's announce_challenge), generating ONE shared
+// announcement server-side instead of two separately-worded per-side
+// questions, consumed here via the host_line event (moment: 'challenge')
+// -- see the pre_duel_intro/host_line handlers above. This is also what
+// finally fixed a real, separate gap Scott flagged: llm_agent.py used to
+// fabricate its own, never-displayed "host said this" quote purely to
+// give players something to react to, disconnected from whatever this
+// function actually said on screen. Now there's exactly one host line,
+// generated once, that's both.
 
 // The winner's push/retreat choice, announced as a real host<->player beat
 // instead of a quiet card easy to miss in the scroll -- Scott's report.
@@ -4094,6 +4197,7 @@ function fillTile(node, playerId) {
   void el.getBBox();
   el.classList.add('pop');
   labelTile(node, playerId);
+  renderScoreboard();
 }
 
 function captureTiles(nodes, playerId) {
@@ -4107,6 +4211,43 @@ function captureTiles(nodes, playerId) {
     void el.getBBox();
     el.classList.add('capture');
     labelTile(node, playerId);
+  });
+  renderScoreboard();
+}
+
+// Real-time territory scoreboard: recomputed from tileOwner (the same
+// node->player_id map fillTile/captureTiles above already maintain) any
+// time a tile changes hands, rather than kept as a second running tally
+// that could drift out of sync with what the board itself actually
+// shows. Rebuilt from scratch each time -- at most 13 short rows, same
+// "staying simple here is worth more than a marginal render saving"
+// tradeoff renderModelRosterPlayers already makes.
+function renderScoreboard() {
+  const counts = {};
+  for (const owner of Object.values(tileOwner)) {
+    counts[owner] = (counts[owner] || 0) + 1;
+  }
+  const ranked = Object.keys(counts)
+    .map(Number)
+    .sort((a, b) => counts[b] - counts[a] || a - b);
+  scoreboardListEl.innerHTML = '';
+  ranked.forEach((playerId, i) => {
+    const row = document.createElement('div');
+    row.className = 'scoreboard-row' + (i === 0 && counts[playerId] > 0 ? ' leader' : '');
+    const rank = document.createElement('span');
+    rank.className = 'scoreboard-rank';
+    rank.textContent = (i + 1) + '.';
+    const dot = document.createElement('span');
+    dot.className = 'scoreboard-dot';
+    dot.style.background = '#' + playerColor(playerId);
+    const name = document.createElement('span');
+    name.className = 'scoreboard-name';
+    name.textContent = displayName(playerId);
+    const count = document.createElement('span');
+    count.className = 'scoreboard-count';
+    count.textContent = counts[playerId];
+    row.append(rank, dot, name, count);
+    scoreboardListEl.appendChild(row);
   });
 }
 
@@ -5066,21 +5207,40 @@ async function runShowPlayback(queue) {
       await openStage(ev.data);
       continue;
     }
+    if (ev.type === 'host_line') {
+      // The Host, as a real agent now (M9, agents/host_agent.py) -- ONE
+      // real announcement per duel/show, generated once server-side,
+      // instead of the old hostPreduelQuestion/finaleHostLine templates
+      // picked separately (and, for the challenge case, asked TWICE --
+      // once per side, with slightly different wording each time). Both
+      // players' own pre_duel_intro replies now react to this exact
+      // text, not a fabricated stand-in -- see llm_agent.py's
+      // intro_line_combined for the other half of that fix.
+      if (ev.data.moment === 'challenge') {
+        await speakAndHold(sayHostText(ev.data.text), 1200);
+      } else if (ev.data.moment === 'finale') {
+        sayHostText(ev.data.text);
+      }
+      continue;
+    }
+    if (ev.type === 'commentator_line') {
+      // M11: the second AI voice (agents/commentator_agent.py), a beat
+      // after the Host's own line, not a replacement for it -- awaited
+      // for 'matchup' (the per-duel beat, same pacing treatment as the
+      // Host's challenge announcement) so the next beat doesn't talk
+      // over it; fired-and-forget for the rarer special-event moments
+      // ('advantage', 'scramble'), which land alongside other narrative
+      // events already competing for airtime.
+      if (ev.data.moment === 'matchup') {
+        await speakAndHold(sayCommentatorText(ev.data.text), 1200);
+      } else {
+        sayCommentatorText(ev.data.text);
+      }
+      continue;
+    }
     if (ev.type === 'pre_duel_intro') {
-      // Host intro for BOTH sides, ONE combined round each now, streamed as
-      // its own event per game.py -- shown before the countdown, which
-      // duel_turn below is responsible for kicking off once both have run.
-      // Used to be three separate rounds (origin domain, tested domain,
-      // read on the opponent) but Scott reported it read like three
-      // disconnected exchanges rather than one host who actually knows the
-      // cast, and asked for it condensed into a single loaded question --
-      // see hostPreduelQuestion's own comment for his exact example. A
-      // directed host question comes first, held long enough to actually
-      // read, THEN the player's answer -- together this is the real 2-way
-      // host<->player exchange Scott asked for.
-      const opponentId = ev.data.role === 'defender' ? stageChallengerId : stageDefenderId;
-      const opponentName = displayName(opponentId);
-      await speakAndHold(sayHostText(hostPreduelQuestion(ev.data.player_id, ev.data.role, stageTestedDomain, opponentName, opponentId)), 1200);
+      // The host's own question already played once, above, right after
+      // challenge_declared -- this just shows each side's actual reply.
       await showDomainIntro(ev.data.player_id, ev.data.role, ev.data.text);
       continue;
     }
@@ -5109,6 +5269,21 @@ async function runShowPlayback(queue) {
         renderModelActivityStat();
       }
       await playDuelTurn(ev.data);
+      continue;
+    }
+    if (ev.type === 'exit_interview') {
+      // M12: the just-eliminated player's own last word -- reuses the
+      // pre-duel interview banner's shell (same "player's own words"
+      // treatment) with its own tag, and airs BEFORE the duel_result
+      // handler's eliminationBeat() toddles this player off stage, so the
+      // audience actually sees them say it while they're still there.
+      interviewTagEl.textContent = '🎤 Exit Interview';
+      interviewEl.textContent = `${displayName(ev.data.player_id)}: ${ev.data.text}`;
+      interviewBannerEl.classList.add('show');
+      await speakAndHold(speakPlayerLine(ev.data.player_id, ev.data.text), 1600);
+      interviewBannerEl.classList.remove('show');
+      interviewTagEl.textContent = '🎤 Interview';
+      await sleep(300);
       continue;
     }
     if (ev.type === 'duel_result') {
@@ -5243,7 +5418,9 @@ async function runShowPlayback(queue) {
       // attention, rather than needing to scroll back up to see it again.
       overlayFinaleContent.innerHTML = '';
       overlayFinaleContent.appendChild(finaleCard(ev.data, extra));
-      sayHostText(finaleHostLine(ev.data));
+      // The host's finale line already played above, via the host_line
+      // event (moment: 'finale') that fires right before this one --
+      // see agents/host_agent.py's announce_finale.
       // The one moment in the whole show that gets a real produced needle
       // drop instead of a synthesized sting -- the grand prize win, held
       // roughly as long as the New Game popup takes to appear (6s) so it
@@ -5371,6 +5548,7 @@ async function startShow() {
   interviewBannerEl.classList.remove('show');
   interviewEl.textContent = '';
   chatterFeedEl.innerHTML = '';
+  scoreboardListEl.innerHTML = '';
   // Reset the count silently -- it isn't shown again until the draft
   // actually finishes and a real cast exists on the board.
   playersRemainingCount = 13;

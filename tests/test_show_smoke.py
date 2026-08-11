@@ -48,6 +48,47 @@ class ShowSmokeTest(unittest.IsolatedAsyncioTestCase):
             result, _ = await self._run(seed)
             self.assertEqual(result["total_duels"], PLAYER_COUNT - 1)
 
+    async def test_host_line_events_appear_for_challenge_and_finale(self) -> None:
+        # M9: the Host is a real agent now (agents/host_agent.py) --
+        # proves the wiring end to end even in scripted-only mode, where
+        # host_agent.announce_challenge/announce_finale still run (just
+        # via ScriptedHostAgent, not a live call).
+        _, log = await self._run(3)
+        host_lines = [e for e in log if e.type == "host_line"]
+        moments = [e.data["moment"] for e in host_lines]
+        self.assertEqual(moments.count("challenge"), PLAYER_COUNT - 1)  # once per duel
+        self.assertEqual(moments.count("finale"), 1)
+        self.assertTrue(all(not e.data["live"] for e in host_lines))  # SCRIPTED_ONLY
+        self.assertTrue(all(e.data["text"] for e in host_lines))
+
+    async def test_commentator_line_events_appear_for_every_matchup(self) -> None:
+        # M11: the Commentator is a second real agent (agents/
+        # commentator_agent.py) -- proves the wiring end to end even in
+        # scripted-only mode, where it still runs (just via
+        # ScriptedCommentatorAgent, not a live call, and with no stats
+        # snapshot at all).
+        _, log = await self._run(3)
+        commentator_lines = [e for e in log if e.type == "commentator_line"]
+        moments = [e.data["moment"] for e in commentator_lines]
+        self.assertEqual(moments.count("matchup"), PLAYER_COUNT - 1)  # once per duel
+        self.assertTrue(all(not e.data["live"] for e in commentator_lines))  # SCRIPTED_ONLY
+        self.assertTrue(all(e.data["text"] for e in commentator_lines))
+
+    async def test_exit_interview_events_appear_once_per_eliminated_player(self) -> None:
+        # M12: every duel eliminates exactly one player, and each gets one
+        # last word (agents/scripted_agent.py's exit_interview) before the
+        # show moves on -- proves the wiring end to end even in
+        # scripted-only mode.
+        _, log = await self._run(3)
+        exit_events = [e for e in log if e.type == "exit_interview"]
+        self.assertEqual(len(exit_events), PLAYER_COUNT - 1)  # one per elimination
+        self.assertTrue(all(not e.data["live"] for e in exit_events))  # SCRIPTED_ONLY
+        self.assertTrue(all(e.data["text"] for e in exit_events))
+        # Every eliminated player_id is unique -- nobody gets a second exit
+        # interview (they're out for good after their first loss).
+        eliminated_ids = [e.data["player_id"] for e in exit_events]
+        self.assertEqual(len(eliminated_ids), len(set(eliminated_ids)))
+
     async def test_custom_models_list_overrides_the_fixed_roster(self) -> None:
         # The model picker's selection (server/app.py's ?models= query
         # params) should be exactly what players draw from, not just a

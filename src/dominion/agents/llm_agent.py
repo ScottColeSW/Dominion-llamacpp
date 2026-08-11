@@ -142,32 +142,6 @@ def _note_recall_line(player: Player) -> str:
     return f" Private notes you left yourself earlier tonight: {notes}." if notes else ""
 
 
-def _host_announcement_line(player: Player, opponent: Player, tested_domain: str) -> str:
-    """A short, quoted line standing in for what the host actually just said
-    live, on air -- Scott: "players do not seem aware they are in a game
-    show. they never hear the host." That complaint is literally true of
-    the engine, not just a vibe: index.html's hostPreduelQuestion generates
-    the ACTUAL spoken host line, but purely in the browser, AFTER this
-    Python call already ran -- nothing in this module ever had access to
-    host language at all, live or otherwise, only bare facts (domain,
-    opponent, streak) it turned into its own prompt wording. This doesn't
-    try to match hostPreduelQuestion's exact phrasing (that would need
-    moving host-line generation into Python entirely, a much bigger
-    rebuild) -- it's a standalone quoted announcement built from the same
-    underlying facts, good enough to give the model something concrete to
-    have just "heard" and react to, right at the moment it's put on the
-    spot -- which also covers Scott's "read the transcript... so they're
-    ready for the spotlight pick" idea, since it lands at exactly that
-    moment rather than earlier.
-    """
-    return (
-        f' The host just said this live, in front of the crowd: "Time for our '
-        f"next matchup! {player.kingdom_name} versus {opponent.kingdom_name}, "
-        f'tested on {tested_domain}!" You heard that, live, same as everyone '
-        f"watching."
-    )
-
-
 # Where every player's private MEMO note gets logged -- Scott: "people
 # don't need to see it, except me, so a log or something." Deliberately a
 # plain append-only JSON-lines file, not anything surfaced in the show's
@@ -317,6 +291,10 @@ class LLMAgent(ScriptedAgent):
             f"Do you keep pushing for more territory, or retreat to defend what you have? "
             f"Note: RETREAT means staying in the game and defending your ground, "
             f"NOT quitting or retiring -- you are still an active player either way. "
+            f"But the real stakes of THIS choice: if you PUSH and then lose your next duel, "
+            f"you are eliminated -- permanently out of the show, for good. Win that duel "
+            f"instead, and you take real territory from your next opponent. RETREAT risks "
+            f"none of that, at the cost of not growing this turn. "
             f"The host and the live audience are waiting on your answer right now -- "
             f"keep it quick.\n"
             f"Reply on TWO lines. Line 1 in EXACTLY this format: PUSH or RETREAT, then a "
@@ -363,8 +341,26 @@ class LLMAgent(ScriptedAgent):
                 # which choice they make. Fall back to the safe canned line
                 # rather than air a self-contradicting sentence.
                 contradiction_words = ("retire", "quit", "give up", "drop out", "resign")
-                if not reason or any(w in reason.lower() for w in contradiction_words):
+                # A second, different kind of self-contradiction Scott
+                # separately caught live: an agent "said he wanted to 'take
+                # ground' but then retreated" -- not claiming to leave the
+                # game (the case above), but the reason arguing for the
+                # OPPOSITE strategic direction from the verdict actually
+                # returned. Same fallback response; the phrase lists below
+                # are deliberately short and unambiguous (no lone word like
+                # "territory" that could show up in a legitimate reason for
+                # either verdict) rather than an attempt at real NLU.
+                push_signal_phrases = ("take more ground", "take ground", "keep pushing",
+                                       "push on", "push forward", "keep going")
+                retreat_signal_phrases = ("hold my ground", "hold this ground", "pull back",
+                                          "stay put", "play it safe", "dig in and defend")
+                reason_lower = reason.lower()
+                if not reason or any(w in reason_lower for w in contradiction_words):
                     reason = "pushing on." if keep_going else "retreating to defend."
+                elif not keep_going and any(p in reason_lower for p in push_signal_phrases):
+                    reason = "retreating to defend."
+                elif keep_going and any(p in reason_lower for p in retreat_signal_phrases):
+                    reason = "pushing on."
                 return keep_going, reason
         return await super().decide_continue(player, game)
 
@@ -517,6 +513,7 @@ class LLMAgent(ScriptedAgent):
                               raw_latency_seconds=elapsed)
 
     async def intro_line_combined(self, player: Player, tested_domain: str, opponent: Player,
+                                   host_announcement: str,
                                    opponent_line: Optional[str] = None,
                                    game: Optional[GameState] = None) -> str:
         # The single pre-duel interview call, called for BOTH sides right as
@@ -660,16 +657,23 @@ class LLMAgent(ScriptedAgent):
         # concrete frame to read the rest of the facts INTO instead of
         # discovering the actual task only after parsing all of them.
         # Revision 33 -- Scott: "players do not seem aware they are in a
-        # game show. they never hear the host." See _host_announcement_line's
-        # own docstring for why that's an accurate gap, not just a feel
-        # issue -- this is the fix, giving the model an actual quoted line
-        # it just "heard" right before being put on the spot.
+        # game show. they never hear the host." host_announcement is now
+        # the REAL host line (agents/host_agent.py's announce_challenge,
+        # threaded in from game.py) -- the exact same text actually
+        # spoken/shown on screen, not a fabricated stand-in a player could
+        # never have really heard. Before the AI Host (M9), this used to
+        # be a separate, never-displayed quote this module made up itself
+        # purely to give the model something to react to; that gap is
+        # what made this a real inconsistency, not just a feel issue.
         role_header = (
             "You are a live contestant on a TV trivia game show, in front of a real "
             "studio audience.\n"
-            f"{_host_announcement_line(player, opponent, tested_domain)}\n"
+            f' The host just said this live, in front of the crowd: "{host_announcement}" '
+            f"You heard that, live, same as everyone watching.\n"
             "The host is now about to put you on the spot with one direct question, "
-            "live, on air. Read your facts below, then answer AS that contestant.\n"
+            "live, on air. Read your facts below, then answer AS that contestant. "
+            "Lose this duel and your run ends for good; win it and this territory "
+            "becomes yours.\n"
         )
         # Revision 34 -- Scott caught a live example: "player 2 thought they
         # had player 1's expertise." The two expertise fields ARE already
@@ -712,4 +716,28 @@ class LLMAgent(ScriptedAgent):
             self.model, prompt, timeout=settings.generate_timeout, num_predict=55)
         reply = result.text
         return _trim_to_last_sentence(reply.strip()) if reply else await super().intro_line_combined(
-            player, tested_domain, opponent, opponent_line, game=game)
+            player, tested_domain, opponent, host_announcement,
+            opponent_line=opponent_line, game=game)
+
+    async def exit_interview(self, player: Player, winner: Player, tested_domain: str) -> str:
+        # M12: a real live reply in place of ScriptedAgent.exit_interview's
+        # canned pool -- same fallback contract as every other call here.
+        # Framed the same way intro_line_combined is: a concrete scene
+        # (a mic in front of you, live, right now) rather than an abstract
+        # "how do you feel" prompt, which small local models answer better.
+        prompt = (
+            f"You are {player.kingdom_name}, a {player.profession}, playing style: "
+            f"{player.temperament_label()}. You were just eliminated, live, on air -- "
+            f"{winner.kingdom_name} beat you in a {tested_domain} duel, and you're out of "
+            f"the show for good. The host is holding a microphone in front of you right "
+            f"now for one last word before you leave the stage.\n"
+            f"Reply in ONE to TWO short, in-character sentences reacting to actually "
+            f"losing and being eliminated -- like a real contestant just knocked out of a "
+            f"game show, not a narrator describing the scene. Speak AS YOURSELF, first "
+            f"person -- use 'I'/'me'/'my', never your own name in the third person."
+        )
+        result = await self.client.generate(
+            self.model, prompt, timeout=settings.generate_timeout, num_predict=55)
+        reply = result.text
+        return _trim_to_last_sentence(reply.strip()) if reply else await super().exit_interview(
+            player, winner, tested_domain)

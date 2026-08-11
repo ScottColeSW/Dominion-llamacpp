@@ -38,6 +38,35 @@ class Agent(Protocol):
         player: Player,
         tested_domain: str,
         opponent: Player,
+        host_announcement: str,
         opponent_line: Optional[str] = None,
         game: Optional[GameState] = None,
     ) -> str: ...
+
+    async def exit_interview(self, player: Player, winner: Player, tested_domain: str) -> str: ...
+
+
+class HostAgent(Protocol):
+    """The Host's interface -- ScriptedHostAgent/LLMHostAgent
+    (host_agent.py). Deliberately separate from Agent above: the Host
+    isn't a player (no domain, no elimination, no territory), just two
+    announcement points for v1 -- see host_agent.py's module docstring."""
+
+    async def announce_challenge(self, challenger: Player, defender: Player,
+                                  tested_domain: str) -> str: ...
+
+    async def announce_finale(self, champion: Player, total_duels: int, prize: int) -> str: ...
+
+
+class CommentatorAgent(Protocol):
+    """The Commentator's interface (commentator_agent.py) -- a second AI
+    voice, distinct from the Host above: reacts to the show rather than
+    running it, at a deliberately lower frequency (one per duel plus rare
+    special events, never every duel_turn)."""
+
+    async def react_to_matchup(self, challenger: Player, defender: Player,
+                                tested_domain: str) -> str: ...
+
+    async def react_to_advantage(self, player: Player, streak: int) -> str: ...
+
+    async def react_to_scramble(self, active_players: int) -> str: ...

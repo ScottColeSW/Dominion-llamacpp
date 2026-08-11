@@ -177,6 +177,12 @@ async def _stream_show(seed: int, client: Optional[InferenceClient], backend: st
     """
     q: "asyncio.Queue[Optional[bytes]]" = asyncio.Queue()
     recorder = HistoryRecorder(seed=seed, scripted_only=SCRIPTED_ONLY)
+    # One stats snapshot, fetched once up front (not per-duel) -- handed to
+    # the Commentator (agents/commentator_agent.py, M11) so its matchup
+    # reactions can reference real cross-show history. Off the event loop
+    # since get_stats() does real (if small) SQLite I/O, same reasoning as
+    # HistoryRecorder's own finale-only asyncio.to_thread below.
+    stats_snapshot = await asyncio.to_thread(get_stats)
 
     def on_emit(ev: Event) -> None:
         q.put_nowait(json.dumps(ev.to_dict()).encode("utf-8") + b"\n")
@@ -194,7 +200,7 @@ async def _stream_show(seed: int, client: Optional[InferenceClient], backend: st
     async def worker() -> None:
         try:
             await run_show(seed=seed, log=EventLog(on_emit=on_emit), client=client,
-                            backend=backend, models=models)
+                            backend=backend, models=models, stats_snapshot=stats_snapshot)
         finally:
             await q.put(None)
 

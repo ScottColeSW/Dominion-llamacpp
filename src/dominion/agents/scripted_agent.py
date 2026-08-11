@@ -204,6 +204,7 @@ class ScriptedAgent:
         return self.rng.choice(candidates) if candidates else None
 
     async def intro_line_combined(self, player: Player, tested_domain: str, opponent: Player,
+                                   host_announcement: str,
                                    opponent_line: Optional[str] = None,
                                    game: Optional[GameState] = None) -> str:
         """The single pre-duel interview line -- replaces the old
@@ -211,19 +212,21 @@ class ScriptedAgent:
         separate rounds "doesn't seem like the agents are hearing each
         other in conversation," reading as disconnected exchanges rather
         than one real answer; he asked for it condensed into one loaded
-        question/answer, matching the host's single combined question in
-        index.html's hostPreduelQuestion). Covers, in one line: the
-        player's real origin-domain standing (the ONE domain they actually
-        built a name on, set once at the draft -- see models.py), an
-        honest read on tonight's ACTUAL tested domain (only a genuine
-        expert if it happens to match their origin domain -- everywhere
-        else they're exactly as informed as anyone off the street, no
-        better), and a temperament-flavored read on the specific opponent
-        named. opponent_line/game accepted but unused here -- a canned
-        fallback can't meaningfully react to arbitrary opponent text or
-        show history the way a live reply can. LLMAgent overrides this
-        with a live model reply and falls back to this exact method on any
-        failure, so it also has to work standalone.
+        question/answer). Covers, in one line: the player's real
+        origin-domain standing (the ONE domain they actually built a name
+        on, set once at the draft -- see models.py), an honest read on
+        tonight's ACTUAL tested domain (only a genuine expert if it
+        happens to match their origin domain -- everywhere else they're
+        exactly as informed as anyone off the street, no better), and a
+        temperament-flavored read on the specific opponent named.
+        host_announcement/opponent_line/game accepted but unused here --
+        a canned fallback can't meaningfully react to arbitrary host/
+        opponent text or show history the way a live reply can (unlike
+        LLMAgent, which is what host_announcement -- the real, single
+        host line from agents/host_agent.py -- actually exists for).
+        LLMAgent overrides this with a live model reply and falls back to
+        this exact method on any failure, so it also has to work
+        standalone.
         """
         # Revision 26 -- Scott: "agents might be better if they talk in
         # first person. our labels stay, but the words might be better."
@@ -286,3 +289,33 @@ class ScriptedAgent:
         else:
             opponent_take = f"I figure {opponent.kingdom_name} is a real test, but I'm ready for it."
         return f"{domain_take} {opponent_take}"
+
+    async def exit_interview(self, player: Player, winner: Player, tested_domain: str) -> str:
+        """One short reaction from the just-eliminated player -- structurally
+        the same treatment as intro_line_combined: a real fallback/standalone
+        pool here, LLMAgent overrides with a live reply and falls back to
+        this exact method on any failure. Right now elimination is silent
+        past a template goodbye line (web/index.html's ELIMINATION_LINES);
+        this is the player's own last word before that send-off plays."""
+        if player.temperament > 0.65:
+            templates = [
+                f"{winner.kingdom_name} got the better of me tonight, but I'd do it again. "
+                f"No regrets.",
+                f"Credit to {winner.kingdom_name}. I went down swinging, and that's exactly "
+                f"how I wanted it.",
+            ]
+        elif player.temperament < 0.35:
+            templates = [
+                f"{winner.kingdom_name} earned that one. I knew {tested_domain} wasn't my "
+                f"strongest ground going in.",
+                f"I gave it my honest best out there. {winner.kingdom_name} was just sharper "
+                f"tonight.",
+            ]
+        else:
+            templates = [
+                f"That's the game. {winner.kingdom_name} took it fair and square on "
+                f"{tested_domain}.",
+                f"Tough way to go out, but {winner.kingdom_name} played it well. Good luck "
+                f"to the rest of them.",
+            ]
+        return self.rng.choice(templates)

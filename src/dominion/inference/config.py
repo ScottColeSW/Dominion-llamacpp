@@ -54,6 +54,21 @@ class Settings(BaseSettings):
     # list in code.
     llamacpp_models_dir: str = "./models"
 
+    # The Host (agents/host_agent.py, M9) is fixed to one dedicated model
+    # per backend, independently declared here the same way TEXT_MODELS/
+    # LLAMACPP_MODELS are independent of each other -- not exposed in the
+    # M8 model picker for v1, a deliberate cut, not an oversight.
+    host_model_ollama: str = "llama3.2:latest"
+    host_model_llamacpp: str = "llama-3.2-3b-instruct"
+
+    # The Commentator (agents/commentator_agent.py, M11) -- a second,
+    # independently declared dedicated model, same pattern as the Host's
+    # pair above. Deliberately a different default than the Host on
+    # Ollama so the two AI voices aren't literally the same weights
+    # talking to themselves.
+    commentator_model_ollama: str = "qwen2.5:3b"
+    commentator_model_llamacpp: str = "qwen2.5-3b-instruct"
+
     # Generous given observed cold-start cost on CPU-only inference (86s
     # measured on the original dev machine, see docs/ENGINE_NOTES.md) --
     # a slow reply still beats a wrong/absent one, and the ScriptedAgent

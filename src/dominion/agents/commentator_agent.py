@@ -1,0 +1,157 @@
+"""The show's second AI voice, distinct from the Host (agents/host_agent.py):
+a color commentator whose value is specifically that its banter can be
+grounded in real, measured cross-show history (engine/history.py's
+get_stats()) instead of generic decoration. game.py has no idea SQLite
+exists (see history.py's own docstring on that boundary) -- a stats
+snapshot is fetched once, up front, by server/app.py's _stream_show and
+threaded through run_show(..., stats_snapshot=...) as a plain dict, same
+as any other engine input.
+
+Same ScriptedAgent/LLMAgent split every other role already has. Kept to a
+modest frequency by design (see game.py's call sites): one comment per
+duel (right after the Host's challenge announcement) plus rare/special
+events only (advantage_earned, scramble) -- never on every duel_turn,
+which would multiply live-call volume far past what a duel currently
+pays.
+"""
+from __future__ import annotations
+
+import random
+from typing import Any, Dict, Optional
+
+from ..inference.base import InferenceClient
+from ..inference.config import settings
+from ..engine.models import Player
+from .llm_agent import _trim_to_last_sentence
+
+
+def _stats_for(stats_snapshot: Optional[Dict[str, Any]], backend: str,
+                model: str) -> Optional[Dict[str, Any]]:
+    if not stats_snapshot:
+        return None
+    for entry in stats_snapshot.get("models", ()):
+        if entry.get("backend") == backend and entry.get("model") == model:
+            return entry
+    return None
+
+
+class ScriptedCommentatorAgent:
+    """LLMCommentatorAgent's fallback on any failure, and the whole
+    commentator in SCRIPTED_ONLY mode -- genuinely decorative, no stats
+    needed, same as ScriptedHostAgent's role for the Host."""
+
+    def __init__(self, rng: random.Random):
+        self.rng = rng
+
+    async def react_to_matchup(self, challenger: Player, defender: Player,
+                                tested_domain: str) -> str:
+        templates = [
+            f"{challenger.kingdom_name} really thinks they can take "
+            f"{defender.kingdom_name} on {tested_domain} tonight.",
+            f"I've seen {defender.kingdom_name} dig in before on their own ground -- "
+            f"this won't be easy for {challenger.kingdom_name}.",
+            f"Bold move from {challenger.kingdom_name}. We'll see if it pays off.",
+        ]
+        return self.rng.choice(templates)
+
+    async def react_to_advantage(self, player: Player, streak: int) -> str:
+        templates = [
+            f"{player.kingdom_name} is putting together a real run tonight -- "
+            f"{streak} in a row.",
+            f"That's {streak} straight wins for {player.kingdom_name}. Somebody stop them.",
+        ]
+        return self.rng.choice(templates)
+
+    async def react_to_scramble(self, active_players: int) -> str:
+        templates = [
+            f"And just like that, the board resets. {active_players} players left standing.",
+            "The Scramble! Everything you thought you knew about this board is gone.",
+        ]
+        return self.rng.choice(templates)
+
+
+class LLMCommentatorAgent(ScriptedCommentatorAgent):
+    """Same interface as ScriptedCommentatorAgent; the matchup reaction
+    consults a real model, handed the two duelists' own (backend, model)
+    entries from the stats snapshot so it can react to something actually
+    true instead of a hallucinated stat. Falls back to the scripted pool
+    on any failure -- identical fallback contract to every other agent."""
+
+    def __init__(self, rng: random.Random, model: str, client: InferenceClient, backend: str,
+                 stats_snapshot: Optional[Dict[str, Any]] = None, **kwargs):
+        super().__init__(rng, **kwargs)
+        self.model = model
+        self.client = client
+        self.backend = backend
+        self.stats_snapshot = stats_snapshot
+
+    async def react_to_matchup(self, challenger: Player, defender: Player,
+                                tested_domain: str) -> str:
+        challenger_stats = _stats_for(self.stats_snapshot, self.backend, challenger.model)
+        defender_stats = _stats_for(self.stats_snapshot, self.backend, defender.model)
+        stats_lines = []
+        if challenger_stats and challenger_stats.get("win_rate") is not None:
+            stats_lines.append(
+                f"{challenger.kingdom_name}'s model ({challenger.model}) has won "
+                f"{challenger_stats['win_rate']:.0%} of its recorded duels across every "
+                f"show so far."
+            )
+        if defender_stats and defender_stats.get("win_rate") is not None:
+            stats_lines.append(
+                f"{defender.kingdom_name}'s model ({defender.model}) has won "
+                f"{defender_stats['win_rate']:.0%} of its recorded duels across every "
+                f"show so far."
+            )
+        stats_block = " ".join(stats_lines) if stats_lines else (
+            "No real recorded history on either model yet -- this is still early data."
+        )
+        prompt = (
+            "You are the color commentator on a live TV trivia game show, a separate "
+            "voice from the host, there to give the audience real insight, not just hype.\n"
+            f"Upcoming matchup: {challenger.kingdom_name} challenging {defender.kingdom_name} "
+            f"on {tested_domain}.\n"
+            f"Real recorded history you actually have on these two models: {stats_block}\n"
+            "React live, on air, in ONE short sentence that actually uses this real "
+            "history (or honestly notes there isn't much of it yet) -- do not invent a "
+            "stat that wasn't given to you. Reply with ONLY the comment itself, no stage "
+            "directions, no quotation marks."
+        )
+        result = await self.client.generate(self.model, prompt, timeout=settings.generate_timeout,
+                                             num_predict=70)
+        return _trim_to_last_sentence(result.text.strip()) if result.text else await super().react_to_matchup(
+            challenger, defender, tested_domain)
+
+    async def react_to_advantage(self, player: Player, streak: int) -> str:
+        prompt = (
+            "You are the color commentator on a live TV trivia game show. "
+            f"{player.kingdom_name} ({player.profession}) has just won {streak} duels in a "
+            "row, live, on air. React in ONE short excited sentence, as a real commentator "
+            "would. Reply with ONLY the comment itself, no stage directions, no quotation "
+            "marks."
+        )
+        result = await self.client.generate(self.model, prompt, timeout=settings.generate_timeout,
+                                             num_predict=60)
+        return _trim_to_last_sentence(result.text.strip()) if result.text else await super().react_to_advantage(
+            player, streak)
+
+    async def react_to_scramble(self, active_players: int) -> str:
+        prompt = (
+            "You are the color commentator on a live TV trivia game show. The board just "
+            f"got scrambled and reshuffled live, on air -- {active_players} players remain. "
+            "React in ONE short sentence, as a real commentator would. Reply with ONLY the "
+            "comment itself, no stage directions, no quotation marks."
+        )
+        result = await self.client.generate(self.model, prompt, timeout=settings.generate_timeout,
+                                             num_predict=60)
+        return _trim_to_last_sentence(result.text.strip()) if result.text else await super().react_to_scramble(
+            active_players)
+
+
+def commentator_model_for_backend(backend: str) -> str:
+    """A fixed, dedicated model per backend, independent of both the
+    contestant model pool and the Host's own dedicated model -- same
+    "independently declared roster" pattern host_model_for_backend
+    already uses. Not exposed in the M8 model picker for v1."""
+    if backend == "llamacpp":
+        return settings.commentator_model_llamacpp
+    return settings.commentator_model_ollama

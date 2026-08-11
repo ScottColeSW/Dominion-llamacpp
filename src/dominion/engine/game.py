@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 import random
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, List, Optional, Set, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
 
 from .board import build_hub_ring, build_pyramid_13, connected_components
 from .content import pick_domains, DOMAINS_BY_NAME, Domain
@@ -17,6 +17,10 @@ from .models import (
 )
 from ..agents.scripted_agent import ScriptedAgent
 from ..agents.llm_agent import LLMAgent, TEXT_MODELS
+from ..agents.host_agent import LLMHostAgent, ScriptedHostAgent, host_model_for_backend
+from ..agents.commentator_agent import (
+    LLMCommentatorAgent, ScriptedCommentatorAgent, commentator_model_for_backend,
+)
 from ..inference.base import InferenceClient
 from ..inference.config import LLAMACPP_MODELS, settings
 from ..inference.llamacpp_client import LlamaCppInferenceClient
@@ -131,7 +135,8 @@ async def _default_client_for_backend(backend: str) -> AsyncIterator[InferenceCl
 async def run_show(seed: Optional[int] = None, log=None,
                     client: Optional[InferenceClient] = None,
                     backend: Optional[str] = None,
-                    models: Optional[List[str]] = None) -> dict:
+                    models: Optional[List[str]] = None,
+                    stats_snapshot: Optional[Dict[str, Any]] = None) -> dict:
     """Public entrypoint. SCRIPTED_ONLY shows never touch client/backend at
     all. Otherwise: pass your own InferenceClient if you're running more
     than one show (the server does, one shared client per backend);
@@ -139,19 +144,26 @@ async def run_show(seed: Optional[int] = None, log=None,
     settings.inference_backend) is created and cleanly closed for just
     this one call. models, if given, is the exact roster players draw
     from (the pre-show model picker) instead of model_pool_for_backend's
-    fixed TEXT_MODELS/LLAMACPP_MODELS list -- see draft loop below."""
+    fixed TEXT_MODELS/LLAMACPP_MODELS list -- see draft loop below.
+    stats_snapshot, if given, is history.py's get_stats() dict, fetched
+    once up front by the caller (server/app.py's _stream_show) and handed
+    to the Commentator (agents/commentator_agent.py, M11) -- this module
+    never touches SQLite itself, matching history.py's own "engine emits
+    events, consumers subscribe" boundary."""
     backend = backend or settings.inference_backend
     if SCRIPTED_ONLY or client is not None:
-        return await _run_show(seed=seed, log=log, client=client, backend=backend, models=models)
+        return await _run_show(seed=seed, log=log, client=client, backend=backend, models=models,
+                                stats_snapshot=stats_snapshot)
     async with _default_client_for_backend(backend) as default_client:
         return await _run_show(seed=seed, log=log, client=default_client, backend=backend,
-                                models=models)
+                                models=models, stats_snapshot=stats_snapshot)
 
 
 async def _run_show(seed: Optional[int] = None, log=None,
                      client: Optional[InferenceClient] = None,
                      backend: str = "ollama",
-                     models: Optional[List[str]] = None) -> dict:
+                     models: Optional[List[str]] = None,
+                     stats_snapshot: Optional[Dict[str, Any]] = None) -> dict:
     rng = random.Random(seed)
     events = log
 
@@ -276,9 +288,16 @@ async def _run_show(seed: Optional[int] = None, log=None,
 
     if SCRIPTED_ONLY:
         agents = {pid: ScriptedAgent(rng) for pid in players}
+        host_agent = ScriptedHostAgent(rng)
+        commentator_agent = ScriptedCommentatorAgent(rng)
     else:
         assert client is not None  # guaranteed by run_show's wrapper above
         agents = {pid: LLMAgent(rng, model=players[pid].model, client=client) for pid in players}
+        host_agent = LLMHostAgent(
+            rng, model=host_model_for_backend(effective_backend), client=client)
+        commentator_agent = LLMCommentatorAgent(
+            rng, model=commentator_model_for_backend(effective_backend), client=client,
+            backend=effective_backend, stats_snapshot=stats_snapshot)
     game = GameState(players=players, owner=owner, board_adj=board_adj,
                       active_ids=set(players.keys()))
     used_questions: Set[Tuple[str, str]] = set()  # (domain_name, prompt) pairs, shared for the whole show
@@ -340,6 +359,23 @@ async def _run_show(seed: Optional[int] = None, log=None,
              tested_domain=tested_domain, challenger_using_bonus=challenger_bonus,
              defender_using_bonus=False, base_clock=BASE_CLOCK)
 
+        # The Host, as a real agent (M9) -- one announcement, generated
+        # once, that's both what's actually spoken/shown on screen (the
+        # host_line event below) AND what both players' own
+        # intro_line_combined calls react to as host_announcement. Before
+        # this, those were two different, disconnected texts -- see
+        # agents/host_agent.py's module docstring.
+        host_line = await host_agent.announce_challenge(active_player, defender, tested_domain)
+        emit("host_line", moment="challenge", text=host_line, live=not SCRIPTED_ONLY)
+
+        # The Commentator (M11) -- a second AI voice, a beat after the
+        # Host's own announcement, not a replacement for it. Grounded in
+        # real cross-show history when stats_snapshot is available (a
+        # live show); ScriptedCommentatorAgent's canned pool otherwise.
+        commentator_line = await commentator_agent.react_to_matchup(
+            active_player, defender, tested_domain)
+        emit("commentator_line", moment="matchup", text=commentator_line, live=not SCRIPTED_ONLY)
+
         # The pre-duel interview: ONE combined round per side now -- used to
         # be three separate rounds (origin domain, tested domain, read on
         # the opponent), per Scott's original ask for "several back and
@@ -369,13 +405,15 @@ async def _run_show(seed: Optional[int] = None, log=None,
         defender_agent = agents[target_id]
 
         emit("agent_thinking", player_id=active_pid, model=active_player.model, decision="intro")
-        challenger_line = await agent.intro_line_combined(active_player, tested_domain, defender, game=game)
+        challenger_line = await agent.intro_line_combined(
+            active_player, tested_domain, defender, host_announcement=host_line, game=game)
         emit("pre_duel_intro", player_id=active_pid, role="challenger",
              model=active_player.model, text=challenger_line)
 
         emit("agent_thinking", player_id=target_id, model=defender.model, decision="intro")
         defender_line = await defender_agent.intro_line_combined(
-            defender, tested_domain, active_player, opponent_line=challenger_line, game=game)
+            defender, tested_domain, active_player, host_announcement=host_line,
+            opponent_line=challenger_line, game=game)
         emit("pre_duel_intro", player_id=target_id, role="defender",
              model=defender.model, text=defender_line)
 
@@ -467,6 +505,17 @@ async def _run_show(seed: Optional[int] = None, log=None,
         loser.active = False
         game.active_ids.discard(loser_id)
 
+        # M12: the loser's own last word, live on air, before the send-off
+        # (web/index.html's ELIMINATION_LINES/eliminationBeat) plays --
+        # right now elimination is otherwise silent past that scripted
+        # goodbye template. Emitted before duel_result below so the
+        # frontend can air it while this player is still visibly on stage,
+        # ahead of the toddle-off exit animation duel_result's own handler
+        # triggers.
+        loser_agent = agents[loser_id]
+        exit_line = await loser_agent.exit_interview(loser, winner, tested_domain)
+        emit("exit_interview", player_id=loser_id, text=exit_line, live=not SCRIPTED_ONLY)
+
         # Streak tracking: every win extends it, regardless of whether the
         # winner was pushing as challenger or successfully defending.
         # Revision 12 originally only counted challenger wins and reset the
@@ -529,6 +578,8 @@ async def _run_show(seed: Optional[int] = None, log=None,
 
         if winner.push_streak > 0 and winner.push_streak % 3 == 0:
             emit("advantage_earned", player_id=winner_id, streak=winner.push_streak)
+            advantage_comment = await commentator_agent.react_to_advantage(winner, winner.push_streak)
+            emit("commentator_line", moment="advantage", text=advantage_comment, live=not SCRIPTED_ONLY)
             if rng.random() < 0.8:
                 emit("agent_thinking", player_id=winner_id, model=winner.model, decision="tax")
                 target_pid = await agents[winner_id].choose_tax_target(winner, game)
@@ -555,6 +606,8 @@ async def _run_show(seed: Optional[int] = None, log=None,
             game.scrambled = True
             emit("scramble", active_players=len(game.active_ids),
                  board_size=len(game.owner), new_owner=dict(game.owner))
+            scramble_comment = await commentator_agent.react_to_scramble(len(game.active_ids))
+            emit("commentator_line", moment="scramble", text=scramble_comment, live=not SCRIPTED_ONLY)
             game.remember(f"The board was scrambled -- {len(game.active_ids)} players remain, territory reshuffled.")
 
         if game.sole_owner() is not None:
@@ -585,6 +638,8 @@ async def _run_show(seed: Optional[int] = None, log=None,
     # loop boundary.
     assert champion_id is not None
     champion = players[champion_id]
+    finale_host_line = await host_agent.announce_finale(champion, game.duel_count, GRAND_PRIZE)
+    emit("host_line", moment="finale", text=finale_host_line, live=not SCRIPTED_ONLY)
     emit("finale", champion_id=champion_id, champion_domain=champion.domain,
          champion_kingdom=champion.kingdom_name, champion_profession=champion.profession,
          prize=GRAND_PRIZE, total_duels=game.duel_count)
