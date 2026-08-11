@@ -32,7 +32,7 @@ import string
 import time
 from typing import List, Optional, Set, Tuple
 
-from .scripted_agent import AnswerAttempt, ScriptedAgent
+from .scripted_agent import AnswerAttempt, ScriptedAgent, _domain_edge
 from ..engine.content import Question, Domain, same_category
 from ..engine.models import Player, GameState, PROFESSION_DOMAIN_AFFINITY
 from ..inference import grammars
@@ -300,8 +300,43 @@ class LLMAgent(ScriptedAgent):
         # for the whole beat (see settings.continue_decision_timeout) -- a
         # separate follow-up call for "now explain yourself" would double
         # the real latency this fast-paced moment can afford.
-        if not game.adjacent_opponents(player.id):
+        opponents = game.adjacent_opponents(player.id)
+        if not opponents:
             return await super().decide_continue(player, game)
+        # Scott: "players should not have the strategy of defense when
+        # there are only 2 players left unless it is a strategic domain
+        # knowledge play." With exactly two active players, RETREAT
+        # doesn't actually avoid a duel -- it hands the spotlight to the
+        # only other player, whose only legal target is you, so they
+        # become the challenger instead. Since the tested domain is
+        # always the DEFENDER's own domain (game.py's duel_result
+        # logic), this choice really controls WHICH domain gets tested
+        # next: PUSH attacks their held domain, RETREAT defends yours.
+        # Spelled out explicitly only in this exact endgame case so a
+        # live model has the same real, domain-grounded reason
+        # ScriptedAgent's own heuristic now uses (see
+        # scripted_agent.py's _domain_edge), instead of falling back to
+        # generic caution with no actual edge behind it.
+        two_player_clause = ""
+        if len(game.active_ids) == 2:
+            opponent = game.players[opponents[0]]
+            my_edge = _domain_edge(player, player.domain)
+            their_edge = _domain_edge(player, opponent.domain)
+            two_player_clause = (
+                f" It's down to just the two of you now, so this choice directly picks "
+                f"which domain gets tested next: PUSH means YOU attack {opponent.kingdom_name}'s "
+                f"domain ({opponent.domain}); RETREAT means {opponent.kingdom_name} attacks "
+                f"YOUR domain ({player.domain}) instead. Base this on which domain you'd "
+                f"actually rather be tested on, not just nerve -- "
+                + (
+                    f"you have a real edge on {opponent.domain}, more than on your own "
+                    f"ground right now."
+                    if their_edge > my_edge else
+                    f"your own ground ({player.domain}) is the stronger domain for you here."
+                    if my_edge > their_edge else
+                    "neither domain is a clear edge for you, so it's a genuine toss-up."
+                )
+            )
         prompt = (
             f"You are {player.kingdom_name}, a {player.profession}, playing style: "
             f"{player.temperament_label()}. You are on a {player.push_streak}-win streak."
@@ -313,7 +348,7 @@ class LLMAgent(ScriptedAgent):
             f"you are eliminated -- permanently out of the show, for good. Win that duel "
             f"instead, and you take real territory from your next opponent -- more tiles, "
             f"more bragging rights, closer to the whole board and the grand prize. RETREAT "
-            f"risks none of that, at the cost of not growing this turn. "
+            f"risks none of that, at the cost of not growing this turn.{two_player_clause} "
             f"The host and the live audience are waiting on your answer right now -- "
             f"keep it quick.\n"
             f"Reply on TWO lines. Line 1 in EXACTLY this format: PUSH or RETREAT, then a "

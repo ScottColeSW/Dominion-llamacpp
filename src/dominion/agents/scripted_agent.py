@@ -43,6 +43,23 @@ class AnswerAttempt:
     raw_latency_seconds: Optional[float] = None
 
 
+def _domain_edge(player: Player, domain_name: str) -> int:
+    """A coarse, ranked score for how informed `player` actually is on
+    `domain_name` -- same three-tier read intro_line_combined already
+    uses to talk about a matchup (home turf > professional/category tie
+    > no real connection), reused here for the 2-player endgame's
+    push/retreat choice (see decide_continue) rather than duplicating
+    a separate ad-hoc heuristic."""
+    if player.origin_domain == domain_name:
+        return 2
+    profession_affinity = PROFESSION_DOMAIN_AFFINITY.get(player.profession, ())
+    if domain_name in profession_affinity:
+        return 1
+    if same_category(player.origin_domain, domain_name):
+        return 1
+    return 0
+
+
 class ScriptedAgent:
     """A simple, self-contained stand-in for an LLM-backed player.
 
@@ -183,6 +200,30 @@ class ScriptedAgent:
         # parse cleanly, so it has to work standalone, not just as filler.
         if not game.adjacent_opponents(player.id):
             return False, "no one left in range to challenge. Holding position."
+        # Scott: "players should not have the strategy of defense when
+        # there are only 2 players left unless it is a strategic domain
+        # knowledge play." With exactly two active players, RETREAT
+        # doesn't actually avoid a duel -- it just hands the spotlight to
+        # the only other player, who then has exactly one legal target
+        # (this player) and becomes the challenger instead. Since the
+        # tested domain is always the DEFENDER's own domain (game.py's
+        # duel_result logic), what this choice actually controls is
+        # WHICH domain gets tested next: PUSH means attacking the
+        # opponent's currently held domain; RETREAT means defending your
+        # own. That's a genuine domain-knowledge question, not generic
+        # caution -- pure defense with no real edge behind it is exactly
+        # the illogical fallback Scott flagged. Only overrides the
+        # ordinary temperament roll below when one side's edge is
+        # actually stronger; a genuine tie falls through unchanged.
+        if len(game.active_ids) == 2:
+            opponent_id = game.adjacent_opponents(player.id)[0]
+            opponent = game.players[opponent_id]
+            my_edge = _domain_edge(player, player.domain)
+            their_edge = _domain_edge(player, opponent.domain)
+            if their_edge > my_edge:
+                return True, "I know their ground better than my own right now. I'm coming for it."
+            if my_edge > their_edge:
+                return False, "I'd rather they come to me -- this is my strongest ground."
         base_rate = 0.65 + 0.20 * player.temperament       # 0.5 -> 0.75
         decay_rate = 0.23 - 0.16 * player.temperament      # 0.5 -> 0.15
         floor = 0.15 + 0.20 * player.temperament           # 0.5 -> 0.25

@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import AsyncMock
 
 from dominion.agents.llm_agent import LLMAgent
+from dominion.agents.scripted_agent import ScriptedAgent
 from dominion.engine.models import GameState, Player
 from dominion.inference.base import GenerationResult
 
@@ -69,6 +70,57 @@ class DecideContinueContradictionTest(unittest.IsolatedAsyncioTestCase):
             "PUSH: Actually I'd rather hold my ground.\nMEMO: none")
         self.assertTrue(keep_going)
         self.assertEqual(reason, "pushing on.")
+
+
+class TwoPlayerEndgameHeuristicTest(unittest.IsolatedAsyncioTestCase):
+    """Scott: "players should not have the strategy of defense when there
+    are only 2 players left unless it is a strategic domain knowledge
+    play." With exactly two active players, RETREAT doesn't dodge a duel --
+    it just flips who challenges whom, and the tested domain always
+    belongs to whoever ends up defending. Both ScriptedAgent's heuristic
+    and LLMAgent's live prompt should reason about this using real domain
+    knowledge, not just temperament/caution."""
+
+    def _two_player_game(self, mover_domain: str, opponent_domain: str) -> GameState:
+        mover = Player(id=0, domain=mover_domain, kingdom_name="Mover", profession="tester",
+                        origin_domain="Cats", model="test-model")
+        opponent = Player(id=1, domain=opponent_domain, kingdom_name="Opponent",
+                           profession="tester", origin_domain="Dogs", model="test-model")
+        return GameState(players={0: mover, 1: opponent}, owner={0: 0, 1: 1},
+                          board_adj={0: {1}, 1: {0}}, active_ids={0, 1})
+
+    async def test_scripted_agent_pushes_when_attacking_is_the_real_edge(self) -> None:
+        # Mover's own held ground ("Circus") isn't their expertise; the
+        # opponent's held ground ("Cats") IS the mover's real expertise --
+        # pushing attacks the opponent's domain, a genuine edge.
+        game = self._two_player_game(mover_domain="Circus", opponent_domain="Cats")
+        agent = ScriptedAgent(random.Random(1))
+        keep_going, reason = await agent.decide_continue(game.players[0], game)
+        self.assertTrue(keep_going)
+        self.assertIn("coming for it", reason)
+
+    async def test_scripted_agent_retreats_when_defending_is_the_real_edge(self) -> None:
+        # Mover's own held ground ("Cats") IS their expertise; the
+        # opponent's held ground ("Circus") is not -- retreating means
+        # the opponent attacks the mover's own strong domain instead.
+        game = self._two_player_game(mover_domain="Cats", opponent_domain="Circus")
+        agent = ScriptedAgent(random.Random(1))
+        keep_going, reason = await agent.decide_continue(game.players[0], game)
+        self.assertFalse(keep_going)
+        self.assertIn("come to me", reason)
+
+    async def test_llm_prompt_names_the_real_domain_tradeoff_with_two_players_left(self) -> None:
+        client = AsyncMock()
+        client.supports_grammar = False
+        client.generate.return_value = GenerationResult(
+            text="PUSH: Let's go.\nMEMO: none", think_seconds=0.5, raw_latency_seconds=0.5)
+        agent = LLMAgent(random.Random(1), model="m", client=client)
+        game = self._two_player_game(mover_domain="Circus", opponent_domain="Cats")
+        await agent.decide_continue(game.players[0], game)
+        prompt = client.generate.call_args.args[1]
+        self.assertIn("down to just the two of you", prompt)
+        self.assertIn("Opponent's domain (Cats)", prompt)
+        self.assertIn("YOUR domain (Circus)", prompt)
 
 
 if __name__ == "__main__":
