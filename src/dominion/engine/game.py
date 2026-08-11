@@ -480,6 +480,11 @@ async def _run_show(seed: Optional[int] = None, log=None,
         winner_id, loser_id = result.winner_id, result.loser_id
         winner, loser = players[winner_id], players[loser_id]
 
+        # Head-to-head record for this pair, this show -- feeds
+        # choose_target/choose_tax_target's per-candidate lines and
+        # intro_line_combined's rivalry banter on any future rematch.
+        game.record_duel_result(winner_id, loser_id)
+
         # M32 Fix 2: is_upset/is_close computed here, before territory
         # transfer below touches anything, from the PRE-duel snapshot
         # taken right after challenge_declared -- same definitions

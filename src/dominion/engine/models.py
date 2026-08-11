@@ -174,6 +174,16 @@ class GameState:
     # call path (every single trivia attempt) where a full history block
     # would be too much prompt weight to pay every time.
     domain_record: Dict[int, Dict[str, List[int]]] = field(default_factory=dict)
+    # player_id -> opponent_id -> [wins, losses] for THIS show only -- the
+    # head-to-head counterpart to domain_record above, same shape/rationale:
+    # engine-authored and numeric, not dependent on a model correctly
+    # self-reporting anything (Scott's "give our players a more reliable
+    # way to keep track of information... like a fast individual db," #47).
+    # A 13-player elimination bracket has real odds of a genuine rematch,
+    # and until this, nothing tracked it at all -- choose_target/
+    # choose_tax_target had zero head-to-head signal, and a rematch's
+    # pre-duel banter (intro_line_combined) had nothing to react to.
+    opponent_record: Dict[int, Dict[int, List[int]]] = field(default_factory=dict)
 
     def sole_owner(self) -> Optional[int]:
         return next(iter(self.active_ids)) if len(self.active_ids) == 1 else None
@@ -215,3 +225,16 @@ class GameState:
             rec[1] += 1
             if turn["correct"]:
                 rec[0] += 1
+
+    def opponent_familiarity(self, player_id: int, opponent_id: int) -> Optional[Tuple[int, int]]:
+        """(wins, losses) player_id has recorded against opponent_id so far
+        this show, or None if they've never actually faced each other yet --
+        same None-means-genuinely-unseen convention as domain_familiarity."""
+        rec = self.opponent_record.get(player_id, {}).get(opponent_id)
+        return (rec[0], rec[1]) if rec else None
+
+    def record_duel_result(self, winner_id: int, loser_id: int) -> None:
+        winner_rec = self.opponent_record.setdefault(winner_id, {}).setdefault(loser_id, [0, 0])
+        winner_rec[0] += 1
+        loser_rec = self.opponent_record.setdefault(loser_id, {}).setdefault(winner_id, [0, 0])
+        loser_rec[1] += 1

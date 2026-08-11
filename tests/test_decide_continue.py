@@ -71,6 +71,22 @@ class DecideContinueContradictionTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(keep_going)
         self.assertEqual(reason, "pushing on.")
 
+    async def test_memo_note_is_actually_persisted(self) -> None:
+        # Bug found while designing #47's structured opponent memory:
+        # decide_continue's prompt asks for a MEMO: note and extracts it,
+        # but until now never called player.remember_note() on it -- every
+        # note left during a push/retreat decision was silently discarded.
+        client = AsyncMock()
+        client.supports_grammar = False
+        client.generate.return_value = GenerationResult(
+            text="PUSH: I can feel it, one more!\nMEMO: watch out for B's aggressive plays",
+            think_seconds=0.5, raw_latency_seconds=0.5)
+        agent = LLMAgent(random.Random(1), model="m", client=client)
+        game = _game_with_two_adjacent_players()
+        player = game.players[0]
+        await agent.decide_continue(player, game)
+        self.assertIn("watch out for B's aggressive plays", player.private_notes)
+
 
 class TwoPlayerEndgameHeuristicTest(unittest.IsolatedAsyncioTestCase):
     """Scott: "players should not have the strategy of defense when there

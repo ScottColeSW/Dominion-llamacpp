@@ -244,6 +244,34 @@ def _domain_familiarity_line(game: Optional[GameState], player: Player, domain_n
     )
 
 
+def _opponent_history_line(game: Optional[GameState], player: Player, opponent_id: int) -> str:
+    """A one-line real head-to-head record against a specific opponent --
+    engine-authored (GameState.opponent_record), never dependent on a
+    model correctly self-reporting anything, same "reliable, not
+    LLM-dependent" design as _domain_familiarity_line above. Empty string
+    if this exact pair hasn't actually faced each other yet this show --
+    the common case, and exactly why every call site below only adds this
+    when there's a real record to report."""
+    if not game:
+        return ""
+    familiarity = game.opponent_familiarity(player.id, opponent_id)
+    if not familiarity:
+        return ""
+    wins, losses = familiarity
+    opponent_name = game.players[opponent_id].kingdom_name
+    duels = wins + losses
+    if duels == 1:
+        record = "won it" if wins else "lost it"
+    elif losses == 0:
+        record = f"won all {duels}"
+    elif wins == 0:
+        record = f"lost all {duels}"
+    else:
+        record = f"won {wins}, lost {losses}"
+    plural = "duel" if duels == 1 else "duels"
+    return f" You've faced {opponent_name} {duels} {plural} before tonight -- {record}."
+
+
 class LLMAgent(ScriptedAgent):
     """Same interface as ScriptedAgent; overrides the decision points to
     consult this player's assigned model via an InferenceClient (Ollama or
@@ -261,7 +289,8 @@ class LLMAgent(ScriptedAgent):
             return await super().choose_target(player, game)
         lines = [
             f"{i}: {game.players[pid].kingdom_name}, holds {len(game.players[pid].territory)} "
-            f"tile(s), currently plays {game.players[pid].domain}"
+            f"tile(s), currently plays {game.players[pid].domain}."
+            f"{_opponent_history_line(game, player, pid)}"
             for i, pid in enumerate(options)
         ]
         prompt = (
@@ -370,6 +399,15 @@ class LLMAgent(ScriptedAgent):
             # is taken as everything after the verdict's first colon in
             # whatever text remains.
             reply, note = _extract_note(reply)
+            # Bug found while designing #47's structured opponent memory:
+            # this method has always ASKED for a MEMO: note (see the
+            # prompt above) and extracted it right here, but never actually
+            # called player.remember_note() on it, unlike choose_target's
+            # identical extract-then-persist pattern -- every note left
+            # during a push/retreat decision was silently thrown away.
+            if note:
+                player.remember_note(note)
+                _log_player_memo(player, "decide_continue", note)
             # _extract_note only ever returns None for its first element
             # when its INPUT was already falsy (see its own docstring/
             # implementation) -- reply was truthy to get into this `if`
@@ -423,7 +461,8 @@ class LLMAgent(ScriptedAgent):
         if not candidates:
             return None
         lines = [
-            f"{i}: {game.players[pid].kingdom_name}, currently plays {game.players[pid].domain}"
+            f"{i}: {game.players[pid].kingdom_name}, currently plays {game.players[pid].domain}."
+            f"{_opponent_history_line(game, player, pid)}"
             for i, pid in enumerate(candidates)
         ]
         prompt = (
@@ -704,6 +743,7 @@ class LLMAgent(ScriptedAgent):
             f"playing style {opponent.temperament_label()}), whose own fixed real-life "
             f"expertise is {opponent.origin_domain} and who currently controls "
             f"{len(opponent.territory)} tile(s) of the board."
+            f"{_opponent_history_line(game, player, opponent.id)}"
         )
         # Revision 27 -- Scott: agents "don't seem to be getting their role
         # in all this quickly/one-shot." Revision 22 already fixed the
