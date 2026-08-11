@@ -132,8 +132,40 @@ async def test_llamacpp_generate_passes_through_an_already_real_alias() -> None:
     client = LlamaCppInferenceClient(LLAMACPP_URL)
     await client.generate("Some-Custom-Model-Q4_K_M", "prompt", timeout=5.0)
     await client.aclose()
-    sent_model = json.loads(route.calls.last.request.content)["model"]
-    assert sent_model == "Some-Custom-Model-Q4_K_M"
+    sent_body = json.loads(route.calls.last.request.content)
+    assert sent_body["model"] == "Some-Custom-Model-Q4_K_M"
+    # Not one of the 4 known registry identifiers -- passes through
+    # unwrapped rather than guessing at a template that might not match.
+    assert sent_body["prompt"] == "prompt"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_llamacpp_generate_applies_each_model_familys_chat_template() -> None:
+    # Regression test for a real quality issue found live: /completion
+    # never applies a model's chat template on its own (unlike
+    # /v1/chat/completions), so an instruct model reading the raw,
+    # unwrapped prompt has no signal it's a live user turn -- real
+    # replies read as rambling continuations of the prompt's own
+    # instructions instead of actual in-character answers.
+    expectations = {
+        "llama-3.2-3b-instruct": (
+            "<|start_header_id|>user<|end_header_id|>\n\nHi<|eot_id|>"
+            "<|start_header_id|>assistant<|end_header_id|>\n\n"
+        ),
+        "qwen2.5-3b-instruct": "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n",
+        "gemma-2-2b-it": "<start_of_turn>user\nHi<end_of_turn>\n<start_of_turn>model\n",
+        "phi-3-mini-4k-instruct": "<|user|>\nHi<|end|>\n<|assistant|>\n",
+    }
+    for registry_key, expected_prompt in expectations.items():
+        route = respx.post(f"{LLAMACPP_URL}/completion").mock(
+            return_value=httpx.Response(200, json={"content": "ok"})
+        )
+        client = LlamaCppInferenceClient(LLAMACPP_URL)
+        await client.generate(registry_key, "Hi", timeout=5.0)
+        await client.aclose()
+        sent_prompt = json.loads(route.calls.last.request.content)["prompt"]
+        assert sent_prompt == expected_prompt, registry_key
 
 
 @pytest.mark.asyncio

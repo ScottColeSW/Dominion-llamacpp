@@ -33,6 +33,45 @@ from .retry import CircuitBreaker, CircuitOpenError, call_with_retry
 logger = structlog.get_logger(__name__)
 
 
+def _apply_chat_template(model: str, prompt: str) -> str:
+    """Wrap the raw prompt with the target model's own chat-turn markers
+    before sending it to /completion. /completion, unlike llama-server's
+    OpenAI-compatible /v1/chat/completions, never applies a model's chat
+    template itself -- it's a pure text-completion endpoint (see this
+    module's own docstring for why /completion is used at all: it's the
+    one that accepts the "grammar" field). Without this, an
+    instruct-tuned model reading the raw, unwrapped prompt text has no
+    signal that this is a live user turn asking a direct question rather
+    than document text to keep writing -- confirmed live: real replies
+    from Llama-3.2-3B and Qwen2.5-3B read as rambling continuations of
+    the prompt's own instructional sentences ("'Me' is a nonstandard
+    contraction...") instead of actually answering in character.
+
+    Keyed by the LLAMACPP_MODELS registry identifier (the same string
+    _server_alias above translates) -- these four formats are each
+    model family's own well-documented, stable template, not something
+    that varies by llama-server version, so hand-rolling them here is
+    more portable than depending on a server-side "apply the loaded
+    model's template" feature this project can't assume every
+    llama-server build exposes. Falls through unwrapped for any
+    identifier not in this mapping (a caller passing a real alias
+    directly, or a genuinely unknown model) -- an unwrapped prompt is
+    still strictly better than crashing, same fallback spirit as
+    _server_alias."""
+    if model == "llama-3.2-3b-instruct":
+        return (
+            f"<|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|>"
+            f"<|start_header_id|>assistant<|end_header_id|>\n\n"
+        )
+    if model == "qwen2.5-3b-instruct":
+        return f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
+    if model == "gemma-2-2b-it":
+        return f"<start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n"
+    if model == "phi-3-mini-4k-instruct":
+        return f"<|user|>\n{prompt}<|end|>\n<|assistant|>\n"
+    return prompt
+
+
 def _server_alias(model: str) -> str:
     """Translate a LLAMACPP_MODELS registry identifier (e.g.
     "llama-3.2-3b-instruct", what every player draw and every log/metric/
@@ -86,8 +125,14 @@ class LlamaCppInferenceClient:
         # payload["model"] must be llama-server's own alias (the GGUF
         # basename), NOT the registry identifier every caller/log/metric
         # otherwise uses -- see _server_alias's docstring for why these
-        # two were never the same string.
-        payload: Dict[str, Any] = {"model": _server_alias(model), "prompt": prompt}
+        # two were never the same string. payload["prompt"] gets the
+        # target model's own chat-turn wrapper -- see
+        # _apply_chat_template's docstring for why /completion needs
+        # this done by hand.
+        payload: Dict[str, Any] = {
+            "model": _server_alias(model),
+            "prompt": _apply_chat_template(model, prompt),
+        }
         if num_predict is not None:
             payload["n_predict"] = num_predict
         if grammar is not None:
