@@ -92,6 +92,41 @@ class LLMCommentatorAgentTest(unittest.IsolatedAsyncioTestCase):
         prompt = client.generate.call_args.args[1]
         self.assertIn("No cross-show recorded history", prompt)
 
+    async def test_matchup_prompt_explicitly_denies_a_streak_when_neither_has_one(self) -> None:
+        # Scott's live catch: the commentator said a player was "on a
+        # streak" who hadn't fought a single duel yet -- with no streak
+        # line present at all, the model apparently pattern-matched the
+        # territory-count fact into "that must mean a streak." An
+        # explicit negative fact closes that gap.
+        client = AsyncMock()
+        client.generate.return_value = GenerationResult(
+            text="Reacting.", think_seconds=0.5, raw_latency_seconds=0.5)
+        agent = LLMCommentatorAgent(random.Random(1), model="m", client=client, backend="ollama")
+        challenger, defender = _player(0, "A"), _player(1, "B")
+        await agent.react_to_matchup(challenger, defender, "Dogs")
+        prompt = client.generate.call_args.args[1]
+        self.assertIn("Neither player has a real win streak", prompt)
+
+    async def test_matchup_prompt_never_names_the_model_tag(self) -> None:
+        # Scott's other live catch: the commentator said the raw model
+        # tag out loud (e.g. "qwen2.5:3b") instead of only the kingdom
+        # name -- the old wording put the tag directly in the sentence
+        # the model was reading.
+        client = AsyncMock()
+        client.generate.return_value = GenerationResult(
+            text="Reacting.", think_seconds=0.5, raw_latency_seconds=0.5)
+        stats_snapshot = {
+            "models": [{"backend": "ollama", "model": "qwen2.5:3b", "win_rate": 0.5}]
+        }
+        agent = LLMCommentatorAgent(random.Random(1), model="m", client=client, backend="ollama",
+                                     stats_snapshot=stats_snapshot)
+        challenger = _player(0, "Streaky Kingdom", model="qwen2.5:3b")
+        defender = _player(1, "B")
+        await agent.react_to_matchup(challenger, defender, "Dogs")
+        prompt = client.generate.call_args.args[1]
+        self.assertNotIn("qwen2.5:3b", prompt)
+        self.assertIn("never say a model name or version tag out loud", prompt)
+
     async def test_matchup_prompt_includes_a_live_win_streak_even_with_no_stats(self) -> None:
         # Scott's live catch: the commentator kept saying there was no
         # data on a player who very visibly had a real win streak going

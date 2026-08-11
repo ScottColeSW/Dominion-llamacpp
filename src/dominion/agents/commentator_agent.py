@@ -109,6 +109,18 @@ class LLMCommentatorAgent(ScriptedCommentatorAgent):
                 f"{defender.kingdom_name} is riding a {defender.push_streak}-duel win "
                 f"streak tonight."
             )
+        # Scott caught a second real gap live: with NEITHER explicit
+        # streak line above (both under 2), the only remaining live fact
+        # was the territory count -- and the model hallucinated a streak
+        # anyway, apparently pattern-matching "here's a number about this
+        # player" into "that must mean a streak." An explicit, honest
+        # NEGATIVE fact (matching stats_block's own "no history yet"
+        # fallback below) closes that gap instead of just leaving a
+        # silence for the model to fill in on its own.
+        if challenger.push_streak < 2 and defender.push_streak < 2:
+            live_lines.append(
+                "Neither player has a real win streak going tonight yet -- don't invent one."
+            )
         live_lines.append(
             f"{defender.kingdom_name} currently holds {len(defender.territory)} tile(s) of "
             f"the board tonight."
@@ -118,20 +130,27 @@ class LLMCommentatorAgent(ScriptedCommentatorAgent):
         challenger_stats = _stats_for(self.stats_snapshot, self.backend, challenger.model)
         defender_stats = _stats_for(self.stats_snapshot, self.backend, defender.model)
         stats_lines = []
+        # Scott caught a live gap here too: the model sometimes said the
+        # raw model tag (e.g. "qwen2.5:3b") out loud instead of only ever
+        # using the kingdom name -- because the old wording put the tag
+        # right in the sentence it was reading. Moved the tag out of the
+        # natural-language fact entirely (kept only as an internal
+        # backend/model lookup key, never phrased for the model to
+        # repeat) and added an explicit instruction below never to say it.
         if challenger_stats and challenger_stats.get("win_rate") is not None:
             stats_lines.append(
-                f"{challenger.kingdom_name}'s model ({challenger.model}) has won "
+                f"{challenger.kingdom_name} has won "
                 f"{challenger_stats['win_rate']:.0%} of its recorded duels across every "
                 f"show so far."
             )
         if defender_stats and defender_stats.get("win_rate") is not None:
             stats_lines.append(
-                f"{defender.kingdom_name}'s model ({defender.model}) has won "
+                f"{defender.kingdom_name} has won "
                 f"{defender_stats['win_rate']:.0%} of its recorded duels across every "
                 f"show so far."
             )
         stats_block = " ".join(stats_lines) if stats_lines else (
-            "No cross-show recorded history on either model yet -- this is still early data."
+            "No cross-show recorded history on either contestant yet -- this is still early data."
         )
         prompt = (
             "You are the color commentator on a live TV trivia game show, a separate "
@@ -139,13 +158,16 @@ class LLMCommentatorAgent(ScriptedCommentatorAgent):
             f"Upcoming matchup: {challenger.kingdom_name} challenging {defender.kingdom_name} "
             f"on {tested_domain}.\n"
             f"What's actually happening in TONIGHT'S show so far: {live_block}\n"
-            f"Cross-show history you have on these two models (may be sparse -- that's fine, "
-            f"the live facts above are real either way): {stats_block}\n"
+            f"Cross-show history you have on these two contestants (may be sparse -- that's "
+            f"fine, the live facts above are real either way): {stats_block}\n"
             "React live, on air, in ONE short sentence that actually uses at least one of "
             "these real facts -- prefer tonight's live facts when they're the more "
             "interesting story, don't just default to 'no history' when a real streak is "
-            "sitting right there. Do not invent a stat that wasn't given to you. Reply "
-            "with ONLY the comment itself, no stage directions, no quotation marks."
+            "sitting right there. Do not invent a stat that wasn't given to you. Refer to "
+            "both contestants ONLY by their kingdom name -- never say a model name or "
+            "version tag out loud, the audience doesn't know or care what's running under "
+            "the hood. Reply with ONLY the comment itself, no stage directions, no "
+            "quotation marks."
         )
         result = await self.client.generate(self.model, prompt, timeout=settings.generate_timeout,
                                              num_predict=70)
