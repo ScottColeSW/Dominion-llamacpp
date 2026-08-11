@@ -58,11 +58,20 @@ class ScriptedHostAgent:
         return self.rng.choice(templates)
 
     async def announce_finale(self, champion: Player, total_duels: int, prize: int) -> str:
+        # Scott: "the stakes are points and bragging rights as well as
+        # the $100M (fake dollars) award!" -- the prize alone was
+        # carrying the entire finale line; every template now also names
+        # the thing that's actually harder to fake: sole ownership of
+        # the whole board, the bragging rights that come with it.
         templates = [
-            f"Ladies and gentlemen, {champion.kingdom_name} is our champion!",
-            f"And there it is. {champion.kingdom_name}, sole owner of the board!",
-            f"What a run! What a show! {champion.kingdom_name} takes it all!",
-            f"One board, one champion, and it's {champion.kingdom_name}!",
+            f"Ladies and gentlemen, {champion.kingdom_name} is our champion -- every tile "
+            f"on this board, and all the bragging rights that come with it!",
+            f"And there it is. {champion.kingdom_name}, sole owner of the board! Nobody's "
+            f"got a rebuttal for that.",
+            f"What a run! What a show! {champion.kingdom_name} takes it all -- the board, "
+            f"the crown, and the prize!",
+            f"One board, one champion, and it's {champion.kingdom_name}! That's the whole "
+            f"stack, right there.",
         ]
         return self.rng.choice(templates)
 
@@ -109,10 +118,13 @@ class LLMHostAgent(ScriptedHostAgent):
         prompt = (
             f"You are the live host of a TV trivia game show. The show just ended: "
             f"{champion.kingdom_name} ({champion.profession}) is the sole owner of the "
-            f"board after {total_duels} duels, winning a ${prize:,} grand prize. "
+            f"entire board after {total_duels} duels -- every tile, the bragging rights "
+            f"that come with owning all of it, AND a ${prize:,} grand prize. "
             f"Announce this live, on air, in ONE or TWO short triumphant sentences a real "
-            f"game show host would actually say. Reply with ONLY the announcement itself, "
-            f"no stage directions, no quotation marks."
+            f"game show host would actually say -- the board and the bragging rights "
+            f"matter here every bit as much as the prize money, so don't reduce this to "
+            f"just a dollar figure. Reply with ONLY the announcement itself, no stage "
+            f"directions, no quotation marks."
         )
         result = await self.client.generate(self.model, prompt, timeout=settings.generate_timeout,
                                              num_predict=70)
