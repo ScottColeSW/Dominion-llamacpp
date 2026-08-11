@@ -90,7 +90,24 @@ class LLMCommentatorAgentTest(unittest.IsolatedAsyncioTestCase):
         challenger, defender = _player(0, "A"), _player(1, "B")
         await agent.react_to_matchup(challenger, defender, "Dogs")
         prompt = client.generate.call_args.args[1]
-        self.assertIn("No real recorded history", prompt)
+        self.assertIn("No cross-show recorded history", prompt)
+
+    async def test_matchup_prompt_includes_a_live_win_streak_even_with_no_stats(self) -> None:
+        # Scott's live catch: the commentator kept saying there was no
+        # data on a player who very visibly had a real win streak going
+        # right now. push_streak is a live fact on the Player object
+        # itself -- it should show up in the prompt regardless of
+        # whether get_stats() has any cross-show history at all.
+        client = AsyncMock()
+        client.generate.return_value = GenerationResult(
+            text="On a real heater tonight.", think_seconds=0.5, raw_latency_seconds=0.5)
+        agent = LLMCommentatorAgent(random.Random(1), model="m", client=client, backend="ollama",
+                                     stats_snapshot=None)
+        challenger, defender = _player(0, "A"), _player(1, "B")
+        challenger.push_streak = 4
+        await agent.react_to_matchup(challenger, defender, "Dogs")
+        prompt = client.generate.call_args.args[1]
+        self.assertIn("A is riding a 4-duel win streak tonight", prompt)
 
     async def test_advantage_falls_back_and_succeeds(self) -> None:
         client = AsyncMock()

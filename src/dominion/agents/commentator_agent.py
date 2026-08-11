@@ -87,6 +87,34 @@ class LLMCommentatorAgent(ScriptedCommentatorAgent):
 
     async def react_to_matchup(self, challenger: Player, defender: Player,
                                 tested_domain: str) -> str:
+        # Scott caught a real gap here live: the commentator kept saying
+        # there was "no real recorded history" on a player who very
+        # visibly had a real win streak going RIGHT NOW, on screen. The
+        # bug was scope, not data: this method only ever looked at
+        # get_stats()'s CROSS-SHOW aggregation (won X% of duels across
+        # every show ever recorded), which is legitimately sparse/empty
+        # early in a project's life, while completely ignoring the two
+        # Player objects it's already holding -- push_streak and
+        # territory are real, live, THIS-show facts, zero database rows
+        # required. A real commentator would obviously mention "riding a
+        # 3-duel win streak tonight" even with an empty history table.
+        live_lines = []
+        if challenger.push_streak >= 2:
+            live_lines.append(
+                f"{challenger.kingdom_name} is riding a {challenger.push_streak}-duel win "
+                f"streak tonight."
+            )
+        if defender.push_streak >= 2:
+            live_lines.append(
+                f"{defender.kingdom_name} is riding a {defender.push_streak}-duel win "
+                f"streak tonight."
+            )
+        live_lines.append(
+            f"{defender.kingdom_name} currently holds {len(defender.territory)} tile(s) of "
+            f"the board tonight."
+        )
+        live_block = " ".join(live_lines)
+
         challenger_stats = _stats_for(self.stats_snapshot, self.backend, challenger.model)
         defender_stats = _stats_for(self.stats_snapshot, self.backend, defender.model)
         stats_lines = []
@@ -103,18 +131,21 @@ class LLMCommentatorAgent(ScriptedCommentatorAgent):
                 f"show so far."
             )
         stats_block = " ".join(stats_lines) if stats_lines else (
-            "No real recorded history on either model yet -- this is still early data."
+            "No cross-show recorded history on either model yet -- this is still early data."
         )
         prompt = (
             "You are the color commentator on a live TV trivia game show, a separate "
             "voice from the host, there to give the audience real insight, not just hype.\n"
             f"Upcoming matchup: {challenger.kingdom_name} challenging {defender.kingdom_name} "
             f"on {tested_domain}.\n"
-            f"Real recorded history you actually have on these two models: {stats_block}\n"
-            "React live, on air, in ONE short sentence that actually uses this real "
-            "history (or honestly notes there isn't much of it yet) -- do not invent a "
-            "stat that wasn't given to you. Reply with ONLY the comment itself, no stage "
-            "directions, no quotation marks."
+            f"What's actually happening in TONIGHT'S show so far: {live_block}\n"
+            f"Cross-show history you have on these two models (may be sparse -- that's fine, "
+            f"the live facts above are real either way): {stats_block}\n"
+            "React live, on air, in ONE short sentence that actually uses at least one of "
+            "these real facts -- prefer tonight's live facts when they're the more "
+            "interesting story, don't just default to 'no history' when a real streak is "
+            "sitting right there. Do not invent a stat that wasn't given to you. Reply "
+            "with ONLY the comment itself, no stage directions, no quotation marks."
         )
         result = await self.client.generate(self.model, prompt, timeout=settings.generate_timeout,
                                              num_predict=70)

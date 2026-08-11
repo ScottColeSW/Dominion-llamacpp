@@ -512,9 +512,23 @@ async def _run_show(seed: Optional[int] = None, log=None,
         # frontend can air it while this player is still visibly on stage,
         # ahead of the toddle-off exit animation duel_result's own handler
         # triggers.
+        #
+        # Scott caught a real sequencing bug here: on the show's very
+        # last duel, this fired before the Host's own finale
+        # announcement even existed -- the loser's last word landed
+        # before the show had formally ended. "At the end of a game, the
+        # host should speak first, ending the game formally, then the
+        # exit interview." final_elimination checks sole_owner() right
+        # here, with loser.active already False above, so it correctly
+        # reflects whether THIS elimination is the one that ends the
+        # show. Every other (non-final) elimination emits immediately,
+        # unchanged; only the last one is held back, until after the
+        # finale host_line/finale events below.
         loser_agent = agents[loser_id]
         exit_line = await loser_agent.exit_interview(loser, winner, tested_domain)
-        emit("exit_interview", player_id=loser_id, text=exit_line, live=not SCRIPTED_ONLY)
+        final_elimination = game.sole_owner() is not None
+        if not final_elimination:
+            emit("exit_interview", player_id=loser_id, text=exit_line, live=not SCRIPTED_ONLY)
 
         # Streak tracking: every win extends it, regardless of whether the
         # winner was pushing as challenger or successfully defending.
@@ -643,6 +657,13 @@ async def _run_show(seed: Optional[int] = None, log=None,
     emit("finale", champion_id=champion_id, champion_domain=champion.domain,
          champion_kingdom=champion.kingdom_name, champion_profession=champion.profession,
          prize=GRAND_PRIZE, total_duels=game.duel_count)
+    # The show's very last exit interview, held back from its normal spot
+    # (see the loop above) until after the Host has formally ended the
+    # show -- final_elimination/loser_id/exit_line are always set here:
+    # the loop only ever exits via the sole_owner() break, which only
+    # happens right after that last elimination sets them.
+    if final_elimination:
+        emit("exit_interview", player_id=loser_id, text=exit_line, live=not SCRIPTED_ONLY)
 
     return {
         "champion_id": champion_id,
