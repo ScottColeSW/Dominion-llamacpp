@@ -95,12 +95,23 @@ from .models import Player, GameState
 
 
 QUESTION_CAP = 30  # total across BOTH players in one duel, not per-player
-# An int, not 25.0 -- every charge against this clock (attempt.seconds_used)
+# The single, authoritative definition of the per-player starting clock --
+# every real duel gets its actual value from here (threaded through
+# game.py's challenge_declared/show_start emits as base_clock, which the
+# frontend always prefers over its own bootstrap default -- see
+# web/index.html's BASE_CLOCK). Change gameplay pacing by editing this one
+# number; nothing else needs to change to match.
+#
+# An int, not 30.0 -- every charge against this clock (attempt.seconds_used)
 # is now a whole number by construction (Scott's rule), so keeping the
 # clock itself an int end to end means clocks_remaining never drifts back
 # into "4.0"-looking float output despite every individual charge already
 # being a clean integer.
-BASE_CLOCK = 25
+#
+# Raised from 25 to 30 (Scott, after seeing the wall-clock-accuracy fix's
+# real numbers: ~18-20s per live turn on his machine) -- 25 gave a player
+# almost no room to survive a single slow real call.
+BASE_CLOCK = 30
 # Revision 21 added CHALLENGER_HOME_TURF_HANDICAP here (a flat clock head
 # start for the challenger, compensating for domain_record/
 # _domain_familiarity_line's real accumulated-experience edge for whoever

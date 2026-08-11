@@ -519,19 +519,24 @@ class LLMAgent(ScriptedAgent):
         grammar = grammars.letter_or_pass_grammar(letters) if self.client.supports_grammar else None
         result = await self.client.generate(
             self.model, prompt, timeout=call_timeout, grammar=grammar)
-        reply, think_seconds = result.text, result.think_seconds
+        reply = result.text
         elapsed = max(0.2, result.raw_latency_seconds)
-        # Charge the clock for actual thinking time (the backend's own
-        # generation-time measurement, e.g. Ollama's total_duration minus
-        # load_duration -- see each InferenceClient's docstring), not full
-        # wall-clock elapsed -- otherwise
-        # whichever player's model happens to need a cold load pays for it
-        # out of their own 25s clock as if it were slow reasoning, while the
-        # OTHER player in the same duel isn't charged a cent for the exact
-        # same infrastructure cost just because their model was already
-        # resident. Falls back to wall-clock elapsed only if Ollama's
-        # response is missing the duration fields entirely.
-        raw_seconds = think_seconds if think_seconds is not None else elapsed
+        # Charge the clock for real wall-clock elapsed time, not the
+        # backend's self-reported pure-generation time (think_seconds --
+        # still recorded on GenerationResult for observability, just no
+        # longer read here). This used to be the other way around
+        # deliberately, to avoid charging a player for their own model's
+        # cold-load luck -- but under normal warm conditions think_seconds
+        # for a one-letter answer is well under 0.1s, so the
+        # MIN_CHARGED_SECONDS floor below fired on nearly every attempt
+        # regardless of how long the real HTTP round-trip/queueing/
+        # contention actually took. Scott's explicit ask ("they have to
+        # operate outside of all the other things blocking... wall-clock
+        # accurate"): a slow or contended call should genuinely cost real
+        # clock time, same as it genuinely cost the audience real time
+        # watching it -- accepting that a one-time cold load is now a real
+        # (rare) cost too, offset by raising BASE_CLOCK (duel.py) instead.
+        raw_seconds = elapsed
         # Whole seconds only, always rounded UP -- Scott's rule: 0.6s of
         # real thinking time still costs a full second off the clock, never
         # a fraction of one. Measured live, small local models were

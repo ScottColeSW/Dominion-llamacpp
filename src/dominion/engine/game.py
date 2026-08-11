@@ -176,8 +176,12 @@ async def _run_show(seed: Optional[int] = None, log=None,
     board_adj = build_pyramid_13()  # Revision 15: locked pyramid tessellation
 
     effective_backend = "scripted" if SCRIPTED_ONLY else backend
+    # base_clock lets the frontend sync its own BASE_CLOCK constant from
+    # duel.py's single authoritative definition instead of hardcoding a
+    # second copy of the number -- fired once, right at the top of the
+    # show, well before any duel's clock is ever actually displayed.
     emit("show_start", title="Dominion (Agent vs. Agent)", players=PLAYER_COUNT,
-         backend=effective_backend)
+         backend=effective_backend, base_clock=BASE_CLOCK)
 
     # Phase 1: seed the whole board with domains first, independent of who
     # ends up standing where. Which domain lands on which tile is decided

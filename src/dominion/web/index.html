@@ -1337,7 +1337,7 @@
         <div class="p-domain" id="domainLeft"></div>
         <div class="p-stats" id="statsLeft"></div>
         <div class="p-streak" id="streakLeft"></div>
-        <div class="duel-clock" id="clockLeft">25</div>
+        <div class="duel-clock" id="clockLeft">30</div>
         <div class="winner-tag" id="winnerTagLeft">&#127942; WINS!</div>
       </div>
       <div class="duel-image-wrap">
@@ -1354,7 +1354,7 @@
         <div class="p-domain" id="domainRight"></div>
         <div class="p-stats" id="statsRight"></div>
         <div class="p-streak" id="streakRight"></div>
-        <div class="duel-clock" id="clockRight">25</div>
+        <div class="duel-clock" id="clockRight">30</div>
         <div class="winner-tag" id="winnerTagRight">&#127942; WINS!</div>
       </div>
     </div>
@@ -1498,7 +1498,14 @@ const newGameBtn = document.getElementById('newGameBtn');
 const overlayCloseBtn = document.getElementById('overlayCloseBtn');
 const quitBtn = document.getElementById('quitBtn');
 
-const BASE_CLOCK = 25;
+// The real, authoritative value now lives in exactly one place --
+// engine/duel.py's BASE_CLOCK. This is only a bootstrap default for the
+// brief window before the first show_start event ever arrives (page load,
+// pre-show placeholder text); synced to the server's real value the
+// instant show_start streams in, same trust pattern already used for
+// challenge_declared's own base_clock field per duel (see openStage).
+// `let`, not `const`, specifically so that sync can happen at all.
+let BASE_CLOCK = 30;
 const BONUS_SECONDS = 5;
 
 // --- Pause: freezes forward progress of the show (event pacing, speech,
@@ -2258,11 +2265,29 @@ const HOST_LINES = {
   ],
   // While a live model is genuinely taking its time on a decision -- the
   // host holding the floor a beat longer than usual for a real wait rather
-  // than a scripted one.
+  // than a scripted one. Deliberately scripted, never a live call, even
+  // after M32/M45 made most other Host beats real agent calls -- this one
+  // exists specifically to fill dead air WHILE a live call is already
+  // pending, so making it live too would add exactly the latency it's
+  // meant to paper over (see agents/host_agent.py's module docstring).
+  //
+  // Named at the player, not generic ("egg them on" -- Scott's ask, plus
+  // the live wall-clock-accurate clock fix means this now lands next to a
+  // countdown genuinely ticking in real time, not a frozen number): every
+  // entry is a function taking the active player's own kingdom name, same
+  // pattern as STILL_WAITING_LINES below. Replaces the old flat, nameless
+  // pool ("Somewhere out there, a model is really thinking this one
+  // over.") Scott flagged live as feeling disconnected from the actual
+  // moment on screen.
   stillThinking: [
-    "Take your time... or don't.", "The suspense is real tonight.", "We'll wait. We've got nowhere to be.",
-    "Somewhere out there, a model is really thinking this one over.",
-    "This is the kind of pause that makes an audience lean in.",
+    (name) => `Come on, ${name}, the clock isn't going to wait!`,
+    (name) => `${name}, the board is on the edge of its seat right now.`,
+    (name) => `Any second now, ${name}...`,
+    (name) => `We need an answer, ${name} -- the clock doesn't care how tough this one is!`,
+    (name) => `Let's go, ${name}! Time's ticking!`,
+    (name) => `This is the moment, ${name} -- don't let it slip away!`,
+    (name) => `The pressure's on, ${name}. Show us what you've got!`,
+    (name) => `Tick, tock, ${name} -- the whole room is leaning in.`,
   ],
   // Deliberately short and a little restrained: the host holds the floor
   // during a live duel (Section 7), but between duels can afford to just
@@ -2529,10 +2554,15 @@ function sayHostText(text) {
   hostSpeechChain = spoken.catch(() => {});
   return spoken;
 }
-function sayHost(category) {
+function sayHost(category, ...args) {
   const lines = HOST_LINES[category];
   if (!lines || !lines.length) return;
-  sayHostText(pickVaried(lines, 'host:' + category));
+  const line = pickVaried(lines, 'host:' + category);
+  // A category's pool can be plain strings (most of them) or functions
+  // taking a value to name-drop (stillThinking's player name) -- same
+  // parameterized-pool pattern STILL_WAITING_LINES already uses below,
+  // just optional here since every other category is still plain text.
+  sayHostText(typeof line === 'function' ? line(...args) : line);
 }
 
 // Same pop/serialize pattern as sayHostText, its own independent chain --
@@ -4355,6 +4385,14 @@ function tickDuration(secondsUsed) {
 // charge still animates quickly; a longer charge now visibly takes longer.
 const LIVE_TURN_ANIM_MIN_MS = 350;
 const LIVE_TURN_ANIM_MAX_MS = 1200;
+// A live turn's clock has already been ticking down in real time for the
+// whole wait (see liveTick/startLiveClockTick above) -- by the time
+// duel_turn arrives, the displayed value should already be within a
+// fraction of a second of d.clock_remaining. This is just a short snap to
+// close that last gap, not a real animation, so it's fixed and small
+// regardless of seconds_used (unlike LIVE_TURN_ANIM_*_MS above, which is
+// still scaled since that one paces an unrelated cosmetic flourish).
+const LIVE_CLOCK_RECONCILE_MS = 250;
 
 // Countdown display always rounds UP (ceil), never to nearest and never
 // down: with plain rounding, a true remaining value like 0.3s displayed as
@@ -4486,6 +4524,41 @@ function flyToStage(playerId, destEl) {
   });
 }
 let clockState = { left: BASE_CLOCK, right: BASE_CLOCK };
+// Drives a genuinely live, real-time-ticking clock display while a live
+// agent_thinking('attempt') call is actually in flight -- Scott: "game
+// clocks are not independantly counting down in battles... they have to be
+// wall-clock accurate." Before this, the clock sat frozen for the entire
+// real wait on a live turn (no matter how long) and only "caught up" via a
+// short compressed animation once the reply landed -- exactly the
+// "stalling, then jumps" behavior reported. Set by startLiveClockTick,
+// read/cleared by the generic "thinking period ended" handler below;
+// { clockKey, intervalId, startedAt, fromVal, pausedBaseline }.
+let liveTick = null;
+function startLiveClockTick(playerId) {
+  // Defensive only -- duel.py's on_before_attempt/on_turn pairing means
+  // exactly one duel_turn always follows, which is what normally clears
+  // this. Doesn't commit the stale tick's value first, unlike the normal
+  // clear path below -- shouldn't ever actually fire given that pairing.
+  if (liveTick) stopLiveClockTick();
+  const isChallenger = playerId === stageChallengerId;
+  const clockKey = isChallenger ? 'left' : 'right';
+  const clockEl = isChallenger ? clockLeft : clockRight;
+  const fromVal = clockState[clockKey];
+  const startedAt = Date.now();
+  const pausedBaseline = totalPausedMs();
+  // Deliberately NOT scaled by FF_LEVELS[ffLevelIndex] -- this replays
+  // genuine backend wait time already elapsed in the real world, not a
+  // simulated animation Fast Forward is meant to compress.
+  const intervalId = setInterval(() => {
+    const elapsedSeconds = pausedAwareElapsed(startedAt, pausedBaseline) / 1000;
+    clockEl.textContent = displaySeconds(fromVal - elapsedSeconds);
+  }, 100);
+  liveTick = { clockKey, intervalId, startedAt, fromVal, pausedBaseline };
+}
+function stopLiveClockTick() {
+  if (liveTick) clearInterval(liveTick.intervalId);
+  liveTick = null;
+}
 // Tracks whatever prompt is currently on screen so the reveal animation
 // only replays when the image actually changes (a fresh question after a
 // pass, or the fresh image the other player gets after a correct answer),
@@ -4731,22 +4804,29 @@ async function playDuelTurn(d) {
   duelGuess.classList.remove('correct', 'wrong', 'passed');
   duelGuess.classList.add('show');
 
+  // fromVal already reflects wherever the live tick above left the clock
+  // (reconciled into clockState right when the thinking period ended, see
+  // the agentThinkingEl handler) -- for a live turn this is already very
+  // close to toVal, since both are driven by the same real elapsed seconds.
   const fromVal = clockState[clockKey];
   const toVal = d.clock_remaining;
-  // d.live means d.seconds_used is REAL wall-clock time a live Ollama call
-  // already spent server-side, before this event ever streamed out --
-  // re-animating the clock over that same duration here would double the
-  // real wait the audience just sat through. Scripted turns don't have
-  // that problem (seconds_used there is simulated, never real elapsed
-  // time), so they keep the full tickDuration animation exactly as before.
-  const animMs = d.live
+  // The guess-bubble reveal flourish keeps its own pacing regardless of the
+  // clock -- unrelated cosmetic timing for cycling through blurted guesses,
+  // scaled the same way it always was for a live turn.
+  const guessAnimMs = d.live
     ? Math.min(LIVE_TURN_ANIM_MAX_MS, Math.max(LIVE_TURN_ANIM_MIN_MS, d.seconds_used * 300)) / FF_LEVELS[ffLevelIndex]
     : tickDuration(d.seconds_used);
+  // The clock's OWN animation is now just a tiny reconciliation snap for a
+  // live turn -- it was already ticking live in real time during the whole
+  // wait (see liveTick above), so there's nothing left to "catch up."
+  // Scripted turns are unchanged: seconds_used there is simulated, never
+  // real elapsed time, so they still get the full tickDuration animation.
+  const clockAnimMs = d.live ? LIVE_CLOCK_RECONCILE_MS / FF_LEVELS[ffLevelIndex] : guessAnimMs;
   // Computed before starting the blurt burst (not after, as before) so it
   // can pace a repeat-free cycle through the actual turn duration instead
   // of a fixed interval.
-  const rapidFireTimer = startRapidFireGuesses(d.player_id, d.distractors, animMs, d.lucky_blurt, d.answer);
-  await animateClock(clockEl, fromVal, toVal, animMs);
+  const rapidFireTimer = startRapidFireGuesses(d.player_id, d.distractors, guessAnimMs, d.lucky_blurt, d.answer);
+  await animateClock(clockEl, fromVal, toVal, clockAnimMs);
   clockState[clockKey] = toVal;
 
   stopRapidFireGuesses(rapidFireTimer);
@@ -4997,6 +5077,12 @@ async function runShowPlayback(queue) {
       // the stream -- nothing to sleep for here, just surface who's live.
       agentThinkingEl.textContent = `\u{1F9E0} ${ev.data.model} is ${THINKING_LABEL[ev.data.decision] || 'deciding'}…`;
       agentThinkingEl.classList.add('show');
+      // Only 'attempt' is a real duel-clock turn (target/intro/tax/continue
+      // decisions don't charge either player's clock) -- see engine/game.py's
+      // emit call sites.
+      if (ev.data.decision === 'attempt') {
+        startLiveClockTick(ev.data.player_id);
+      }
       // Echoes the same live-call status right on that player's own
       // Player Roster row -- Scott liked this idea enough to ask for it
       // explicitly. Only one player is ever actually thinking at a time in
@@ -5017,13 +5103,26 @@ async function runShowPlayback(queue) {
         bounceAmphitheater(5);
         const line = pickVaried(STILL_WAITING_LINES, 'stillWaiting');
         addChatterLine(line(ev.data.model), 'audience', 'Crowd');
-        if (Math.random() < 0.5) sayHost('stillThinking');
+        // Kingdom name, not the raw model tag -- same reasoning as the
+        // Commentator's own model-name-leakage fix: the audience doesn't
+        // know or care what's running under the hood.
+        if (Math.random() < 0.5) sayHost('stillThinking', displayName(ev.data.player_id));
       }, 4000);
       continue;
     }
     if (agentThinkingEl.classList.contains('show')) {
       agentThinkingEl.classList.remove('show');
       clearTimeout(stillThinkingTimer);
+      // Commit wherever the live tick visually landed as the new baseline
+      // BEFORE stopping it -- playDuelTurn's own `fromVal = clockState[...]`
+      // read (unchanged) picks this up automatically, so the clock's final
+      // reconciliation animation only ever has to cover the last fraction
+      // of a second, not the whole real wait.
+      if (liveTick) {
+        const elapsedSeconds = pausedAwareElapsed(liveTick.startedAt, liveTick.pausedBaseline) / 1000;
+        clockState[liveTick.clockKey] = Math.max(0, liveTick.fromVal - elapsedSeconds);
+        stopLiveClockTick();
+      }
       if (Object.keys(playerThinking).length) {
         // Deferred to at least PLAYER_THINKING_MIN_MS after it was set, not
         // cleared immediately -- a fast enough model reply could otherwise
@@ -5046,6 +5145,19 @@ async function runShowPlayback(queue) {
       // the board at this point, so a "players remaining" figure would
       // be describing a cast that doesn't exist on screen yet.
       playersRemainingCount = ev.data.players;
+      // Sync from the server's one authoritative BASE_CLOCK (duel.py) --
+      // this replaces the bootstrap default before anyone's actually
+      // watching a clock (the challenge stage hasn't opened yet), and
+      // every real duel's own challenge_declared.base_clock still wins
+      // regardless (see openStage), so this is belt-and-suspenders, not
+      // load-bearing -- but it keeps the pre-duel placeholder text and
+      // clockState's own initial value honest too.
+      if (typeof ev.data.base_clock === 'number') {
+        BASE_CLOCK = ev.data.base_clock;
+        clockState = { left: BASE_CLOCK, right: BASE_CLOCK };
+        clockLeft.textContent = String(BASE_CLOCK);
+        clockRight.textContent = String(BASE_CLOCK);
+      }
       continue;
     }
     if (ev.type === 'domain_seeded') {
