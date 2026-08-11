@@ -89,13 +89,19 @@ class ShowSmokeTest(unittest.IsolatedAsyncioTestCase):
         eliminated_ids = [e.data["player_id"] for e in exit_events]
         self.assertEqual(len(eliminated_ids), len(set(eliminated_ids)))
 
-    async def test_hosts_finale_line_precedes_the_very_last_exit_interview(self) -> None:
-        # Scott's sequencing catch: "at the end of a game, the host
-        # should speak first, ending the game formally, then the exit
-        # interview." Every OTHER elimination's exit_interview still
-        # fires immediately (right after its own duel_result, unchanged);
-        # only the very last one is held back until after the Host's own
-        # finale host_line/finale events.
+    async def test_finale_beats_land_in_order_host_then_exit_then_celebration(self) -> None:
+        # Scott's two sequencing catches, both about the show's very last
+        # beat: (1) "at the end of a game, the host should speak first,
+        # ending the game formally, then the exit interview," and (2)
+        # "game music is going after the game is over and plays during
+        # post-game interview" -- the finale event's own frontend handler
+        # fires the victory jingle/confetti fire-and-forget, so the
+        # deferred exit interview has to land BEFORE it, not after, or
+        # its spoken line would audibly overlap that music. Every OTHER
+        # elimination's exit_interview still fires immediately (right
+        # after its own duel_result, unchanged) -- only the very last one
+        # is held to this order: host_line(finale) < exit_interview <
+        # finale.
         _, log = await self._run(3)
         finale_host_index = next(
             i for i, e in enumerate(log)
@@ -103,7 +109,7 @@ class ShowSmokeTest(unittest.IsolatedAsyncioTestCase):
         finale_index = next(i for i, e in enumerate(log) if e.type == "finale")
         last_exit_index = max(i for i, e in enumerate(log) if e.type == "exit_interview")
         self.assertLess(finale_host_index, last_exit_index)
-        self.assertLess(finale_index, last_exit_index)
+        self.assertLess(last_exit_index, finale_index)
 
     async def test_custom_models_list_overrides_the_fixed_roster(self) -> None:
         # The model picker's selection (server/app.py's ?models= query

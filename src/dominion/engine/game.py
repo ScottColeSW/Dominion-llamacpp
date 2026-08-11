@@ -654,16 +654,23 @@ async def _run_show(seed: Optional[int] = None, log=None,
     champion = players[champion_id]
     finale_host_line = await host_agent.announce_finale(champion, game.duel_count, GRAND_PRIZE)
     emit("host_line", moment="finale", text=finale_host_line, live=not SCRIPTED_ONLY)
-    emit("finale", champion_id=champion_id, champion_domain=champion.domain,
-         champion_kingdom=champion.kingdom_name, champion_profession=champion.profession,
-         prize=GRAND_PRIZE, total_duels=game.duel_count)
     # The show's very last exit interview, held back from its normal spot
     # (see the loop above) until after the Host has formally ended the
     # show -- final_elimination/loser_id/exit_line are always set here:
     # the loop only ever exits via the sole_owner() break, which only
-    # happens right after that last elimination sets them.
+    # happens right after that last elimination sets them. Emitted BEFORE
+    # the finale event below, not after: finale's own frontend handler
+    # fires the victory jingle/crowd applause/confetti fire-and-forget
+    # (not awaited), so an exit_interview emitted after it would have its
+    # own spoken line audibly overlapping that music -- exactly the "game
+    # music... plays during post-game interview" Scott reported. This
+    # order gives a clean beat sequence: Host's formal close, then the
+    # loser's last word, then the actual celebration.
     if final_elimination:
         emit("exit_interview", player_id=loser_id, text=exit_line, live=not SCRIPTED_ONLY)
+    emit("finale", champion_id=champion_id, champion_domain=champion.domain,
+         champion_kingdom=champion.kingdom_name, champion_profession=champion.profession,
+         prize=GRAND_PRIZE, total_duels=game.duel_count)
 
     return {
         "champion_id": champion_id,
