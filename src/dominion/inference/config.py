@@ -23,14 +23,23 @@ LLAMACPP_MODELS: Dict[str, str] = {
     "qwen2.5-3b-instruct": "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
     "gemma-2-2b-it": "gemma-2-2b-it-Q4_K_M.gguf",
     "phi-3-mini-4k-instruct": "Phi-3-mini-4k-instruct-Q4_K_M.gguf",
-    # Placeholder: muse-glimmer isn't a model this codebase has any real
-    # knowledge of (not released as of this writing) -- this entry only
-    # reserves the slot and the identifier so the roster/config wiring
-    # doesn't need a second pass later. Replace the filename with the real
-    # quantized GGUF's actual basename once it's out and you've placed it
-    # under your models directory; until then this entry simply won't
-    # resolve to a real file and llama-server will report it unavailable,
-    # same as any other misconfigured entry.
+    # Scott's own Ollama library has qwen2.5:7b pulled beyond the curated
+    # TEXT_MODELS four -- a real, matched GGUF counterpart, same
+    # bartowski Q4_K_M quantization convention as everything above.
+    # Bigger than the rest of this roster (~4.7GB vs ~2GB), so
+    # llama-server needs --models-max bumped to at least 5 to actually
+    # serve it alongside the original four -- see README.md.
+    "qwen2.5-7b-instruct": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+    # Placeholder: muse-glimmer turned out to be real (Meta's "Muse
+    # Glimmer," a 30B-parameter multimodal agentic model) but wildly out
+    # of scale with everything else here -- its smallest public GGUF
+    # quant is 17GB+ vs. ~2-5GB for this roster's other entries, and
+    # genuinely needs real VRAM headroom to run at all. Deliberately left
+    # unmapped pending an explicit decision (real, quantifiable download/
+    # stability cost) rather than silently pulled in -- this entry
+    # reserves the slot/identifier only; replace the filename with the
+    # real GGUF basename once you've actually decided to add it and
+    # placed the file under your models directory.
     "muse-glimmer": "muse-glimmer-Q4_K_M.gguf",
 }
 

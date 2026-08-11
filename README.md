@@ -112,12 +112,19 @@ backend for a real show end to end — you just need an actual
    - `Qwen2.5-3B-Instruct-Q4_K_M.gguf`
    - `gemma-2-2b-it-Q4_K_M.gguf`
    - `Phi-3-mini-4k-instruct-Q4_K_M.gguf`
-   - `muse-glimmer-Q4_K_M.gguf` — reserved slot for a model not yet
-     released as of this writing; the registry entry is a placeholder
-     until a real quantized GGUF exists to point it at.
+   - `Qwen2.5-7B-Instruct-Q4_K_M.gguf` — a real GGUF counterpart for
+     whichever bigger Ollama models you've pulled beyond the curated
+     four above (e.g. `qwen2.5:7b`); bigger than the rest of this roster
+     (~4.7GB vs ~2GB), so bump `--models-max` below if you add it.
+   - `muse-glimmer-Q4_K_M.gguf` — reserved slot for Meta's real "Muse
+     Glimmer" 30B multimodal model; deliberately left as a placeholder
+     here since its smallest public quant is 17GB+, wildly out of scale
+     with everything else in this roster and a real risk to local
+     memory/VRAM headroom if added casually.
 3. Run `llama-server` in **router mode** (no `-m`, so it serves every
    model in the directory from one process/port, the same way Ollama
-   swaps between models on one daemon):
+   swaps between models on one daemon) — `--models-max` should match
+   however many real GGUF files you've actually placed in the directory:
    ```bash
    llama-server --models-dir ./models --models-max 4 --port 8080
    ```

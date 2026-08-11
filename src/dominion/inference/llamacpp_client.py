@@ -63,7 +63,8 @@ def _apply_chat_template(model: str, prompt: str) -> str:
             f"<|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|>"
             f"<|start_header_id|>assistant<|end_header_id|>\n\n"
         )
-    if model == "qwen2.5-3b-instruct":
+    if model in ("qwen2.5-3b-instruct", "qwen2.5-7b-instruct"):
+        # Same Qwen2.5 family, same ChatML template regardless of size.
         return f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
     if model == "gemma-2-2b-it":
         return f"<start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n"
