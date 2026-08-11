@@ -124,10 +124,25 @@ backend for a real show end to end — you just need an actual
 3. Run `llama-server` in **router mode** (no `-m`, so it serves every
    model in the directory from one process/port, the same way Ollama
    swaps between models on one daemon) — `--models-max` should match
-   however many real GGUF files you've actually placed in the directory:
+   however many real GGUF files you've actually placed in the directory.
+   **`-ngl 999` (or `--n-gpu-layers 999`) is not optional if you have a
+   GPU** — without it, llama-server runs fully on CPU even with a
+   CUDA-built binary, driver, and card all present and working (this bit
+   Scott directly: RTX 2080, CUDA 13 driver, 8% GPU util the whole
+   show). Make sure you actually downloaded a CUDA-tagged release from
+   [ggml-org/llama.cpp's releases](https://github.com/ggml-org/llama.cpp/releases)
+   too (not the plain `cpu` build) — the flag alone can't offload if the
+   binary itself has no CUDA support compiled in:
    ```bash
-   llama-server --models-dir ./models --models-max 4 --port 8080
+   llama-server --models-dir ./models --models-max 4 --n-gpu-layers 999 --port 8080
    ```
+   One real tradeoff once GPU offload is actually on: an 8GB card can't
+   hold every GGUF in this roster fully offloaded at once if you've
+   added the bigger `qwen2.5-7b-instruct` (~4.7GB) alongside the
+   original four (~2GB each, ~8GB total) — pick a smaller subset per
+   show via the model picker rather than always running all 5, or lower
+   `--n-gpu-layers` from 999 to a smaller number to partially offload
+   the biggest model instead of evicting others.
 4. `DOMINION_LLAMACPP_URL` defaults to `http://127.0.0.1:8080` — override
    it if you ran `llama-server` on a different host/port.
 
