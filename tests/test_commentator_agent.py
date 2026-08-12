@@ -107,6 +107,44 @@ class LLMCommentatorAgentTest(unittest.IsolatedAsyncioTestCase):
         prompt = client.generate.call_args.args[1]
         self.assertIn("Neither player has a real win streak", prompt)
 
+    async def test_matchup_prompt_omits_territory_when_its_just_the_starting_tile(self) -> None:
+        # Scott's live catch: the commentator said "X has won more tiles
+        # tonight than Y, despite their overall win percentages" on the
+        # very FIRST duel of the show -- every player's tile count at
+        # that point is trivially their own single starting allocation,
+        # never a meaningful fact, let alone one worth weighing against a
+        # cross-show win rate.
+        client = AsyncMock()
+        client.generate.return_value = GenerationResult(
+            text="Reacting.", think_seconds=0.5, raw_latency_seconds=0.5)
+        agent = LLMCommentatorAgent(random.Random(1), model="m", client=client, backend="ollama")
+        challenger, defender = _player(0, "A"), _player(1, "B")
+        defender.territory = {5}  # exactly one tile -- their own starting allocation
+        await agent.react_to_matchup(challenger, defender, "Dogs")
+        prompt = client.generate.call_args.args[1]
+        self.assertNotIn("tile(s) of the board", prompt)
+
+    async def test_matchup_prompt_includes_territory_once_genuinely_accumulated(self) -> None:
+        client = AsyncMock()
+        client.generate.return_value = GenerationResult(
+            text="Reacting.", think_seconds=0.5, raw_latency_seconds=0.5)
+        agent = LLMCommentatorAgent(random.Random(1), model="m", client=client, backend="ollama")
+        challenger, defender = _player(0, "A"), _player(1, "B")
+        defender.territory = {5, 6, 7}
+        await agent.react_to_matchup(challenger, defender, "Dogs")
+        prompt = client.generate.call_args.args[1]
+        self.assertIn("B is currently defending 3 tile(s) of the board tonight", prompt)
+
+    async def test_matchup_prompt_never_conflates_tile_count_with_win_rate(self) -> None:
+        client = AsyncMock()
+        client.generate.return_value = GenerationResult(
+            text="Reacting.", think_seconds=0.5, raw_latency_seconds=0.5)
+        agent = LLMCommentatorAgent(random.Random(1), model="m", client=client, backend="ollama")
+        challenger, defender = _player(0, "A"), _player(1, "B")
+        await agent.react_to_matchup(challenger, defender, "Dogs")
+        prompt = client.generate.call_args.args[1]
+        self.assertIn("never say one 'beats' or contradicts the other", prompt)
+
     async def test_matchup_prompt_never_names_the_model_tag(self) -> None:
         # Scott's other live catch: the commentator said the raw model
         # tag out loud (e.g. "qwen2.5:3b") instead of only the kingdom

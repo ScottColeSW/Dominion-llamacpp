@@ -331,11 +331,18 @@
      treatment (real broadcast color for a stats/analysis chyron) so it
      reads as a genuinely different on-screen voice from the Host's
      purple-and-gold banner at a glance, not a recolored duplicate. --- */
+  /* Sized for its home inside .audience-panel (max-width: 460px) now,
+     not the wide hero header it used to sit in -- see the auto-hide
+     transition too (Scott's "not disappearing after a bit if stale"). */
   .commentator-banner {
-    width: 100%; max-width: 820px; margin-top: 10px;
-    display: flex; align-items: center; gap: 12px;
+    width: 100%; margin-bottom: 10px;
+    display: flex; align-items: center; gap: 10px;
     background: rgba(10,38,42,0.65); border: 1px solid #1f6d73; border-radius: 14px;
-    padding: 10px 20px;
+    padding: 8px 14px;
+    transition: opacity .5s ease, max-height .5s ease, margin .5s ease, padding .5s ease;
+    overflow: hidden;
+  }
+  .commentator-banner.stale { opacity: 0; max-height: 0; margin-bottom: 0; padding-top: 0; padding-bottom: 0; }
   }
   .commentator-avatar {
     font-size: 1.8em; flex-shrink: 0; width: 40px; height: 40px;
@@ -935,8 +942,15 @@
     display: flex; flex-direction: column; align-items: center; gap: 2px;
   }
   /* Active/gold-glow (whoever's actually on the clock) always wins over the
-     player's own accent color -- that's a different, higher-priority signal. */
-  .duel-player.active { border-color: var(--gold); box-shadow: 0 0 18px rgba(245,197,66,0.35); }
+     player's own accent color -- that's a different, higher-priority signal.
+     Bolder than the original (thicker border, wider/brighter glow, a slight
+     scale-up) -- live viewers reported the original was too subtle to read
+     at a glance which side actually has the clock running. */
+  .duel-player.active {
+    border-width: 4px; border-color: var(--gold);
+    box-shadow: 0 0 30px rgba(245,197,66,0.6), 0 0 8px rgba(245,197,66,0.9) inset;
+    transform: scale(1.03);
+  }
   .duel-player .role { font-size: 0.7em; letter-spacing: 2px; text-transform: uppercase; color: var(--dim); margin-top: 6px; }
   .duel-player .pname { font-size: 1.25em; margin-top: 2px; font-weight: 600; }
   /* The 8-bit generated face: a small, blocky retro portrait built at
@@ -1031,6 +1045,24 @@
     width: 24px; height: 24px;
     box-shadow: 0 0 18px rgba(255,90,40,0.9), 0 2px 8px rgba(0,0,0,0.6);
     transition: left 1.3s cubic-bezier(.4,0,.2,1), top 1.3s cubic-bezier(.4,0,.2,1);
+  }
+  /* Scott: "animation to and from the board could use the larger head
+     avatar for a more clear transition... the avatar's head gets bigger,
+     toddles to the stage. and same in reverse for withdrawal." The plain
+     .board-travel-avatar dot is kept as-is for flyBetweenTiles (the
+     Threepeat Drive strike line, a deliberately distinct visual language,
+     not a person walking) -- this variant is only for flyToStage/
+     flyBackToTile, the actual contestant-walking-to/from-the-stage moment,
+     and swaps the plain dot for the same procedural pixel face every board
+     tile and duel badge already renders (buildPixelFace), scaled up via a
+     transform transition (see flyMarker's faceOptions.from/to) so it visibly
+     grows on the way to the stage and shrinks on the way back. */
+  .board-travel-face {
+    border-radius: 10px; overflow: hidden;
+    width: 44px; height: 44px;
+    transition: left .9s cubic-bezier(.4,0,.2,1), top .9s cubic-bezier(.4,0,.2,1),
+                transform .9s cubic-bezier(.4,0,.2,1);
+    box-shadow: 0 0 16px rgba(245,197,66,0.7), 0 3px 10px rgba(0,0,0,0.5);
   }
   /* Three distinct facts about the player, deliberately kept visually
      separate: real-world profession (job), chosen expertise (the domain
@@ -1322,19 +1354,6 @@
     </div>
   </div>
 
-  <!-- M11: the Commentator -- a second AI voice, distinct from the Host
-       above (own color scheme, own icon, own voice profile) specifically
-       so the two are never mistaken for one speaker. Grounded in real
-       cross-show history when a live show has any recorded yet (see
-       agents/commentator_agent.py); the fixed idle line below is only
-       ever shown before the first real commentator_line event lands. -->
-  <div class="commentator-banner">
-    <div class="commentator-avatar">&#128202;</div>
-    <div class="commentator-text">
-      <div class="commentator-tag">Commentator</div>
-      <div class="commentator-line" id="commentatorLine">Standing by with tonight's numbers...</div>
-    </div>
-  </div>
 
   <!-- The pre-show "hero" panel: Start Show is the one thing on stage here,
        styled to match #duelStage's own panel treatment (same width, same
@@ -1440,6 +1459,27 @@
        human-scrollable, below this whole row. -->
   <div id="lowerRow">
     <div class="audience-panel" id="audiencePanel">
+      <!-- M11: the Commentator -- a second AI voice, distinct from the
+           Host up top (own color scheme, own icon, own voice profile)
+           specifically so the two are never mistaken for one speaker.
+           Moved here (Scott: "above the in-house audience... as is, it
+           is crowded at the top with that rarely getting updated and not
+           disappearing after a bit if stale") from its old spot right
+           next to the Host at the very top of the page -- the banner now
+           also auto-hides itself once its line has been sitting stale
+           for a while (see sayCommentatorText's COMMENTATOR_STALE_MS),
+           instead of parking a now-irrelevant old line on screen
+           indefinitely. Grounded in real cross-show history when a live
+           show has any recorded yet (see agents/commentator_agent.py);
+           the fixed idle line below is only ever shown before the first
+           real commentator_line event lands. -->
+      <div class="commentator-banner" id="commentatorBanner">
+        <div class="commentator-avatar">&#128202;</div>
+        <div class="commentator-text">
+          <div class="commentator-tag">Commentator</div>
+          <div class="commentator-line" id="commentatorLine">Standing by with tonight's numbers...</div>
+        </div>
+      </div>
       <div class="audience-label">In-House Audience</div>
       <div class="amphitheater" id="amphitheater"></div>
       <div class="chatter-feed" id="chatterFeed"></div>
@@ -1519,6 +1559,7 @@ const statusEl = document.getElementById('status');
 const playersRemainingEl = document.getElementById('playersRemaining');
 const hostLine = document.getElementById('hostLine');
 const commentatorLine = document.getElementById('commentatorLine');
+const commentatorBanner = document.getElementById('commentatorBanner');
 const interviewEl = document.getElementById('interviewLine');
 const interviewBannerEl = document.getElementById('interviewBanner');
 const interviewTagEl = document.getElementById('interviewTag');
@@ -2652,11 +2693,22 @@ function sayHost(category, ...args) {
 // currently saying, since the two are meant to read as two people talking
 // over the same broadcast, not one voice taking turns.
 let commentatorSpeechChain = Promise.resolve();
+// How long a Commentator line sits on screen before the banner fades
+// itself away -- Scott: "it is crowded at the top with that rarely
+// getting updated and not disappearing after a bit if stale." A comment
+// genuinely reacting to what's on screen right now stops being that once
+// enough real time passes that it's plausibly talking about something
+// that already happened several duels ago.
+const COMMENTATOR_STALE_MS = 25000;
+let commentatorStaleTimer = null;
 function sayCommentatorText(text) {
   commentatorLine.textContent = text;
   commentatorLine.classList.remove('pop');
   void commentatorLine.offsetWidth;
   commentatorLine.classList.add('pop');
+  commentatorBanner.classList.remove('stale');
+  clearTimeout(commentatorStaleTimer);
+  commentatorStaleTimer = setTimeout(() => commentatorBanner.classList.add('stale'), COMMENTATOR_STALE_MS);
   const spoken = commentatorSpeechChain.then(() => speakCommentatorLine(text));
   commentatorSpeechChain = spoken.catch(() => {});
   return spoken;
@@ -2757,11 +2809,12 @@ function milestoneHostLine(data) {
 }
 function burstHostLine(data) {
   const name = displayName(data.leader_id);
+  const bonus = fmtMoney(data.bonus);
   const templates = [
-    `Checkpoint time. ${name} leads with ${data.territory} tiles, holding ${data.leader_domain}.`,
-    `Let's check the leaderboard. ${name} is out in front right now.`,
-    `${name} tops the board at this checkpoint, ${data.territory} tiles strong.`,
-    `The race for the board is tightening, but ${name} leads for now.`,
+    `Checkpoint time. ${name} leads with ${data.territory} tiles, holding ${data.leader_domain} -- that's ${bonus} in the bank.`,
+    `Let's check the leaderboard. ${name} is out in front right now, and ${bonus} richer for it.`,
+    `${name} tops the board at this checkpoint, ${data.territory} tiles strong, banking ${bonus}.`,
+    `The race for the board is tightening, but ${name} leads for now -- ${bonus} says so.`,
   ];
   return pickVaried(templates, 'burst');
 }
@@ -3929,7 +3982,10 @@ function cardFor(ev) {
     case 'time_bonus_banked':
       return card('advantage prize-highlight', 'Time Bonus Banked', `${displayName(d.player_id)} banks a +5s bonus.`, '&#9889;');
     case 'burst_prize':
-      return card('burst prize-highlight', 'Burst Prize', `After duel ${d.duel_count}: ${displayName(d.leader_id)} leads with <b>${d.territory}</b> region(s) (${d.leader_domain}).`, '&#127942;');
+      // Real bonus now, not just a leaderboard checkpoint with a
+      // prize-shaped name and nothing behind it -- see game.py's
+      // BURST_PRIZE_BONUS.
+      return card('burst prize-highlight', 'Burst Prize', `After duel ${d.duel_count}: ${displayName(d.leader_id)} leads with <b>${d.territory}</b> region(s) (${d.leader_domain}) and banks a <b>${fmtMoney(d.bonus)}</b> burst prize.`, '&#127942;');
     case 'scramble':
       return card('scramble', 'The Scramble', `The board redraws around ${d.active_players} remaining players.`);
     case 'continues':
@@ -4440,7 +4496,10 @@ function renderScoreboard() {
     dot.style.background = '#' + playerColor(playerId);
     const name = document.createElement('span');
     name.className = 'scoreboard-name';
-    name.textContent = displayName(playerId);
+    // "P#: Kingdom", matching the Player Roster and Challenge Stage badge
+    // -- same cross-reference key everywhere, so a viewer can trace one
+    // contestant across all three panels without hunting for the name.
+    name.textContent = `P${Number(playerId) + 1}: ${displayName(playerId)}`;
     const count = document.createElement('span');
     count.className = 'scoreboard-count';
     count.textContent = counts[playerId];
@@ -4758,13 +4817,23 @@ function countTerritory(playerId) {
 // page afterward, same as the tiles it's tracking -- so there's no longer
 // anything to wait out at all. openStage's sleep(350) before this call is
 // gone accordingly.
-function flyMarker(fromRect, toRect, colorPlayerId, extraClass, durationMs) {
+function flyMarker(fromRect, toRect, colorPlayerId, extraClass, durationMs, faceOptions) {
   if (!fromRect.width || !toRect.width) return Promise.resolve();
   const avatar = document.createElement('div');
-  avatar.className = extraClass ? `board-travel-avatar ${extraClass}` : 'board-travel-avatar';
+  const isFace = !!faceOptions;
+  avatar.className = 'board-travel-avatar' + (extraClass ? ` ${extraClass}` : '') +
+    (isFace ? ' board-travel-face' : '');
   avatar.style.background = '#' + playerColor(colorPlayerId);
-  avatar.style.left = (fromRect.left + window.scrollX + fromRect.width / 2 - 9) + 'px';
-  avatar.style.top = (fromRect.top + window.scrollY + fromRect.height / 2 - 9) + 'px';
+  // Half the marker's own on-screen size, matching whichever CSS width/
+  // height actually applies (the plain 18px dot vs. the bigger 44px face) --
+  // centers the marker on the tile/badge midpoint either way.
+  const half = isFace ? 22 : 9;
+  if (isFace) {
+    avatar.innerHTML = buildPixelFace(colorPlayerId);
+    avatar.style.transform = `scale(${faceOptions.from})`;
+  }
+  avatar.style.left = (fromRect.left + window.scrollX + fromRect.width / 2 - half) + 'px';
+  avatar.style.top = (fromRect.top + window.scrollY + fromRect.height / 2 - half) + 'px';
   document.body.appendChild(avatar);
   return new Promise(resolve => {
     // Two nested rAFs: the first commits the starting position as an
@@ -4774,8 +4843,9 @@ function flyMarker(fromRect, toRect, colorPlayerId, extraClass, durationMs) {
     // chance to render the "before" state.
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        avatar.style.left = (toRect.left + window.scrollX + toRect.width / 2 - 9) + 'px';
-        avatar.style.top = (toRect.top + window.scrollY + toRect.height / 2 - 9) + 'px';
+        avatar.style.left = (toRect.left + window.scrollX + toRect.width / 2 - half) + 'px';
+        avatar.style.top = (toRect.top + window.scrollY + toRect.height / 2 - half) + 'px';
+        if (isFace) avatar.style.transform = `scale(${faceOptions.to})`;
       });
     });
     setTimeout(() => { avatar.remove(); resolve(); }, durationMs);
@@ -4797,7 +4867,10 @@ function flyToStage(playerId, destEl) {
   const node = playerColorNode[playerId];
   const tileEl = (node != null && tileEls[node]) ? tileEls[node] : null;
   if (!tileEl || !destEl) return Promise.resolve();
-  return flyMarker(tileEl.getBoundingClientRect(), destEl.getBoundingClientRect(), playerId, null, 900);
+  // Grows from a small head (0.35x) up to full size on arrival -- Scott:
+  // "the spotlight, the avatar's head gets bigger, toddles to the stage."
+  return flyMarker(tileEl.getBoundingClientRect(), destEl.getBoundingClientRect(), playerId, null, 900,
+                    { from: 0.35, to: 1 });
 }
 // #13 Threepeat Drive's board-line visual -- tile-to-tile instead of
 // tile-to-stage, same tileEls[playerColorNode[id]] lookup on both ends. No
@@ -4831,7 +4904,11 @@ function flyBackToTile(cachedFromRect, playerId) {
   const node = playerColorNode[playerId];
   const tileEl = (node != null && tileEls[node]) ? tileEls[node] : null;
   if (!tileEl || !cachedFromRect) return Promise.resolve();
-  return flyMarker(cachedFromRect, tileEl.getBoundingClientRect(), playerId, null, 900);
+  // Reverse of flyToStage's grow: shrinks from full size back down to a
+  // small head on arrival back at the tile -- Scott: "same in reverse for
+  // withdrawl."
+  return flyMarker(cachedFromRect, tileEl.getBoundingClientRect(), playerId, null, 900,
+                    { from: 1, to: 0.35 });
 }
 // Set right before closeStage() runs (duel_result's handler), read (and
 // cleared) by retreats' handler shortly after -- exactly one duel's
@@ -5058,12 +5135,27 @@ function shuffleCopy(arr) {
   return a;
 }
 
+// Returns { timerId, done }, not just a bare timerId -- Scott's live catch:
+// "the blurt aren't counting when they are correct" turned out to be a
+// real timing bug, not a scoring bug (duel.py/playDuelTurn's outcome
+// handling was already correct). playDuelTurn used to call
+// stopRapidFireGuesses right after animateClock's OWN duration finished;
+// once the wall-clock-accuracy fix shortened that clock animation to a
+// short fixed snap for a live turn (LIVE_CLOCK_RECONCILE_MS, ~250ms),
+// this burst -- which needs at least interval*order.length to play out,
+// often 2+ seconds for a full lucky-blurt cycle (6 distractors + the real
+// answer as the final item) -- was getting forcibly cut off long before
+// it ever reached that final "lucky hit" flick, at whatever arbitrary
+// guess happened to be showing at the 250ms mark. `done` lets
+// playDuelTurn actually wait for the real cycle to finish on its own
+// terms instead of racing it against an unrelated, now much shorter
+// clock animation.
 function startRapidFireGuesses(playerId, distractors, totalMs, lucky, answer) {
   if (!distractors || !distractors.length) {
     duelSayLabel.textContent = '';
     duelGuessText.textContent = displayName(playerId) + ' is thinking…';
     duelGuess.classList.add('thinking');
-    return null;
+    return { timerId: null, done: Promise.resolve() };
   }
   duelSayLabel.textContent = displayName(playerId) + ' blurts:';
   duelGuess.classList.add('rapidfire');
@@ -5089,16 +5181,18 @@ function startRapidFireGuesses(playerId, distractors, totalMs, lucky, answer) {
     i++;
   };
   flick();
+  let resolveDone;
+  const done = new Promise(resolve => { resolveDone = resolve; });
   const timerId = setInterval(() => {
     if (isPaused) return; // skip this tick while paused; resumes flicking automatically once unpaused
-    if (i >= order.length) { clearInterval(timerId); return; }
+    if (i >= order.length) { clearInterval(timerId); resolveDone(); return; }
     flick();
   }, interval);
-  return timerId;
+  return { timerId, done };
 }
 
-function stopRapidFireGuesses(timerId) {
-  if (timerId) clearInterval(timerId);
+function stopRapidFireGuesses(rapidFire) {
+  if (rapidFire && rapidFire.timerId) clearInterval(rapidFire.timerId);
   duelGuess.classList.remove('rapidfire', 'thinking');
   duelGuessText.classList.remove('lucky-hit');
 }
@@ -5163,11 +5257,20 @@ async function playDuelTurn(d) {
   // Computed before starting the blurt burst (not after, as before) so it
   // can pace a repeat-free cycle through the actual turn duration instead
   // of a fixed interval.
-  const rapidFireTimer = startRapidFireGuesses(d.player_id, d.distractors, guessAnimMs, d.lucky_blurt, d.answer);
-  await animateClock(clockEl, fromVal, toVal, clockAnimMs);
+  const rapidFire = startRapidFireGuesses(d.player_id, d.distractors, guessAnimMs, d.lucky_blurt, d.answer);
+  // Waits for whichever actually takes longer -- the clock's own
+  // animation, or the rapid-fire burst genuinely finishing its cycle on
+  // its own terms (rapidFire.done). A live turn's clock reconciliation is
+  // now a short fixed snap (LIVE_CLOCK_RECONCILE_MS) while the burst can
+  // legitimately need several seconds, especially a full lucky-blurt
+  // cycle -- awaiting the clock alone used to cut the burst off before it
+  // ever reached its final flick, the real bug behind "the blurt aren't
+  // counting when they are correct" (the turn WAS scored correctly the
+  // whole time; the animation just never visibly finished landing on it).
+  await Promise.all([animateClock(clockEl, fromVal, toVal, clockAnimMs), rapidFire.done]);
   clockState[clockKey] = toVal;
 
-  stopRapidFireGuesses(rapidFireTimer);
+  stopRapidFireGuesses(rapidFire);
   duelSayLabel.textContent = displayName(d.player_id) + ' says:';
 
   if (d.outcome === 'passed') {
@@ -5331,7 +5434,7 @@ async function closeStage() {
   await sleep(350);
 }
 
-const THINKING_LABEL = { target: 'choosing a target', continue: 'deciding whether to push on', tax: 'choosing a domain tax target', intro: 'weighing in on tonight’s domain', attempt: 'answering the question' };
+const THINKING_LABEL = { target: 'choosing a target', continue: 'deciding whether to push on', tax: 'choosing a domain tax target', intro: 'weighing in on tonight’s domain', attempt: 'answering the question', exit_interview: 'giving their exit interview' };
 
 // A growing queue fed by the streaming /api/run-show response (see
 // startShow) -- events can now take real, variable time to produce (a
@@ -5356,17 +5459,26 @@ class EventQueue {
 // the real wait, not a scripted one. Kept separate from GOSSIP_TEMPLATES
 // (which is always attributed to a specific other player) since this is a
 // general room reaction to the model itself taking its time.
+//
+// Kingdom name, not the raw model tag -- the audience doesn't know or care
+// what's running under the hood, same reasoning as the Commentator's own
+// model-name-leakage fix and sayHost('stillThinking') right below this
+// pool's own call site. Named `name` (not `model`), a real bug this
+// session's own "give the host urgency lines" pass introduced: it fixed
+// sayHost's call to pass displayName(...) but left THIS pool -- called one
+// line earlier, from the exact same event -- still taking the raw model
+// tag, so the crowd kept saying it out loud even after the host stopped.
 const STILL_WAITING_LINES = [
-  (model) => `The room waits on ${model}...`,
-  (model) => `Still thinking it over, apparently.`,
-  (model) => `${model} is really weighing this one.`,
-  (model) => `Someone's taking their sweet time.`,
-  (model) => `${model} is really making us wait tonight.`,
-  (model) => `You could hear a pin drop out there.`,
-  (model) => `Come on, ${model}, any day now.`,
-  (model) => `The suspense is doing numbers on this crowd.`,
-  (model) => `${model} is deep in thought. Deep.`,
-  (model) => `Somebody get this contestant a coffee.`,
+  (name) => `The room waits on ${name}...`,
+  (name) => `Still thinking it over, apparently.`,
+  (name) => `${name} is really weighing this one.`,
+  (name) => `Someone's taking their sweet time.`,
+  (name) => `${name} is really making us wait tonight.`,
+  (name) => `You could hear a pin drop out there.`,
+  (name) => `Come on, ${name}, any day now.`,
+  (name) => `The suspense is doing numbers on this crowd.`,
+  (name) => `${name} is deep in thought. Deep.`,
+  (name) => `Somebody get this contestant a coffee.`,
 ];
 let stillThinkingTimer = null;
 
@@ -5413,7 +5525,11 @@ async function runShowPlayback(queue) {
     if (ev.type === 'agent_thinking') {
       // The real wait is however long the NEXT event takes to arrive over
       // the stream -- nothing to sleep for here, just surface who's live.
-      agentThinkingEl.textContent = `\u{1F9E0} ${ev.data.model} is ${THINKING_LABEL[ev.data.decision] || 'deciding'}…`;
+      // Named by player (P#: kingdom), not just the bare model tag -- this
+      // banner used to say only "llama3.2:latest is choosing a target…"
+      // with no way to tell WHICH contestant that actually was.
+      agentThinkingEl.textContent =
+        `\u{1F9E0} P${ev.data.player_id + 1}: ${displayName(ev.data.player_id)} (${ev.data.model}) is ${THINKING_LABEL[ev.data.decision] || 'deciding'}…`;
       agentThinkingEl.classList.add('show');
       // Only 'attempt' is a real duel-clock turn (target/intro/tax/continue
       // decisions don't charge either player's clock) -- see engine/game.py's
@@ -5440,12 +5556,27 @@ async function runShowPlayback(queue) {
         if (!agentThinkingEl.classList.contains('show')) return;
         bounceAmphitheater(5);
         const line = pickVaried(STILL_WAITING_LINES, 'stillWaiting');
-        addChatterLine(line(ev.data.model), 'audience', 'Crowd');
-        // Kingdom name, not the raw model tag -- same reasoning as the
-        // Commentator's own model-name-leakage fix: the audience doesn't
-        // know or care what's running under the hood.
+        addChatterLine(line(displayName(ev.data.player_id)), 'audience', 'Crowd');
         if (Math.random() < 0.5) sayHost('stillThinking', displayName(ev.data.player_id));
       }, 4000);
+      continue;
+    }
+    if (ev.type === 'host_thinking') {
+      // Same lightweight "someone live is talking" banner as agent_thinking,
+      // but for the Host's/Commentator's OWN live lines (announce_challenge,
+      // react_to_matchup, announce_duel_result, etc.) -- Scott: "do we have
+      // any built in pauses? i see a lot of no-activity then a burst." Every
+      // Player decision already got this banner (plus a roster glow, a live
+      // clock tick for 'attempt', and a stillWaitingTimer), but the Host and
+      // Commentator's own calls had none of that -- a slow one read as pure
+      // dead air right up until its line, and everything chained after it,
+      // landed all at once. No roster highlight/live clock/stillWaitingTimer
+      // here -- those are player-specific and don't apply to the Host or
+      // Commentator. Cleared by the same generic "hide the banner" block
+      // below, same as agent_thinking.
+      const speaker = ev.data.role === 'commentator' ? 'The Commentator' : 'Rex Domain';
+      agentThinkingEl.textContent = `\u{1F399}️ ${speaker} is thinking of what to say…`;
+      agentThinkingEl.classList.add('show');
       continue;
     }
     if (agentThinkingEl.classList.contains('show')) {

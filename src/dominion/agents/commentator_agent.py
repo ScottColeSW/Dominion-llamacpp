@@ -130,10 +130,24 @@ class LLMCommentatorAgent(ScriptedCommentatorAgent):
             live_lines.append(
                 "Neither player has a real win streak going tonight yet -- don't invent one."
             )
-        live_lines.append(
-            f"{defender.kingdom_name} currently holds {len(defender.territory)} tile(s) of "
-            f"the board tonight."
-        )
+        # Scott caught a third live gap: even with the streak disclaimer
+        # above, the model kept treating raw tile count as if it were
+        # itself evidence of skill or "winning" -- e.g. "X has won more
+        # tiles tonight than Y, despite their win percentages," an
+        # apples-to-oranges comparison that makes no sense (tile count and
+        # cross-show win_rate are unrelated numbers) and, worse, fires on
+        # the very FIRST duel of the show, when every player's tile count
+        # is trivially their own single starting allocation -- 1 tile
+        # each, never a meaningful fact at all. Only mention it once a
+        # player genuinely holds more than their own single starting
+        # tile (real accumulated territory, whatever the cause), and
+        # frame it as defending ground, not as a scoreboard entry that
+        # could "beat" or "contradict" a win-rate percentage.
+        if len(defender.territory) > 1:
+            live_lines.append(
+                f"{defender.kingdom_name} is currently defending {len(defender.territory)} "
+                f"tile(s) of the board tonight."
+            )
         live_block = " ".join(live_lines)
 
         challenger_stats = _stats_for(self.stats_snapshot, self.backend, challenger.model)
@@ -172,11 +186,15 @@ class LLMCommentatorAgent(ScriptedCommentatorAgent):
             "React live, on air, in ONE short sentence that actually uses at least one of "
             "these real facts -- prefer tonight's live facts when they're the more "
             "interesting story, don't just default to 'no history' when a real streak is "
-            "sitting right there. Do not invent a stat that wasn't given to you. Refer to "
-            "both contestants ONLY by their kingdom name -- never say a model name or "
-            "version tag out loud, the audience doesn't know or care what's running under "
-            "the hood. Reply with ONLY the comment itself, no stage directions, no "
-            "quotation marks."
+            "sitting right there. Do not invent a stat that wasn't given to you. Tile count "
+            "and cross-show win rate are separate, unrelated numbers -- a player's tile "
+            "count can grow from board mechanics that have nothing to do with their own "
+            "skill (a reshuffle, another player's leftover territory landing on them), so "
+            "never say one 'beats' or contradicts the other, or that holding more tiles "
+            "means winning more. Refer to both contestants ONLY by their kingdom name -- "
+            "never say a model name or version tag out loud, the audience doesn't know or "
+            "care what's running under the hood. Reply with ONLY the comment itself, no "
+            "stage directions, no quotation marks."
         )
         result = await self.client.generate(self.model, prompt, timeout=settings.generate_timeout,
                                              num_predict=70)

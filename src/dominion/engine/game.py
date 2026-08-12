@@ -71,6 +71,16 @@ GRAND_PRIZE = 100_000_000
 SCRAMBLE_MIN_DUELS = 6
 SCRAMBLE_MAX_ACTIVE = 7
 BURST_CHECKPOINT_EVERY = 3
+# The burst-prize checkpoint's own real cash bonus, awarded to whoever's
+# leading in territory every BURST_CHECKPOINT_EVERY duels -- a real bug
+# found live (Scott: "money awards aren't being allocated or spoken about
+# properly as the stakes"): despite this file's own OLDER comment below
+# already describing "burst prizes" as something a player is awarded
+# ("on top of... burst prizes and the grand prize"), the emit itself never
+# actually carried a bonus field at all -- purely a cosmetic "who's ahead
+# right now" checkpoint with a misleadingly prize-shaped name and no real
+# prize behind it.
+BURST_PRIZE_BONUS = 500_000
 # A one-time bonus the first time a player's held territory reaches this
 # many tiles, on top of (not instead of) burst prizes and the grand prize.
 # Ties for the grand prize are proven structurally impossible (Section 5:
@@ -393,6 +403,15 @@ async def _run_show(seed: Optional[int] = None, log=None,
         # before this one (the Host was speaking twice per duel through
         # two different code paths -- see host_agent.py's
         # announce_challenge for the ported tiered logic).
+        # Scott: "do we have any built in pauses? i see a lot of
+        # no-activity then a burst." Every Player decision already gets
+        # a visible agent_thinking indicator (banner + roster glow) for
+        # however long its live call takes, but the Host's and
+        # Commentator's OWN live lines had no equivalent -- a slow call
+        # here read as pure dead air right up until the line (and
+        # whatever chain of events follows it) landed all at once. This
+        # is that same indicator, generalized past just Player decisions.
+        emit("host_thinking", role="host")
         host_line = await host_agent.announce_challenge(
             active_player, defender, tested_domain,
             challenger_streak=active_player.push_streak, defender_streak=defender.push_streak,
@@ -404,6 +423,7 @@ async def _run_show(seed: Optional[int] = None, log=None,
         # Host's own announcement, not a replacement for it. Grounded in
         # real cross-show history when stats_snapshot is available (a
         # live show); ScriptedCommentatorAgent's canned pool otherwise.
+        emit("host_thinking", role="commentator")
         commentator_line = await commentator_agent.react_to_matchup(
             active_player, defender, tested_domain)
         emit("commentator_line", moment="matchup", text=commentator_line, live=not SCRIPTED_ONLY)
@@ -679,6 +699,7 @@ async def _run_show(seed: Optional[int] = None, log=None,
         # to fire across two different beats for what's really one
         # moment. Computed here, before the same final_elimination gate
         # M12's exit_interview already uses below.
+        emit("host_thinking", role="host")
         duel_result_host_line = await host_agent.announce_duel_result(
             winner, loser, tested_domain, is_upset, is_close)
 
@@ -704,6 +725,7 @@ async def _run_show(seed: Optional[int] = None, log=None,
         # exit interview, preserving the same "Host formally closes,
         # then the loser's own word" order M12 already established.
         loser_agent = agents[loser_id]
+        emit("agent_thinking", player_id=loser_id, model=loser.model, decision="exit_interview")
         exit_line = await loser_agent.exit_interview(loser, winner, tested_domain)
         final_elimination = game.sole_owner() is not None
         if not final_elimination:
@@ -774,6 +796,7 @@ async def _run_show(seed: Optional[int] = None, log=None,
 
         if winner.push_streak > 0 and winner.push_streak % 3 == 0:
             emit("advantage_earned", player_id=winner_id, streak=winner.push_streak)
+            emit("host_thinking", role="commentator")
             advantage_comment = await commentator_agent.react_to_advantage(winner, winner.push_streak)
             emit("commentator_line", moment="advantage", text=advantage_comment, live=not SCRIPTED_ONLY)
             if rng.random() < 0.8:
@@ -804,6 +827,7 @@ async def _run_show(seed: Optional[int] = None, log=None,
                 game.pending_threepeat_target = threepeat_target_id
                 emit("threepeat_drive", player_id=winner_id, target_id=threepeat_target_id,
                      streak=winner.push_streak)
+                emit("host_thinking", role="commentator")
                 drive_comment = await commentator_agent.react_to_threepeat_drive(
                     winner, players[threepeat_target_id])
                 emit("commentator_line", moment="threepeat_drive", text=drive_comment,
@@ -813,7 +837,8 @@ async def _run_show(seed: Optional[int] = None, log=None,
         if game.duel_count % BURST_CHECKPOINT_EVERY == 0 and game.sole_owner() is None:
             leader_id = max(game.active_ids, key=lambda pid: len(players[pid].territory))
             emit("burst_prize", duel_count=game.duel_count, leader_id=leader_id,
-                 leader_domain=players[leader_id].domain, territory=len(players[leader_id].territory))
+                 leader_domain=players[leader_id].domain, territory=len(players[leader_id].territory),
+                 bonus=BURST_PRIZE_BONUS)
             game.burst_prizes.append({"duel_count": game.duel_count, "leader_id": leader_id})
 
         # The Scramble.
@@ -823,6 +848,7 @@ async def _run_show(seed: Optional[int] = None, log=None,
             game.scrambled = True
             emit("scramble", active_players=len(game.active_ids),
                  board_size=len(game.owner), new_owner=dict(game.owner))
+            emit("host_thinking", role="commentator")
             scramble_comment = await commentator_agent.react_to_scramble(len(game.active_ids))
             emit("commentator_line", moment="scramble", text=scramble_comment, live=not SCRIPTED_ONLY)
             game.remember(f"The board was scrambled -- {len(game.active_ids)} players remain, territory reshuffled.")
@@ -876,6 +902,7 @@ async def _run_show(seed: Optional[int] = None, log=None,
         # adjacent) -- the normal effective-outcome check below only
         # applies to a real decide_continue call.
         effective_keep_going = is_forced_drive or (keep_going and bool(game.adjacent_opponents(winner_id)))
+        emit("host_thinking", role="host")
         continue_reaction_line = await host_agent.announce_continue_decision(
             winner, effective_keep_going, continue_reason)
         emit("host_line", moment="continue_reaction", text=continue_reaction_line,
@@ -887,6 +914,7 @@ async def _run_show(seed: Optional[int] = None, log=None,
     # loop boundary.
     assert champion_id is not None
     champion = players[champion_id]
+    emit("host_thinking", role="host")
     finale_host_line = await host_agent.announce_finale(champion, game.duel_count, GRAND_PRIZE)
     emit("host_line", moment="finale", text=finale_host_line, live=not SCRIPTED_ONLY)
     # The show's very last exit interview, held back from its normal spot
