@@ -787,6 +787,29 @@
     color: var(--gold); font-weight: 600; cursor: pointer; letter-spacing: 1px;
     transition: background .15s ease, transform .15s ease;
   }
+  /* Curtain-call celebration: the whole drafted cast bouncing on the
+     finale overlay, Scott's ask -- "all the players dancing around...
+     hoisting them in the air." Each avatar reuses buildPixelFace (the
+     same procedural, per-player-seeded SVG face already used everywhere
+     else on the board) inside a small round badge, animation-delay/
+     -duration randomized per player (see renderCelebrationCrowd) so the
+     crowd bounces out of sync like a real celebration, not a robotic
+     unison loop. */
+  .celebration-crowd {
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 8px;
+    margin: 4px auto 22px; max-width: 480px;
+  }
+  .celebration-avatar {
+    width: 40px; height: 40px; border-radius: 50%; overflow: hidden;
+    box-shadow: 0 0 8px rgba(245,197,66,0.4), 0 2px 4px rgba(0,0,0,0.4);
+    animation: celebrationBounce 1.1s ease-in-out infinite;
+  }
+  @keyframes celebrationBounce {
+    0%, 100% { transform: translateY(0) rotate(0deg); }
+    25%      { transform: translateY(-16px) rotate(-10deg); }
+    50%      { transform: translateY(0) rotate(0deg); }
+    75%      { transform: translateY(-9px) rotate(8deg); }
+  }
   #shareBadgeBtn:hover { background: rgba(245,197,66,0.12); transform: scale(1.03); }
 
   /* --- The board itself: fills in during the draw, recolors on capture.
@@ -4539,6 +4562,36 @@ function buildPixelFace(playerId) {
   return `<svg viewBox="0 0 64 64" width="100%" height="100%" shape-rendering="crispEdges">${rects.join('')}</svg>`;
 }
 
+// Finale curtain call: the whole 13-contestant cast bouncing together on
+// the New Game overlay, Scott's ask -- "all the players dancing around
+// celebrating the win... hoisting them in the air." Deliberately a fun,
+// non-canonical send-off (everyone's back for the bow regardless of when
+// they were eliminated in-story), the same spirit as any real show
+// bringing the whole cast out for the final wave -- reuses buildPixelFace
+// (the same procedural, per-player-seeded face every board avatar already
+// uses) rather than any new art asset, so the crowd is instantly
+// recognizable as this exact show's actual roster, not generic filler
+// figures.
+function renderCelebrationCrowd() {
+  const wrap = document.createElement('div');
+  wrap.className = 'celebration-crowd';
+  for (let pid = 0; pid < PLAYER_COUNT_FRONTEND; pid++) {
+    const item = document.createElement('div');
+    item.className = 'celebration-avatar';
+    item.innerHTML = buildPixelFace(pid);
+    item.style.background = '#' + playerColor(pid);
+    // Deterministic per-player stagger/speed (same seeded-RNG trick
+    // buildPixelFace itself already uses) -- reads as a real crowd
+    // bouncing out of sync, not a robotic unison loop, and looks the
+    // same every time this exact champion's show is replayed.
+    const rnd = mulberry32(pid * 104729 + 7919);
+    item.style.animationDelay = `${(rnd() * 0.6).toFixed(2)}s`;
+    item.style.animationDuration = `${(0.9 + rnd() * 0.5).toFixed(2)}s`;
+    wrap.appendChild(item);
+  }
+  return wrap;
+}
+
 // --- The Challenge Stage: live duel animation ---
 // Turns are pre-simulated, but the on-screen clock now counts down in real
 // time: one real second of animation per one simulated clock second, so
@@ -5821,6 +5874,7 @@ async function runShowPlayback(queue) {
       // attention, rather than needing to scroll back up to see it again.
       overlayFinaleContent.innerHTML = '';
       overlayFinaleContent.appendChild(finaleCard(ev.data, extra));
+      overlayFinaleContent.appendChild(renderCelebrationCrowd());
       // The host's finale line already played above, via the host_line
       // event (moment: 'finale') that fires right before this one --
       // see agents/host_agent.py's announce_finale.
