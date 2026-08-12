@@ -141,6 +141,61 @@ class ShowSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertLess(last_duel_result_host_index, last_exit_index)
         self.assertLess(last_exit_index, finale_index)
 
+    async def test_threepeat_drive_forces_a_push_with_no_target_decision(self) -> None:
+        # #13: seed 102 is a confirmed, stable repro where a real
+        # push_streak%3==0 checkpoint fires with a genuinely non-adjacent
+        # candidate available, and the resulting duel's winner/loser end
+        # up with no safe reconnect bridge available (see the next test
+        # for the case where one IS available) -- the winner instead
+        # claims the conquest as a disconnected outpost, no bystander
+        # tiles change hands, and the show's fundamental "always exactly
+        # PLAYER_COUNT - 1 duels" shape still holds either way.
+        result, log = await self._run(102)
+        events = list(log)
+        self.assertEqual(result["total_duels"], PLAYER_COUNT - 1)
+        drives = [e for e in events if e.type == "threepeat_drive"]
+        self.assertEqual(len(drives), 1)
+        self.assertEqual(drives[0].data, {"player_id": 3, "target_id": 2, "streak": 3})
+        # The forced push right after it has nothing to decide -- no
+        # agent_thinking(decision="target") for that turn, and the
+        # continues event says so explicitly.
+        drive_index = events.index(drives[0])
+        continues_index = next(
+            i for i in range(drive_index, len(events)) if events[i].type == "continues")
+        self.assertTrue(events[continues_index].data.get("forced"))
+        between = events[drive_index:continues_index]
+        self.assertFalse(any(
+            e.type == "agent_thinking" and e.data.get("decision") == "target" for e in between))
+        self.assertFalse(any(e.type == "player_eliminated_by_reconnect" for e in events))
+
+    async def test_threepeat_drive_can_resolve_via_a_safe_reconnect_bridge(self) -> None:
+        # #13: seed 143 is a confirmed, stable repro of the OTHER branch --
+        # a safe bridge (one that doesn't fully strip any bystander) does
+        # exist for this particular matchup, so forced_reconnect actually
+        # fires instead of falling back to an outpost.
+        result, log = await self._run(143)
+        self.assertEqual(result["total_duels"], PLAYER_COUNT - 1)
+        drives = [e for e in log if e.type == "threepeat_drive"]
+        reconnects = [e for e in log if e.type == "forced_reconnect"]
+        self.assertEqual(len(drives), 1)
+        self.assertEqual(len(reconnects), 1)
+        self.assertTrue(reconnects[0].data["tiles"])
+        self.assertFalse(any(e.type == "player_eliminated_by_reconnect" for e in log))
+
+    async def test_threepeat_drive_never_causes_a_collateral_elimination(self) -> None:
+        # The invariant the outpost fallback + risk-aware bridge search
+        # both exist specifically to guarantee: whatever a Drive resolves
+        # to, it never eliminates a bystander outside a real duel, and
+        # the show-wide "always exactly PLAYER_COUNT - 1 duels" shape
+        # (prototype/README.md's original verification) never breaks --
+        # swept across a wide seed range, not just the two confirmed
+        # single-repro cases above.
+        for seed in range(200, 260):
+            with self.subTest(seed=seed):
+                result, log = await self._run(seed)
+                self.assertEqual(result["total_duels"], PLAYER_COUNT - 1)
+                self.assertFalse(any(e.type == "player_eliminated_by_reconnect" for e in log))
+
     async def test_custom_models_list_overrides_the_fixed_roster(self) -> None:
         # The model picker's selection (server/app.py's ?models= query
         # params) should be exactly what players draw from, not just a

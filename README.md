@@ -187,6 +187,21 @@ write to).
 pytest
 ```
 
+## Empirical tuning
+
+```bash
+python scripts/run_show_batch.py --count 20
+```
+
+Runs a batch of shows headlessly (no server, no browser) and prints the
+same aggregate win-rate/reliability/latency stats web/stats.html shows,
+so a real balance question can be answered from a real sample size
+instead of watching one show at a time. `--scripted-only` skips live
+model calls entirely for a fast, cheap sample of just the scripted
+heuristics; `--backend`/`--models` match the start screen's own picker;
+`--db-path` points at a scratch SQLite file instead of writing into your
+real recorded history. `--help` for the full option list.
+
 ## Not comfortable with a terminal?
 
 The steps above assume some command-line familiarity. If you just want to

@@ -6,10 +6,11 @@ its own (Section 10 of the design doc).
 from __future__ import annotations
 import os
 import random
+from collections import Counter
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
 
-from .board import build_hub_ring, build_pyramid_13, connected_components
+from .board import build_hub_ring, build_pyramid_13, connected_components, find_reconnect_path
 from .content import pick_domains, DOMAINS_BY_NAME, Domain
 from .models import (
     Player, GameState, KINGDOM_NAME_PARTS_A, KINGDOM_NAME_PARTS_B, PROFESSIONS,
@@ -320,8 +321,16 @@ async def _run_show(seed: Optional[int] = None, log=None,
         active_player = players[active_pid]
         agent = agents[active_pid]
 
-        emit("agent_thinking", player_id=active_pid, model=active_player.model, decision="target")
-        target_id = await agent.choose_target(active_player, game)
+        # #13 Threepeat Drive: a guaranteed non-adjacent target set two
+        # steps ago (the push_streak%3==0 checkpoint below) overrides the
+        # normal choice entirely -- there's nothing to decide, so no
+        # agent_thinking/live call either.
+        if game.pending_threepeat_target is not None:
+            target_id: Optional[int] = game.pending_threepeat_target
+            game.pending_threepeat_target = None
+        else:
+            emit("agent_thinking", player_id=active_pid, model=active_player.model, decision="target")
+            target_id = await agent.choose_target(active_player, game)
         if target_id is None:
             # This spotlighted player has no adjacent opponents right now
             # (can happen once the board fragments into several owners,
@@ -501,19 +510,132 @@ async def _run_show(seed: Optional[int] = None, log=None,
         is_close = not is_upset and abs(
             result.clocks_remaining.get(winner_id, 0) - result.clocks_remaining.get(loser_id, 0)) < 3
 
+        # #13 Threepeat Drive Home: the split/transfer logic just below
+        # has always assumed winner and loser were already adjacent
+        # (every ordinary duel -- choose_target only ever offers
+        # adjacent_opponents), so it never actually checks that
+        # assumption; it just ships whichever piece of the loser's
+        # territory happens to touch the winner's. A genuinely
+        # non-adjacent win (the Drive) would otherwise transfer NOTHING
+        # to the winner -- none of the loser's territory would touch
+        # theirs, so every piece would scatter to bystanders instead of
+        # rewarding the win at all.
+        #
+        # First choice: forcibly annex the shortest bridge of
+        # bystander-owned tiles (find_reconnect_path, board.py) so the
+        # conquered land becomes genuinely, physically reconnected to the
+        # winner's kingdom -- "reconnect," not just a rule exception.
+        # But: EARLY in a show almost every bystander still owns only
+        # their single starting tile, since territory consolidation takes
+        # many duels -- meaning a genuinely safe bridge (one that doesn't
+        # fully strip some uninvolved bystander down to zero tiles, a
+        # collateral elimination with no duel, no agency, no drama, and
+        # -- worse -- one that breaks this show's fundamental "always
+        # exactly PLAYER_COUNT - 1 duels" shape) is very often simply
+        # unavailable, not just a rare edge case. Rather than accept that
+        # cost, fall back to treating the conquest as a legitimate
+        # disconnected outpost instead (outpost=True below bypasses the
+        # split loop's normal touching requirement entirely) -- no
+        # bystander tiles change hands at all in that case.
+        outpost = False
+        if not game.players_adjacent(winner_id, loser_id):
+            excluded: Set[int] = set()
+            bridge_tiles: List[int] = []
+            for _ in range(len(game.board_adj)):
+                trial_adj = {node: (neighbors - excluded) for node, neighbors in game.board_adj.items()
+                             if node not in excluded}
+                trial_path = find_reconnect_path(trial_adj, winner.territory, loser.territory)
+                if not trial_path:
+                    break
+                # "Risky" means taking every tile THIS path asks of a
+                # given bystander would fully empty them out -- not just
+                # a single-tile owner; a 2-tile bystander who'd lose BOTH
+                # of their tiles to the same path is exactly as wiped out.
+                bystander_contribution = Counter(
+                    game.owner[r] for r in trial_path if game.owner[r] not in (winner_id, loser_id))
+                newly_risky = {
+                    r for r in trial_path if game.owner[r] not in (winner_id, loser_id)
+                    and bystander_contribution[game.owner[r]] >= len(players[game.owner[r]].territory)
+                }
+                if not newly_risky:
+                    bridge_tiles = trial_path
+                    break
+                excluded |= newly_risky
+            if not bridge_tiles:
+                outpost = True
+            else:
+                bridged_from_ids = set()
+                for r in bridge_tiles:
+                    bystander_id = game.owner[r]
+                    if bystander_id not in (winner_id, loser_id):
+                        players[bystander_id].territory.discard(r)
+                        bridged_from_ids.add(bystander_id)
+                    winner.territory.add(r)
+                    game.owner[r] = winner_id
+                emit("forced_reconnect", player_id=winner_id, tiles=bridge_tiles,
+                     from_ids=list(bridged_from_ids))
+                # A safe bridge only ever excludes single-TILE owners, but
+                # a multi-tile bystander who loses one interior tile can
+                # still end up split into two pieces -- the same
+                # "exclave" problem the loser-transfer loop below already
+                # solves for the LOSER, just now possible for a bystander
+                # who wasn't even in this duel. Keep their largest piece,
+                # redistribute anything smaller the same way (winner if
+                # touching, else whichever other active player borders
+                # it, else the winner as a last resort). A full wipe-out
+                # should no longer be reachable given the exclusion
+                # search above, but the check stays as a cheap safety net.
+                for bystander_id in bridged_from_ids:
+                    bystander = players[bystander_id]
+                    if not bystander.territory:
+                        bystander.active = False
+                        game.active_ids.discard(bystander_id)
+                        emit("player_eliminated_by_reconnect", player_id=bystander_id)
+                        game.remember(
+                            f"{bystander.kingdom_name} lost their last foothold when "
+                            f"{winner.kingdom_name}'s Threepeat Drive cut straight through it, "
+                            f"and is out of the game."
+                        )
+                        continue
+                    bystander_pieces = connected_components(bystander.territory, game.board_adj)
+                    if len(bystander_pieces) <= 1:
+                        continue
+                    main_piece = max(bystander_pieces, key=len)
+                    for piece in bystander_pieces:
+                        if piece is main_piece:
+                            continue
+                        bystander.territory -= piece
+                        if any(game.board_adj[r] & winner.territory for r in piece):
+                            target_owner_id = winner_id
+                        else:
+                            piece_candidates = [
+                                pid for pid in game.active_ids
+                                if pid not in (winner_id, bystander_id)
+                                and any(game.board_adj[r] & players[pid].territory for r in piece)
+                            ]
+                            target_owner_id = rng.choice(piece_candidates) if piece_candidates else winner_id
+                        players[target_owner_id].territory |= piece
+                        for r in piece:
+                            game.owner[r] = target_owner_id
+
         # Territory transfer -- split rather than blind merge. The loser's
         # territory is split into connected pieces (per the current board
         # graph); only the piece(s) actually touching the winner's own
-        # territory transfer to the winner. Any OTHER disconnected piece
-        # (possible if the loser had themselves picked up territory through
-        # an earlier chain of wins) is reassigned to whichever other still-
-        # active player borders it instead. A player should never end up
-        # holding a disconnected "exclave" just from winning one fight.
+        # territory transfer to the winner (or, on a Drive outpost win,
+        # EVERY piece -- outpost bypasses the touching requirement
+        # entirely, since the whole point of that duel was claiming this
+        # land as a new, deliberately disconnected foothold). Any OTHER
+        # disconnected piece (possible if the loser had themselves picked
+        # up territory through an earlier chain of wins) is reassigned to
+        # whichever other still-active player borders it instead. A
+        # player should never end up holding a disconnected "exclave"
+        # just from winning one fight -- except a Drive's own outpost,
+        # which is deliberately exactly that.
         loser_components = connected_components(loser.territory, game.board_adj)
         winner_gain = set()
         reassignments = []  # (new_owner_id, tiles) for any leftover piece
         for comp in loser_components:
-            if any(game.board_adj[r] & winner.territory for r in comp):
+            if outpost or any(game.board_adj[r] & winner.territory for r in comp):
                 winner_gain |= comp
                 continue
             other_candidates = [
@@ -666,6 +788,27 @@ async def _run_show(seed: Optional[int] = None, log=None,
                 winner.time_bonus_banked = True
                 emit("time_bonus_banked", player_id=winner_id)
 
+            # #13 Threepeat Drive: a SEPARATE effect at this same
+            # every-3rd-win checkpoint, additive to the tax/time-bonus
+            # roll above, not a replacement for it -- a guaranteed
+            # challenge against a genuinely non-adjacent opponent (the
+            # board is a fixed, real graph with meaningful non-adjacency,
+            # engine/board.py's build_pyramid_13). Silently doesn't
+            # trigger if no non-adjacent active opponent exists right now
+            # (late game, everyone's already touching) -- the tax/bonus
+            # roll above still happened either way.
+            non_adjacent = [pid for pid in game.active_ids
+                             if pid != winner_id and pid not in game.adjacent_opponents(winner_id)]
+            if non_adjacent:
+                threepeat_target_id = rng.choice(non_adjacent)
+                game.pending_threepeat_target = threepeat_target_id
+                emit("threepeat_drive", player_id=winner_id, target_id=threepeat_target_id,
+                     streak=winner.push_streak)
+                drive_comment = await commentator_agent.react_to_threepeat_drive(
+                    winner, players[threepeat_target_id])
+                emit("commentator_line", moment="threepeat_drive", text=drive_comment,
+                     live=not SCRIPTED_ONLY)
+
         # Burst prize checkpoint.
         if game.duel_count % BURST_CHECKPOINT_EVERY == 0 and game.sole_owner() is None:
             leader_id = max(game.active_ids, key=lambda pid: len(players[pid].territory))
@@ -693,18 +836,31 @@ async def _run_show(seed: Optional[int] = None, log=None,
         # choice, a side effect being a bit more model warm-up too) --
         # decide_continue returns (keep_going, reason) for every agent now.
         winner_agent = agents[winner_id]
-        emit("agent_thinking", player_id=winner_id, model=winner.model, decision="continue")
-        keep_going, continue_reason = await winner_agent.decide_continue(winner, game)
-        if keep_going and game.adjacent_opponents(winner_id):
+        # #13 Threepeat Drive: a target was just set above (this same
+        # winner, this same checkpoint) -- there's no real push/retreat
+        # choice to make, so decide_continue is skipped entirely rather
+        # than asked and overridden. push_streak is NOT reset (matches
+        # the existing reset-only-on-retreat rule -- they're continuing).
+        is_forced_drive = game.pending_threepeat_target is not None
+        if is_forced_drive:
+            keep_going, continue_reason = True, "answering the call of the Threepeat Drive."
             game.spotlight = winner_id
             emit("continues", player_id=winner_id, model=winner.model, reason=continue_reason,
-                 temperament=winner.temperament, temperament_label=winner.temperament_label())
+                 temperament=winner.temperament, temperament_label=winner.temperament_label(),
+                 forced=True)
         else:
-            winner.push_streak = 0
-            game.spotlight = None
-            game.excluded_from_pick = winner_id
-            emit("retreats", player_id=winner_id, model=winner.model, reason=continue_reason,
-                 temperament=winner.temperament, temperament_label=winner.temperament_label())
+            emit("agent_thinking", player_id=winner_id, model=winner.model, decision="continue")
+            keep_going, continue_reason = await winner_agent.decide_continue(winner, game)
+            if keep_going and game.adjacent_opponents(winner_id):
+                game.spotlight = winner_id
+                emit("continues", player_id=winner_id, model=winner.model, reason=continue_reason,
+                     temperament=winner.temperament, temperament_label=winner.temperament_label())
+            else:
+                winner.push_streak = 0
+                game.spotlight = None
+                game.excluded_from_pick = winner_id
+                emit("retreats", player_id=winner_id, model=winner.model, reason=continue_reason,
+                     temperament=winner.temperament, temperament_label=winner.temperament_label())
         # M32 Fix 3: emitted AFTER continues/retreats, not before -- the
         # frontend's own handler for that event plays the buildup
         # question and the player's real stated reason FIRST
@@ -715,7 +871,11 @@ async def _run_show(seed: Optional[int] = None, log=None,
         # =True with no adjacent opponents left still ends in a retreat
         # on the board, and the Host's line should match what viewers
         # actually see happen.
-        effective_keep_going = keep_going and bool(game.adjacent_opponents(winner_id))
+        # A forced Drive always effectively pushes, by design, regardless
+        # of ordinary adjacency (the whole point is the target ISN'T
+        # adjacent) -- the normal effective-outcome check below only
+        # applies to a real decide_continue call.
+        effective_keep_going = is_forced_drive or (keep_going and bool(game.adjacent_opponents(winner_id)))
         continue_reaction_line = await host_agent.announce_continue_decision(
             winner, effective_keep_going, continue_reason)
         emit("host_line", moment="continue_reaction", text=continue_reaction_line,

@@ -24,6 +24,7 @@ Two shapes are used, deliberately, for two different jobs:
   feels the redraw actually happened.
 """
 from __future__ import annotations
+from collections import deque
 from typing import Dict, Set, List
 
 
@@ -166,3 +167,36 @@ def connected_components(nodes: Set[int], adj: Dict[int, Set[int]]) -> List[Set[
                     stack.append(neighbor)
         components.append(comp)
     return components
+
+
+def find_reconnect_path(adj: Dict[int, Set[int]], from_tiles: Set[int],
+                         to_tiles: Set[int]) -> List[int]:
+    """Shortest chain of tiles (excluding both endpoints) bridging
+    from_tiles to to_tiles over the full board graph, ownership-agnostic
+    -- plain multi-source BFS seeded from every tile in from_tiles at
+    once. Empty list if the two sets already touch directly, or if
+    either is empty.
+
+    Used only for a Threepeat Drive's non-adjacent win (#13): the normal
+    territory-transfer split in game.py assumes the winner and loser were
+    already adjacent (every ordinary duel today), so it never actually
+    checks that assumption -- it just ships whichever piece of the
+    loser's territory happens to touch the winner's. A genuinely
+    non-adjacent win would otherwise transfer nothing to the winner at
+    all (every piece scatters to bystanders instead), since none of it
+    would touch. This finds which bystander-owned tiles must be forcibly
+    annexed first so that assumption holds again, and the existing split
+    logic can run completely unmodified."""
+    if not from_tiles or not to_tiles:
+        return []
+    seen = set(from_tiles)
+    frontier = deque((t, [t]) for t in from_tiles)
+    while frontier:
+        node, path = frontier.popleft()
+        for neighbor in adj.get(node, ()):
+            if neighbor in to_tiles:
+                return path[1:]  # drop the from_tiles endpoint; to_tiles endpoint never entered
+            if neighbor not in seen:
+                seen.add(neighbor)
+                frontier.append((neighbor, path + [neighbor]))
+    return []

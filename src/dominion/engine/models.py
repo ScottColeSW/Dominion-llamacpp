@@ -184,6 +184,14 @@ class GameState:
     # choose_tax_target had zero head-to-head signal, and a rematch's
     # pre-duel banter (intro_line_combined) had nothing to react to.
     opponent_record: Dict[int, Dict[int, List[int]]] = field(default_factory=dict)
+    # Set once a player's push_streak hits a multiple of 3 (see game.py's
+    # existing advantage checkpoint) to the id of a guaranteed
+    # non-adjacent opponent -- a "Threepeat Drive," #13. Consumed (and
+    # cleared) the moment that player's next choose_target call would
+    # otherwise fire, and also short-circuits their very next
+    # decide_continue (a forced push into the Drive, not a real choice).
+    # None the rest of the time -- the overwhelmingly common case.
+    pending_threepeat_target: Optional[int] = None
 
     def sole_owner(self) -> Optional[int]:
         return next(iter(self.active_ids)) if len(self.active_ids) == 1 else None

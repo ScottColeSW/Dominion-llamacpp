@@ -778,6 +778,16 @@
     transition: transform .15s ease;
   }
   #newGameBtn:hover { transform: scale(1.05); }
+  /* #15: a secondary action, so a quieter outline treatment rather than
+     newGameBtn's own filled gold pill -- shouldn't visually compete with
+     the actual "play again" call to action. */
+  #shareBadgeBtn {
+    display: block; margin: 0 auto 20px; font-size: 1em; padding: 10px 26px;
+    border-radius: 30px; border: 1px solid var(--gold); background: transparent;
+    color: var(--gold); font-weight: 600; cursor: pointer; letter-spacing: 1px;
+    transition: background .15s ease, transform .15s ease;
+  }
+  #shareBadgeBtn:hover { background: rgba(245,197,66,0.12); transform: scale(1.03); }
 
   /* --- The board itself: fills in during the draw, recolors on capture.
      Paired with the whole audience panel (dots + chatter feed together) in
@@ -950,18 +960,54 @@
     90%  { transform: translateX(-1px)  rotate(-2deg); }
     100% { transform: translateX(0)     rotate(0deg); }
   }
+  /* #16: the defender's own fly-in needs the mirror image of the waddle
+     above -- entering from the right (positive translateX), not the same
+     leftward approach faceLeft uses. Same easing/duration/rotation
+     rhythm, just sign-flipped on X, so it reads as "walking in from the
+     right side" instead of visibly crossing over from the challenger's
+     side of the stage. */
+  .player-face.toddle-in-right { animation: faceToddleInRight 1.7s ease-out both; }
+  @keyframes faceToddleInRight {
+    0%   { transform: translateX(90px)  rotate(0deg); }
+    10%  { transform: translateX(78px)  rotate(10deg); }
+    20%  { transform: translateX(64px)  rotate(-8deg); }
+    30%  { transform: translateX(50px)  rotate(9deg); }
+    40%  { transform: translateX(37px)  rotate(-7deg); }
+    50%  { transform: translateX(26px)  rotate(7deg); }
+    60%  { transform: translateX(17px)  rotate(-6deg); }
+    70%  { transform: translateX(10px)  rotate(5deg); }
+    80%  { transform: translateX(5px)   rotate(-4deg); }
+    90%  { transform: translateX(1px)   rotate(2deg); }
+    100% { transform: translateX(0)     rotate(0deg); }
+  }
   /* A literal traveling marker for the same freshly-spotlighted-challenger
      moment above -- Scott: "it would be cool if they walked off the board
-     and into the other badge." Positioned fixed (viewport coordinates,
-     matching getBoundingClientRect) so it can cross from the actual board
-     tile all the way to the duel stage badge, which the toddle-in waddle
-     above can't do on its own since that's just a short local slide
+     and into the other badge." Positioned absolute (document coordinates,
+     matching getBoundingClientRect() + the current scroll offset, see
+     flyMarker) so it can cross from the actual board tile all the way to
+     the duel stage badge, which the toddle-in waddle above can't do on
+     its own since that's just a short local slide
      within the badge box itself. See flyToStage. */
+  /* #16: absolute (document-space), not fixed (viewport-space) -- a fixed
+     marker never moves with the page, so it drifted out of sync with the
+     actual tiles for as long as duelStage.scrollIntoView's own smooth
+     scroll was still running (see flyMarker's docstring for the full
+     story). Absolute, appended directly to body with no positioned
+     ancestor, naturally scrolls WITH the rest of the document instead. */
   .board-travel-avatar {
-    position: fixed; width: 18px; height: 18px; border-radius: 50%;
+    position: absolute; width: 18px; height: 18px; border-radius: 50%;
     z-index: 1100; pointer-events: none;
     box-shadow: 0 0 10px rgba(245,197,66,0.7), 0 2px 6px rgba(0,0,0,0.5);
     transition: left .85s cubic-bezier(.4,0,.2,1), top .85s cubic-bezier(.4,0,.2,1);
+  }
+  /* #13: a hotter, bigger trail than the plain board-travel-avatar and a
+     longer transition (matching flyBetweenTiles' 1400ms timeout) so a
+     Threepeat Drive's cross-board strike visibly reads as a bigger event
+     than an ordinary walk-to-stage. */
+  .threepeat-drive-avatar {
+    width: 24px; height: 24px;
+    box-shadow: 0 0 18px rgba(255,90,40,0.9), 0 2px 8px rgba(0,0,0,0.6);
+    transition: left 1.3s cubic-bezier(.4,0,.2,1), top 1.3s cubic-bezier(.4,0,.2,1);
   }
   /* Three distinct facts about the player, deliberately kept visually
      separate: real-world profession (job), chosen expertise (the domain
@@ -1409,6 +1455,9 @@
            still linger with the winner's info here instead of it being
            easy to miss once attention shifts to this popup. -->
       <div id="overlayFinaleContent"></div>
+      <!-- #15: canvas-rendered champion badge, not a screenshot of this
+           card -- see shareChampionBadge/renderChampionBadgeCanvas. -->
+      <button id="shareBadgeBtn" title="Save or share a champion badge image">&#128241; Share Champion Badge</button>
       <div class="overlay-title">Ready for another round?</div>
       <button id="newGameBtn">NEW GAME</button>
     </div>
@@ -1495,6 +1544,7 @@ const stagehandLayerEl = document.getElementById('stagehandLayer');
 const newGameOverlay = document.getElementById('newGameOverlay');
 const overlayFinaleContent = document.getElementById('overlayFinaleContent');
 const newGameBtn = document.getElementById('newGameBtn');
+const shareBadgeBtn = document.getElementById('shareBadgeBtn');
 const overlayCloseBtn = document.getElementById('overlayCloseBtn');
 const quitBtn = document.getElementById('quitBtn');
 
@@ -1507,6 +1557,15 @@ const quitBtn = document.getElementById('quitBtn');
 // `let`, not `const`, specifically so that sync can happen at all.
 let BASE_CLOCK = 30;
 const BONUS_SECONDS = 5;
+// #15: which backend actually ran this show (ollama/llamacpp/scripted) --
+// set once from show_start, read by the champion badge's "Powered by"
+// tag. Never read anywhere in this file before #15; every other backend
+// reference lives purely server-side.
+let currentShowBackend = null;
+// #15: the finale event's own data/extra, cached for shareBadgeBtn's
+// click handler (which fires long after the dispatch loop has moved on).
+let lastFinaleData = null;
+let lastFinaleExtra = null;
 
 // --- Pause: freezes forward progress of the show (event pacing, speech,
 // music/sound, the duel clock, rapid-fire blurts, and every CSS
@@ -2607,6 +2666,20 @@ function advantageHostLine(data) {
     `${name} cannot be stopped right now!`, `That's real momentum for ${name}, folks!`,
   ];
   return pickVaried(templates, 'advantage');
+}
+// #13: fires on threepeat_drive, a SEPARATE effect from the advantage
+// checkpoint above at the same push_streak%3==0 trigger (engine/game.py) --
+// a guaranteed challenge clear across the board against someone this
+// player would never normally be able to reach.
+function threepeatDriveHostLine(data) {
+  const name = displayName(data.player_id);
+  const targetName = displayName(data.target_id);
+  const templates = [
+    `${name} has earned a Threepeat Drive -- a guaranteed shot clear across the board at ${targetName}!`,
+    `Three in a row! ${name} calls their shot, and it's ${targetName}, way out of normal reach!`,
+    `That streak buys ${name} a long-range strike -- ${targetName}, you're the target!`,
+  ];
+  return pickVaried(templates, 'threepeatDrive');
 }
 // Fires on `domain_tax_applied` -- an ACTUAL domain seizure (engine/game.py:
 // an 80% roll off advantage_earned). Previously this event got no host
@@ -3824,6 +3897,9 @@ function cardFor(ev) {
     case 'advantage_earned':
       return card('advantage prize-highlight', 'Advantage Earned',
         `${displayName(d.player_id)} is riding a <b>${d.streak}-win streak</b> and earns a bonus to spend.`, '&#128293;');
+    case 'threepeat_drive':
+      return card('advantage prize-highlight', 'Threepeat Drive',
+        `${displayName(d.player_id)} earns a guaranteed long-range challenge against <b>${displayName(d.target_id)}</b>.`, '&#127919;');
     case 'domain_tax_applied':
       return card('advantage prize-highlight', 'Domain Tax Used',
         `${displayName(d.from_id)} taxes ${displayName(d.to_id)}. Domains swap.`, '&#128260;');
@@ -3897,6 +3973,16 @@ function finaleCard(d, extra) {
       <div class="body-line dim">${s.correct} correct &middot; ${s.incorrect} incorrect &middot; ${s.passed} passed &middot; ${pct}% accuracy &middot; ${avgTime}s avg correct time</div>
     </div>`;
   const modelLine = extra.model ? `<div class="champion-model">&#129504; Powered by ${extra.model}</div>` : '';
+  // #15: which backend actually ran this show, if known -- backend and
+  // model are two different facts (backend = ollama/llamacpp/scripted,
+  // model = the specific LLM this champion happened to draw), shown as
+  // two separate lines rather than folded into one.
+  const backendTag = extra.backend && extra.backend !== 'scripted'
+    ? `<div class="champion-model dim">${extra.backend === 'llamacpp' ? 'llama.cpp' : 'Ollama'} backend</div>` : '';
+  // #13/#15: a real callout for a genuinely rare, earned mechanic --
+  // never claims one if this champion never actually triggered a Drive.
+  const driveLine = extra.threepeatDrives > 0
+    ? `<div class="body-line dim">&#127919; Earned ${extra.threepeatDrives} Threepeat Drive${extra.threepeatDrives > 1 ? 's' : ''} along the way.</div>` : '';
   // The viewer's pre-show pick, revealed here -- a hit gets a warm callout,
   // a miss still names both the guess and the actual champion so it reads
   // as a real reveal rather than being silently dropped.
@@ -3912,9 +3998,11 @@ function finaleCard(d, extra) {
     <h2>SOLE OWNER OF THE BOARD</h2>
     <div class="champion-number">${playerLabel(d.champion_id)}</div>
     ${modelLine}
+    ${backendTag}
     <div class="body-line">${d.champion_kingdom} &middot; ${titleCase(d.champion_profession)}</div>
     <div class="body-line">Reigning domain: <b>${d.champion_domain}</b></div>
     ${startLine}
+    ${driveLine}
     ${statsBlock}
     ${predictionLine}
     <div class="prize">${fmtMoney(d.prize)}</div>
@@ -3922,6 +4010,107 @@ function finaleCard(d, extra) {
     <div class="title-card">DOMINION</div>
   `;
   return el;
+}
+
+// #15: a purpose-built canvas rendering of the champion badge, deliberately
+// hand-drawn rather than a screenshot of the live finaleCard DOM -- no
+// screenshot/rasterization library is bundled in this project (the whole
+// point of this fork's "zero third-party imports" engine ethos extends in
+// spirit to not reaching for one here either), and a fixed-size canvas
+// gives full control over a clean, consistently-sized shareable image
+// regardless of the live page's own responsive layout, fonts actually
+// installed, or however tall the real card happens to render.
+function renderChampionBadgeCanvas(d, extra) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 640;
+  canvas.height = 800;
+  const ctx = canvas.getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  grad.addColorStop(0, '#1d1436');
+  grad.addColorStop(1, '#140d26');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = '#3d2a5c';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(2, 2, canvas.width - 4, canvas.height - 4);
+  ctx.textAlign = 'center';
+  const cx = canvas.width / 2;
+  ctx.fillStyle = '#f5c542';
+  ctx.font = 'bold 22px "Segoe UI", sans-serif';
+  ctx.fillText('SOLE OWNER OF THE BOARD', cx, 90);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 48px "Segoe UI", sans-serif';
+  ctx.fillText(playerLabel(d.champion_id), cx, 160);
+  ctx.font = '26px "Segoe UI", sans-serif';
+  ctx.fillText(d.champion_kingdom, cx, 205);
+  ctx.fillStyle = '#b9a8d9';
+  ctx.font = '18px "Segoe UI", sans-serif';
+  ctx.fillText(titleCase(d.champion_profession), cx, 235);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '20px "Segoe UI", sans-serif';
+  ctx.fillText(`Reigning domain: ${d.champion_domain}`, cx, 285);
+  let y = 320;
+  if (extra.threepeatDrives > 0) {
+    ctx.fillStyle = '#ff8a5a';
+    ctx.font = 'bold 18px "Segoe UI", sans-serif';
+    ctx.fillText(`\u{1F3AF} ${extra.threepeatDrives} Threepeat Drive${extra.threepeatDrives > 1 ? 's' : ''} earned`, cx, y);
+    y += 40;
+  }
+  ctx.fillStyle = '#4ade80';
+  ctx.font = 'bold 46px "Segoe UI", sans-serif';
+  ctx.fillText(fmtMoney(d.prize), cx, y + 50);
+  ctx.fillStyle = '#8a7ba8';
+  ctx.font = '16px "Segoe UI", sans-serif';
+  ctx.fillText(`${d.total_duels} duels fought, show-wide`, cx, y + 80);
+  const s = extra.stats;
+  const attempts = s.correct + s.incorrect;
+  const pct = attempts ? Math.round((s.correct / attempts) * 100) : 0;
+  ctx.fillStyle = '#dcd3f0';
+  ctx.font = '18px "Segoe UI", sans-serif';
+  ctx.fillText(`${extra.personalWins} duel win(s) · longest streak ${extra.longestStreak}`, cx, y + 140);
+  ctx.fillText(`${s.correct} correct · ${s.incorrect} incorrect · ${pct}% accuracy`, cx, y + 170);
+  if (extra.backend && extra.backend !== 'scripted') {
+    ctx.fillStyle = '#6b5d8a';
+    ctx.font = '14px "Segoe UI", sans-serif';
+    ctx.fillText(`${extra.backend === 'llamacpp' ? 'llama.cpp' : 'Ollama'} backend`, cx, 720);
+  }
+  ctx.fillStyle = '#f5c542';
+  ctx.font = 'bold 28px "Segoe UI", sans-serif';
+  ctx.fillText('DOMINION', cx, 760);
+  return canvas;
+}
+
+// #15: Share button handler -- navigator.share() with the rendered PNG
+// when the browser actually supports sharing a file (mobile Safari/
+// Chrome, some desktop browsers behind a flag), falling back to a plain
+// download link everywhere else, which every browser already understands.
+async function shareChampionBadge(d, extra) {
+  const canvas = renderChampionBadgeCanvas(d, extra);
+  const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+  if (!blob) return;
+  const fileName = `dominion-champion-${d.champion_kingdom.replace(/\s+/g, '-').toLowerCase()}.png`;
+  const file = new File([blob], fileName, { type: 'image/png' });
+  if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({
+        files: [file], title: 'Dominion Champion',
+        text: `${d.champion_kingdom} just won Dominion, ${fmtMoney(d.prize)}!`,
+      });
+      return;
+    } catch (err) {
+      // AbortError means the user closed the native share sheet
+      // themselves -- expected, not a failure, so no fallback needed.
+      if (err && err.name === 'AbortError') return;
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // --- The board: a real hex pyramid that fills in during the draw ---
@@ -4495,18 +4684,34 @@ function countTerritory(playerId) {
 // a layout mid-transition, etc.) -- this is a bonus flourish layered on
 // top of the existing toddle-in waddle, never something openStage's
 // sequencing can depend on succeeding.
-function flyToStage(playerId, destEl) {
-  const node = playerColorNode[playerId];
-  const tileEl = (node != null && tileEls[node]) ? tileEls[node] : null;
-  if (!tileEl || !destEl) return Promise.resolve();
-  const srcRect = tileEl.getBoundingClientRect();
-  const destRect = destEl.getBoundingClientRect();
-  if (!srcRect.width || !destRect.width) return Promise.resolve();
+// #16: the shared low-level mover every fly* helper below delegates to.
+// Scott's race-condition report ("I don't see the player avatar/head
+// moving to the stage") traced back to .board-travel-avatar being
+// position:fixed -- VIEWPORT-relative -- while duelStage.scrollIntoView's
+// own smooth scroll was often still running when the old flyToStage
+// sampled getBoundingClientRect(): a fixed-position marker never moves
+// with the page, so it visibly drifted away from the tiles it was
+// supposed to be tracking for as long as the scroll kept going, and the
+// only mitigation was a flat sleep(350) guess at how long a smooth scroll
+// "usually" takes to settle -- still just a race, not a fix, on a slow
+// device or a long scroll distance.
+//
+// Fix: .board-travel-avatar is now position:absolute (see its CSS rule),
+// and every coordinate here adds the CURRENT window.scrollX/scrollY to
+// getBoundingClientRect()'s viewport-relative numbers, converting them to
+// DOCUMENT-space. A document-space position is correct the instant it's
+// read regardless of whether a scroll is mid-flight, AND an
+// absolutely-positioned element naturally scrolls WITH the rest of the
+// page afterward, same as the tiles it's tracking -- so there's no longer
+// anything to wait out at all. openStage's sleep(350) before this call is
+// gone accordingly.
+function flyMarker(fromRect, toRect, colorPlayerId, extraClass, durationMs) {
+  if (!fromRect.width || !toRect.width) return Promise.resolve();
   const avatar = document.createElement('div');
-  avatar.className = 'board-travel-avatar';
-  avatar.style.background = '#' + playerColor(playerId);
-  avatar.style.left = (srcRect.left + srcRect.width / 2 - 9) + 'px';
-  avatar.style.top = (srcRect.top + srcRect.height / 2 - 9) + 'px';
+  avatar.className = extraClass ? `board-travel-avatar ${extraClass}` : 'board-travel-avatar';
+  avatar.style.background = '#' + playerColor(colorPlayerId);
+  avatar.style.left = (fromRect.left + window.scrollX + fromRect.width / 2 - 9) + 'px';
+  avatar.style.top = (fromRect.top + window.scrollY + fromRect.height / 2 - 9) + 'px';
   document.body.appendChild(avatar);
   return new Promise(resolve => {
     // Two nested rAFs: the first commits the starting position as an
@@ -4516,13 +4721,71 @@ function flyToStage(playerId, destEl) {
     // chance to render the "before" state.
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        avatar.style.left = (destRect.left + destRect.width / 2 - 9) + 'px';
-        avatar.style.top = (destRect.top + destRect.height / 2 - 9) + 'px';
+        avatar.style.left = (toRect.left + window.scrollX + toRect.width / 2 - 9) + 'px';
+        avatar.style.top = (toRect.top + window.scrollY + toRect.height / 2 - 9) + 'px';
       });
     });
-    setTimeout(() => { avatar.remove(); resolve(); }, 900);
+    setTimeout(() => { avatar.remove(); resolve(); }, durationMs);
   });
 }
+// A literal traveling marker from the challenger's (or defender's) actual
+// board tile to their duel stage badge -- Scott's #127 ask: "when a player
+// is choosing their competition... it would be cool if they walked off the
+// board and into the other badge." tileEls (populated by renderBoard)
+// gives a real on-page element per board node, and playerColorNode[playerId]
+// gives which node that player actually stands on, so this isn't a fake/
+// generic travel path -- it starts from exactly where that contestant's own
+// tile is rendered right now. Silently resolves and does nothing if the
+// tile isn't resolvable for any reason (very first duel before a node is
+// known, a layout mid-transition, etc.) -- this is a bonus flourish layered
+// on top of the existing toddle-in waddle, never something openStage's
+// sequencing can depend on succeeding.
+function flyToStage(playerId, destEl) {
+  const node = playerColorNode[playerId];
+  const tileEl = (node != null && tileEls[node]) ? tileEls[node] : null;
+  if (!tileEl || !destEl) return Promise.resolve();
+  return flyMarker(tileEl.getBoundingClientRect(), destEl.getBoundingClientRect(), playerId, null, 900);
+}
+// #13 Threepeat Drive's board-line visual -- tile-to-tile instead of
+// tile-to-stage, same tileEls[playerColorNode[id]] lookup on both ends. No
+// line/path-drawing primitive existed anywhere in this file before this --
+// reusing flyMarker's proven technique (just generalizing which two points
+// it connects) is simpler and safer than inventing a new SVG line
+// primitive from scratch, and reads just as distinctly as a real
+// long-range strike across the board.
+function flyBetweenTiles(fromPlayerId, toPlayerId) {
+  const fromNode = playerColorNode[fromPlayerId];
+  const toNode = playerColorNode[toPlayerId];
+  const fromEl = (fromNode != null && tileEls[fromNode]) ? tileEls[fromNode] : null;
+  const toEl = (toNode != null && tileEls[toNode]) ? tileEls[toNode] : null;
+  if (!fromEl || !toEl) return Promise.resolve();
+  // Longer than the plain 900ms -- a genuine cross-board strike should
+  // visibly take longer than an ordinary walk-up.
+  return flyMarker(fromEl.getBoundingClientRect(), toEl.getBoundingClientRect(),
+                    fromPlayerId, 'threepeat-drive-avatar', 1400);
+}
+// #16: "winner return-trip on retreat" -- the mirror image of flyToStage,
+// stage badge back to board tile. cachedFromRect (see lastWinnerStageRect
+// below) rather than a live lookup on the stage badge itself: by the time
+// a RETREAT is actually known, closeStage() has already collapsed the
+// stage (opacity/max-height both go to 0, see #duelStage.active's CSS),
+// so a live getBoundingClientRect() on the badge at that point would
+// already read as zero-size. The rect is captured once, right before
+// closeStage() runs, while the badge is still genuinely on screen --
+// document-space (see flyMarker), so it stays correct regardless of how
+// much the page scrolls in between.
+function flyBackToTile(cachedFromRect, playerId) {
+  const node = playerColorNode[playerId];
+  const tileEl = (node != null && tileEls[node]) ? tileEls[node] : null;
+  if (!tileEl || !cachedFromRect) return Promise.resolve();
+  return flyMarker(cachedFromRect, tileEl.getBoundingClientRect(), playerId, null, 900);
+}
+// Set right before closeStage() runs (duel_result's handler), read (and
+// cleared) by retreats' handler shortly after -- exactly one duel's
+// winner is ever "in flight" between those two points, since the engine
+// resolves one duel fully (through the push/retreat decision) before the
+// next one's own duel_result can ever land.
+let lastWinnerStageRect = null;
 let clockState = { left: BASE_CLOCK, right: BASE_CLOCK };
 // Drives a genuinely live, real-time-ticking clock display while a live
 // agent_thinking('attempt') call is actually in flight -- Scott: "game
@@ -4605,6 +4868,7 @@ async function openStage(d) {
   // nothing left to see.
   const shouldToddle = pendingSpotlightToddlePid === d.challenger_id;
   faceLeft.classList.remove('toddle-in');
+  faceRight.classList.remove('toddle-in-right');
   pendingSpotlightToddlePid = null;
   // Profession plus playing-style temperament (Cautious/Balanced/Aggressive),
   // folded onto one line so the audience sees who someone IS (job) right
@@ -4668,18 +4932,39 @@ async function openStage(d) {
   bonusRight.classList.toggle('show', !!d.defender_using_bonus);
   duelStage.classList.add('active');
   duelStage.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  // #16: no more sleep(350) guessing at how long the smooth scroll above
+  // takes to settle -- flyMarker's document-space coordinates are correct
+  // the instant they're read regardless of scroll state (see its own
+  // docstring), so there's nothing left to wait out before starting the
+  // walk-on animation(s).
+  //
+  // The defender ALWAYS gets a fly-in: unlike the challenger (who might
+  // already be standing on stage mid-streak, see shouldToddle above),
+  // this show's turn structure means a NEW defender is, by construction,
+  // never the same player who was just on stage a moment ago -- only a
+  // WINNER ever continues standing, and a winner only ever continues as
+  // the next CHALLENGER, never as a defender. Both sides fly in together
+  // (Promise.all), not sequentially, when the challenger's own fly-in also
+  // applies -- reads as two contestants converging on the stage at once,
+  // not a slower one-then-the-other queue.
+  const flights = [
+    flyToStage(d.defender_id, faceRight).then(() => {
+      void faceRight.offsetWidth; // force reflow so the animation replays every time
+      faceRight.classList.add('toddle-in-right');
+    }),
+  ];
   if (shouldToddle) {
-    // Give the smooth scroll a beat to actually arrive before playing an
-    // animation the audience needs to already be looking at. flyToStage
-    // first (the real cross-page walk from the board tile to this badge --
-    // Scott: "it would be cool if they walked off the board and into the
-    // other badge"), THEN the existing local toddle-in waddle plays as the
-    // "landing" flourish once they've actually arrived.
-    await sleep(350);
-    await flyToStage(d.challenger_id, faceLeft);
-    void faceLeft.offsetWidth; // force reflow so the animation replays every time
-    faceLeft.classList.add('toddle-in');
+    // flyToStage first (the real cross-page walk from the board tile to
+    // this badge -- Scott: "it would be cool if they walked off the board
+    // and into the other badge"), THEN the existing local toddle-in
+    // waddle plays as the "landing" flourish once they've actually
+    // arrived.
+    flights.push(flyToStage(d.challenger_id, faceLeft).then(() => {
+      void faceLeft.offsetWidth; // force reflow so the animation replays every time
+      faceLeft.classList.add('toddle-in');
+    }));
   }
+  await Promise.all(flights);
   // M32 Fix 1: preduelHostLine used to fire its own separate scripted
   // line right here -- the Host speaking twice per duel through two
   // disconnected code paths. That streak/territory-aware logic now
@@ -5145,6 +5430,7 @@ async function runShowPlayback(queue) {
       // the board at this point, so a "players remaining" figure would
       // be describing a cast that doesn't exist on screen yet.
       playersRemainingCount = ev.data.players;
+      currentShowBackend = ev.data.backend;
       // Sync from the server's one authoritative BASE_CLOCK (duel.py) --
       // this replaces the bootstrap default before anyone's actually
       // watching a clock (the challenge stage hasn't opened yet), and
@@ -5379,6 +5665,12 @@ async function runShowPlayback(queue) {
       // report: "the host often reacts but the players have gone
       // already").
       await interDuelReactionBeat();
+      // #16: captured NOW, while the winner's badge is still genuinely on
+      // screen -- closeStage() right below collapses the whole stage to
+      // zero size, and the push/retreat decision (which decides whether
+      // this rect is ever actually used) doesn't arrive until later.
+      const winnerFaceEl = ev.data.winner_id === stageChallengerId ? faceLeft : faceRight;
+      lastWinnerStageRect = winnerFaceEl.getBoundingClientRect();
       await closeStage();
       playerDomain[ev.data.winner_id] = ev.data.winner_domain_after;
       playerStreak[ev.data.winner_id] = ev.data.winner_streak;
@@ -5416,6 +5708,37 @@ async function runShowPlayback(queue) {
       playCrowdBurst(0.45);
       sayHostText(advantageHostLine(ev.data));
       await sleep(850);
+      continue;
+    }
+    if (ev.type === 'threepeat_drive') {
+      // #13: a SEPARATE effect from advantage_earned above, same
+      // trigger. The board-line flight plays FIRST, before the card/host
+      // line -- the audience should see the strike happen, then hear the
+      // call, same "show it, then say it" order flyToStage already uses
+      // for the ordinary walk-to-stage.
+      await flyBetweenTiles(ev.data.player_id, ev.data.target_id);
+      const el2 = cardFor(ev);
+      appendFeedCard(el2);
+      playCrowdBurst(0.6);
+      sayHostText(threepeatDriveHostLine(ev.data));
+      await sleep(850);
+      continue;
+    }
+    if (ev.type === 'forced_reconnect') {
+      // Quiet bookkeeping, same tier as territory_reassigned above --
+      // this is the Drive's own conquest becoming physically contiguous,
+      // not a duel result in its own right, so no fanfare or held pause.
+      captureTiles(ev.data.tiles, ev.data.player_id);
+      ev.data.from_ids.forEach(relabelPlayerTiles);
+      continue;
+    }
+    if (ev.type === 'player_eliminated_by_reconnect') {
+      // Rare: a Drive's bridge fully absorbed a bystander who wasn't
+      // even in that duel (see game.py's risk-aware bridge search --
+      // this should be uncommon, not the common case). No dedicated
+      // card; the roster/territory views already reflect the loss via
+      // the forced_reconnect tile capture right before this.
+      playersRemainingCount = Math.max(0, playersRemainingCount - 1);
       continue;
     }
     if (ev.type === 'domain_tax_applied') {
@@ -5462,18 +5785,29 @@ async function runShowPlayback(queue) {
       const streaks = events
         .filter(e => e.type === 'advantage_earned' && e.data.player_id === champId)
         .map(e => e.data.streak);
+      // #13/#15: how many Threepeat Drives THIS champion personally
+      // earned along the way -- real, rare, worth calling out on the
+      // finale card and the shareable badge alike.
+      const threepeatDrives = events.filter(
+        e => e.type === 'threepeat_drive' && e.data.player_id === champId).length;
       const extra = {
         startingDomain: startAssignment ? startAssignment.data.domain : null,
         startedOnStage: startAssignment ? startAssignment.data.on_stage : false,
         personalWins,
         longestStreak: streaks.length ? Math.max(...streaks) : 0,
+        threepeatDrives,
         stats: playerStats[champId] || { wins: 0, correct: 0, incorrect: 0, passed: 0, totalCorrectSeconds: 0 },
         model: playerModel[champId] || (startAssignment ? startAssignment.data.model : null),
+        backend: currentShowBackend,
         // Reveal whether the viewer's pre-show pick (if any) paid off --
         // Scott's ask for a human prediction feature. null when nobody
         // made a pick this round.
         prediction: activeShowPrediction,
       };
+      // #15: cached for shareBadgeBtn's click handler, which fires well
+      // after this dispatch loop has moved on to other events.
+      lastFinaleData = ev.data;
+      lastFinaleExtra = extra;
       const el = finaleCard(ev.data, extra);
       stage.appendChild(el);
       // Unconditional, unlike appendFeedCard elsewhere -- the champion
@@ -5531,6 +5865,15 @@ async function runShowPlayback(queue) {
       interviewBannerEl.classList.add('show');
       await speakAndHold(speakPlayerLine(ev.data.player_id, ev.data.reason), 1800);
       playContinueDecisionSting(keepGoing);
+      if (!keepGoing) {
+        // #16 "Drive Home": the winner's own return-trip, stage badge
+        // back to their board tile -- lastWinnerStageRect was cached
+        // right before closeStage() collapsed the stage (see duel_result's
+        // handler), since a live lookup on the badge here would already
+        // read as zero-size.
+        await flyBackToTile(lastWinnerStageRect, ev.data.player_id);
+      }
+      lastWinnerStageRect = null;
       // M32 Fix 3: the Host's reaction to this exact decision already
       // arrived as its own host_line event (moment: 'continue_reaction'),
       // held for the same 1300ms hostContinueReaction used to hold for
@@ -5586,6 +5929,8 @@ async function startShow() {
   stopDramaMusic(); // defensive: never carry a lingering loop into a new game
   newGameOverlay.classList.remove('show');
   overlayFinaleContent.innerHTML = ''; // clear any previous champion's recap
+  lastFinaleData = null; // #15: same reason -- don't let a stale champion's badge be shareable
+  lastFinaleExtra = null;
   startBtn.disabled = true;
 
   // The host calls it and the button gets struck to kick things off --
@@ -5710,6 +6055,9 @@ function returnToTitleScreen() {
   // finishes, not eagerly at the title screen.
 }
 newGameBtn.addEventListener('click', returnToTitleScreen);
+shareBadgeBtn.addEventListener('click', () => {
+  if (lastFinaleData) shareChampionBadge(lastFinaleData, lastFinaleExtra);
+});
 muteBtn.addEventListener('click', toggleMute);
 ffBtn.addEventListener('click', () => {
   ffLevelIndex = (ffLevelIndex + 1) % FF_LEVELS.length;

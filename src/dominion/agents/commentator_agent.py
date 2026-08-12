@@ -69,6 +69,15 @@ class ScriptedCommentatorAgent:
         ]
         return self.rng.choice(templates)
 
+    async def react_to_threepeat_drive(self, player: Player, target: Player) -> str:
+        templates = [
+            f"{player.kingdom_name} isn't just on a heater -- that's a guaranteed shot clear "
+            f"across the board at {target.kingdom_name} now. A real Threepeat Drive!",
+            f"Three in a row buys you the right to reach anywhere on this board, and "
+            f"{player.kingdom_name} is reaching all the way for {target.kingdom_name}.",
+        ]
+        return self.rng.choice(templates)
+
 
 class LLMCommentatorAgent(ScriptedCommentatorAgent):
     """Same interface as ScriptedCommentatorAgent; the matchup reaction
@@ -198,6 +207,21 @@ class LLMCommentatorAgent(ScriptedCommentatorAgent):
                                              num_predict=60)
         return _trim_to_last_sentence(result.text.strip()) if result.text else await super().react_to_scramble(
             active_players)
+
+    async def react_to_threepeat_drive(self, player: Player, target: Player) -> str:
+        prompt = (
+            "You are the color commentator on a live TV trivia game show. "
+            f"{player.kingdom_name} has just won 3 duels in a row, live, on air, and that "
+            f"streak earns a Threepeat Drive: a guaranteed challenge clear across the board "
+            f"against {target.kingdom_name}, someone they'd never normally be able to reach. "
+            "React in ONE short excited sentence, as a real commentator would, making clear "
+            "this is a rare, earned long-range shot, not an ordinary matchup. Reply with ONLY "
+            "the comment itself, no stage directions, no quotation marks."
+        )
+        result = await self.client.generate(self.model, prompt, timeout=settings.generate_timeout,
+                                             num_predict=60)
+        return _trim_to_last_sentence(result.text.strip()) if result.text else (
+            await super().react_to_threepeat_drive(player, target))
 
 
 def commentator_model_for_backend(backend: str) -> str:
