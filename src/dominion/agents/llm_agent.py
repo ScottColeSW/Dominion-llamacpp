@@ -43,7 +43,16 @@ from ..inference.config import settings
 # ...ffn_down_exps.weight size overflow") on this machine's Ollama version /
 # 8GB-VRAM combination, consistently, not a transient failure. Re-add it
 # once that's resolved upstream.
-TEXT_MODELS = ["llama3.2:latest", "qwen2.5:3b", "gemma2:2b", "phi3:mini"]
+#
+# phi3:mini dropped too, for a different reason -- confirmed dead against
+# this machine's Ollama, not just slow: two separate /api/generate calls
+# (one before, one immediately after a fresh `ollama pull phi3:mini`) both
+# failed to return anything at all (one hit a 180s timeout with zero
+# response). A corrupted pull would explain one failure; failing again
+# right after a clean re-pull rules that out. The other three models in
+# this pool (all confirmed working, cold-load 9-24s) cover the "small,
+# fast test-bed" role fine without it.
+TEXT_MODELS = ["llama3.2:latest", "qwen2.5:3b", "gemma2:2b"]
 
 # A floor under attempt_question's charged clock time, not an addition on
 # top of real latency -- Scott's rule: no turn should read as having taken
@@ -218,7 +227,21 @@ def _history_block(game: Optional[GameState]) -> str:
     if not game:
         return ""
     text = game.recent_history_text()
-    return f" What's happened in the show so far: {text}" if text else ""
+    if not text:
+        return ""
+    # Scott: "we need to make sure they use it." Just supplying this
+    # block was never a guarantee a small local model would actually draw
+    # on it rather than answer as if it were the only thing that just
+    # happened -- other prompts in this file that want a specific fact
+    # engaged with (opponent_reaction's "React to that directly if you
+    # want," pass_hint, wrong_hint) all say so explicitly rather than
+    # leaving it to be inferred from context alone; this block gets the
+    # same explicit nudge.
+    return (
+        f" What's happened in the show so far: {text} If any of that is relevant "
+        f"here, actually reference the specific detail in your answer instead of "
+        f"speaking as if none of it happened."
+    )
 
 
 def _domain_familiarity_line(game: Optional[GameState], player: Player, domain_name: str) -> str:
@@ -242,6 +265,27 @@ def _domain_familiarity_line(game: Optional[GameState], player: Player, domain_n
         f" You've already faced {total} question(s) in {domain_name} earlier tonight "
         f"({correct} correct) -- draw on that experience."
     )
+
+
+def _last_attempt_line(last_own_attempt: Optional[AnswerAttempt]) -> str:
+    """Scott: "the players need to know they got an answer right or wrong
+    too." wrong_hint (attempt_question's own prompt) already covers a
+    repeat guess on THIS exact question, but that's silent the moment the
+    question changes -- a player who just answered correctly and moved on,
+    or who passed, gets no signal at all about their own last attempt once
+    it's no longer the one on screen. This is deliberately the lightest
+    possible addition (one short line, no game/history plumbing, mirrors
+    _domain_familiarity_line's own "cheap on the highest-frequency call
+    site" reasoning) -- just whatever this exact player's own most recent
+    attempt anywhere in this duel actually was, told to them plainly
+    before their next one."""
+    if last_own_attempt is None:
+        return ""
+    if last_own_attempt.outcome == "correct":
+        return f" Your last answer ({last_own_attempt.guess}) was correct."
+    if last_own_attempt.outcome == "passed":
+        return " You passed on your last question."
+    return f" Your last answer ({last_own_attempt.guess}) was wrong."
 
 
 def _opponent_history_line(game: Optional[GameState], player: Player, opponent_id: int) -> str:
@@ -283,7 +327,7 @@ class LLMAgent(ScriptedAgent):
         self.model = model
         self.client = client
 
-    async def choose_target(self, player: Player, game: GameState) -> Optional[int]:
+    async def choose_target(self, player: Player, game: GameState) -> Tuple[Optional[int], str]:
         options = game.adjacent_opponents(player.id)
         if not options or len(options) == 1:
             return await super().choose_target(player, game)
@@ -293,20 +337,33 @@ class LLMAgent(ScriptedAgent):
             f"{_opponent_history_line(game, player, pid)}"
             for i, pid in enumerate(options)
         ]
+        # Scott: "'choosing a target' part of the players role needs to be
+        # more out loud like an interview and quicker." Now asks for a
+        # spoken reason alongside the pick (same "VERDICT: reason" shape
+        # decide_continue's prompt already uses), and the timeout below is
+        # a much tighter live-beat budget than the old generate_timeout.
         prompt = (
             f"You are {player.kingdom_name}, a {player.profession} on a trivia game show, "
             f"playing style: {player.temperament_label()}.{_note_recall_line(player)}"
             f"{_history_block(game)} "
-            f"Pick ONE opponent to challenge next.\n"
+            f"Pick ONE opponent to challenge next, live, on air -- the host and the "
+            f"audience are waiting on your answer right now, keep it quick.\n"
             + "\n".join(lines)
-            + "\nReply on TWO lines: line 1 is ONLY the number of your choice; line 2 "
-              "starts with MEMO: followed by a short private strategic note to your "
-              "future self for later in the show (not shown to the audience)."
+            + "\nReply on TWO lines: line 1 in EXACTLY this format: the number of your "
+              "choice, then a colon, then one short in-character reason why you're going "
+              "after them. Line 2 starts with MEMO: followed by a short private strategic "
+              "note to your future self for later in the show (not shown to the "
+              "audience).\nExample:\n1: They're holding the most ground -- I want it.\n"
+              "MEMO: watch for their counter-push."
         )
-        grammar = grammars.index_choice_grammar(len(options), with_memo=True) \
+        grammar = grammars.index_choice_grammar(len(options), with_memo=True, with_reason=True) \
             if self.client.supports_grammar else None
+        # Scott: "we give them 7 seconds to pick before we choose for
+        # them" -- settings.target_decision_timeout, a much tighter budget
+        # than most live calls; this is a fast, in-the-moment beat, not
+        # one worth a long wait for a slow-but-eventually-right answer.
         result = await self.client.generate(
-            self.model, prompt, timeout=settings.generate_timeout, grammar=grammar)
+            self.model, prompt, timeout=settings.target_decision_timeout, grammar=grammar)
         reply = result.text
         # Strip any private note out BEFORE parsing the index -- otherwise a
         # note that happens to contain a digit could get picked up by
@@ -319,7 +376,21 @@ class LLMAgent(ScriptedAgent):
             player.remember_note(note)
             _log_player_memo(player, "choose_target", note)
         idx = _parse_index(reply, len(options))
-        return options[idx] if idx is not None else await super().choose_target(player, game)
+        if idx is not None:
+            reason = reply.split(":", 1)[1].strip() if reply and ":" in reply else ""
+            if not reason:
+                reason = f"{game.players[options[idx]].kingdom_name} it is."
+            return options[idx], reason
+        # Scott: "we give them 7 seconds to pick before we choose for
+        # them, first adjacent." A timed-out or unparseable reply falls
+        # back to the plain first adjacent opponent (lowest player number,
+        # not a random pick), deliberately simpler and faster than
+        # super().choose_target()'s fuller temperament-weighted
+        # ScriptedAgent heuristic -- the whole point of the tight timeout
+        # above is to keep this beat quick, and a considered "which
+        # opponent is the smartest pick" fallback would undercut that.
+        first_adjacent = min(options)
+        return first_adjacent, "no time to overthink it -- going with who's closest."
 
     async def decide_continue(self, player: Player, game: GameState) -> Tuple[bool, str]:
         # Returns (keep_going, reason) now -- the host announces this choice
@@ -363,12 +434,28 @@ class LLMAgent(ScriptedAgent):
                     if their_edge > my_edge else
                     f"your own ground ({player.domain}) is the stronger domain for you here."
                     if my_edge > their_edge else
-                    "neither domain is a clear edge for you, so it's a genuine toss-up."
+                    # Scott caught this live: a player rode a real streak,
+                    # then retreated anyway with only one opponent left to
+                    # face -- "that's not right." Retreating here doesn't
+                    # even avoid a duel (the only other player left just
+                    # becomes next turn's challenger regardless), so with
+                    # no real domain edge behind it, defense isn't actually
+                    # a strategic choice, just nerve -- don't present a tie
+                    # as a legitimate coinflip.
+                    "neither domain is a clear edge for you, so lean PUSH -- holding back "
+                    "here would just be nerve, not a real domain-knowledge play."
                 )
             )
+        # Scott: "I think I assumed they knew they lost or won. this is
+        # not the case really." The explicit "you just won" beat, first of
+        # two -- see Player.last_result_note's own comment for why this
+        # needs to be spelled out in the second person rather than left
+        # implicit in push_streak/_history_block's third-person framing.
+        just_won_line = f" {player.last_result_note}" if player.last_result_note else ""
         prompt = (
             f"You are {player.kingdom_name}, a {player.profession}, playing style: "
             f"{player.temperament_label()}. You are on a {player.push_streak}-win streak."
+            f"{just_won_line}"
             f"{_note_recall_line(player)}{_history_block(game)} "
             f"Do you keep pushing for more territory, or retreat to defend what you have? "
             f"Note: RETREAT means staying in the game and defending your ground, "
@@ -480,12 +567,14 @@ class LLMAgent(ScriptedAgent):
                                 miss_streak: int = 0, distractors: Optional[List[str]] = None,
                                 time_remaining: Optional[float] = None,
                                 game: Optional[GameState] = None,
-                                previously_wrong: Optional[Set[str]] = None) -> AnswerAttempt:
+                                previously_wrong: Optional[Set[str]] = None,
+                                last_own_attempt: Optional[AnswerAttempt] = None) -> AnswerAttempt:
         options = list(distractors or [])
         if not options:
             return await super().attempt_question(player, question, domain, miss_streak=miss_streak,
                                                     distractors=distractors, game=game,
-                                                    previously_wrong=previously_wrong)
+                                                    previously_wrong=previously_wrong,
+                                                    last_own_attempt=last_own_attempt)
         choices = options + [question.answer]
         self.rng.shuffle(choices)
         # The actual alphabet, not a project-invented cap: a hardcoded
@@ -540,6 +629,7 @@ class LLMAgent(ScriptedAgent):
             + "\nReply with ONLY the single letter of your answer, or PASS."
             + pass_hint
             + wrong_hint
+            + _last_attempt_line(last_own_attempt)
             + _domain_familiarity_line(game, player, domain.name)
             + " Passing when you're genuinely unsure is a legitimate, smart "
               "move on this show, not a failure -- a sharp contestant "
@@ -684,6 +774,20 @@ class LLMAgent(ScriptedAgent):
             f" You're riding a {player.push_streak}-duel win streak tonight."
             if player.push_streak >= 2 else ""
         )
+        # Scott: "weave similar into interview with competition, not same
+        # player." Beat two of the same "make sure they know they won"
+        # fix (see decide_continue's just_won_line and Player.
+        # last_result_note's own comment) -- this fires one duel later
+        # than that beat, so it's deliberately NOT the same sentence: this
+        # one is framed around carrying that win INTO the fresh matchup
+        # against `opponent` below (a genuinely different player from
+        # whoever they just beat, named separately later in this same
+        # prompt), not a repeat of the raw "you just won" fact itself.
+        carried_win_note = (
+            f" You're walking into this one fresh off a win last duel -- ride that "
+            f"momentum into how you talk about facing {opponent.kingdom_name} now."
+            if player.last_result_note else ""
+        )
         opponent_reaction = (
             f' They already said something about facing you, live, on air: '
             f'"{opponent_line}" React to that directly if you want -- agree, '
@@ -744,6 +848,14 @@ class LLMAgent(ScriptedAgent):
             f"expertise is {opponent.origin_domain} and who currently controls "
             f"{len(opponent.territory)} tile(s) of the board."
             f"{_opponent_history_line(game, player, opponent.id)}"
+            # Scott: "the player 2 interview can include some answers
+            # given by player 1." opponent.last_attempt_note is set
+            # directly on the Player object after every attempt_question
+            # turn (duel.py), so it survives past whichever duel it came
+            # from -- real, specific material to react to, not just the
+            # aggregate accuracy numbers _opponent_history_line covers.
+            + (f" Last time {opponent.kingdom_name} played, they {opponent.last_attempt_note}."
+               if opponent.last_attempt_note else "")
         )
         # Revision 27 -- Scott: agents "don't seem to be getting their role
         # in all this quickly/one-shot." Revision 22 already fixed the
@@ -794,7 +906,7 @@ class LLMAgent(ScriptedAgent):
             f"that one belongs to THEM, not you. Do not mix the two up."
         )
         prompt = (
-            f"{role_header}{facts}{streak_note}{opponent_reaction}"
+            f"{role_header}{facts}{streak_note}{carried_win_note}{opponent_reaction}"
             f"{_history_block(game)}\n{identity_reminder}\n"
             f"The host just asked you all of this in ONE breath, live, on air: your "
             f"real expertise, tonight's actual domain, and your read on this specific "

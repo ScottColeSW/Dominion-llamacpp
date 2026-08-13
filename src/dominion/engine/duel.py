@@ -212,6 +212,7 @@ async def run_duel(challenger: Player, defender: Player, domain: Domain,
                     base_clock: int = BASE_CLOCK, question_cap: int = QUESTION_CAP,
                     on_turn: Optional[Callable[[Dict[str, Any]], None]] = None,
                     on_before_attempt: Optional[Callable[[int, str], None]] = None,
+                    on_question_drawn: Optional[Callable[[Dict[str, Any]], None]] = None,
                     game: Optional[GameState] = None) -> DuelResult:
     # game (added for the "agents get smarter as they play" feature) is
     # passed straight through to agent.attempt_question below so a live
@@ -262,14 +263,56 @@ async def run_duel(challenger: Player, defender: Player, domain: Domain,
     # wrong answer coming back around on a later attempt.
     previously_wrong: Set[str] = set()
     total_seen = 0  # combined attempts across BOTH players this duel
+    # Scott: "the players need to know they got an answer right or wrong
+    # too." This player's own most recent attempt ANYWHERE in this duel
+    # (not just on the current question -- see attempt_question's own
+    # wrong_hint for that narrower, same-question case), handed back to
+    # them right before their next one so a live model gets told plainly
+    # whether its last guess landed, not just left to infer it from
+    # silence. Keyed by player id since the two players' own attempt
+    # histories are independent of each other and of turn order.
+    last_own_attempt: Dict[int, AnswerAttempt] = {}
 
-    question = _draw_question(domain, used_questions, rng)
-    distractors = _pick_distractors(domain, question, rng)
+    # Scott: "clocks are running before the question is out." Root cause:
+    # the question/answer only ever reached the frontend bundled INSIDE
+    # the completed duel_turn event -- the same event that reveals the
+    # outcome -- so there was never a moment where the audience could see
+    # what's being asked before the clock (which correctly starts the
+    # instant a player begins thinking, see agent_thinking's own
+    # startLiveClockTick call) had already been ticking for a while. This
+    # draws and emits the question the instant it's actually decided,
+    # BEFORE the next attempt (and its clock) ever starts -- called here
+    # for the duel's first question, and again at both re-draw sites
+    # below (a correct answer or a pass) so the frontend can reveal the
+    # image right as (or fractionally before) the clock for the next
+    # attempt begins, not after it's already been ticking.
+    def _draw_and_announce() -> Tuple[Question, List[str]]:
+        q = _draw_question(domain, used_questions, rng)
+        d = _pick_distractors(domain, q, rng)
+        if on_question_drawn is not None:
+            on_question_drawn({"prompt": q.image_prompt, "answer": q.answer, "domain": domain.name})
+        return q, d
+
+    question, distractors = _draw_and_announce()
 
     while True:
         pid = turn_order[current]
         agent = agents[pid]
         player = players_by_id[pid]
+
+        # Fired for every turn now, regardless of which branch below
+        # actually decides it -- Scott: "these are like chess clocks...
+        # the counters are not decreasing at least 1 tick per turn." The
+        # forced-pass and lucky-blurt branches used to skip this entirely
+        # (no live agent call to wait on, so it looked pointless to signal
+        # "thinking"), which meant the frontend's liveTick never started
+        # for those turns -- clockState just jumped straight from the old
+        # value to the new one when duel_turn arrived, with no visible
+        # countdown motion. Both branches still charge real seconds_used
+        # against the clock, so the audience should still see that time
+        # tick away like every other turn, not vanish in a jump.
+        if on_before_attempt is not None:
+            on_before_attempt(pid, player.model)
 
         lucky_blurt = False
         if question_miss_streak >= FORCED_PASS_MISS_STREAK:
@@ -301,13 +344,24 @@ async def run_duel(challenger: Player, defender: Player, domain: Domain,
             # the duel visibly drags on past when the audience already
             # expects it to end. ScriptedAgent ignores this; it's never
             # slow enough to matter.
-            if on_before_attempt is not None:
-                on_before_attempt(pid, player.model)
             attempt = await agent.attempt_question(
                 player, question, domain, miss_streak=miss_streak,
                 distractors=distractors, time_remaining=clocks[pid],
-                game=game, previously_wrong=previously_wrong)
+                game=game, previously_wrong=previously_wrong,
+                last_own_attempt=last_own_attempt.get(pid))
 
+        last_own_attempt[pid] = attempt
+        # Scott: "the player 2 interview can include some answers given by
+        # player 1." Set on the Player itself (see its own comment) so it
+        # outlives this duel -- unlike last_own_attempt above, which is
+        # local to this run_duel call and only ever feeds this same
+        # player's own next attempt within THIS duel.
+        if attempt.outcome == "passed":
+            player.last_attempt_note = f"passed on a {domain.name} question"
+        elif attempt.correct:
+            player.last_attempt_note = f"got a {domain.name} question right (guessed '{attempt.guess}')"
+        else:
+            player.last_attempt_note = f"got a {domain.name} question wrong (guessed '{attempt.guess}')"
         clocks[pid] -= attempt.seconds_used
         seen[pid] += 1
         total_seen += 1
@@ -357,8 +411,7 @@ async def run_duel(challenger: Player, defender: Player, domain: Domain,
             miss_streak = 0
             question_miss_streak = 0
             previously_wrong = set()
-            question = _draw_question(domain, used_questions, rng)
-            distractors = _pick_distractors(domain, question, rng)
+            question, distractors = _draw_and_announce()
         elif attempt.outcome == "passed":
             # Deliberate skip: same player continues, but they get a new
             # image, exactly what passing is for. question_miss_streak
@@ -369,8 +422,7 @@ async def run_duel(challenger: Player, defender: Player, domain: Domain,
             miss_streak += 1
             question_miss_streak = 0
             previously_wrong = set()
-            question = _draw_question(domain, used_questions, rng)
-            distractors = _pick_distractors(domain, question, rng)
+            question, distractors = _draw_and_announce()
         else:
             # Plain wrong answer: same player, same image, another crack
             # at the thing they just missed. Remember the guess itself so

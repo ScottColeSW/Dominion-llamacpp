@@ -142,10 +142,21 @@ class LlamaCppInferenceClient:
         t0 = time.monotonic()
         attempts = 0
 
+        # See ollama_client.py's identical fix for the full story: without
+        # shrinking `timeout` by elapsed time on each retry, call_with_retry
+        # (retry.py) can spend up to max_attempts * timeout of real
+        # wall-clock time, blowing well past what duel.py's clock model
+        # (attempt_question's call_timeout, derived from time_remaining)
+        # assumed a single call could cost -- confirmed live via a real
+        # clock trace showing a 57-real-second wait land as a 1s charge.
         async def _call() -> Dict[str, Any]:
             nonlocal attempts
             attempts += 1
-            resp = await self._client.post(self._completion_url, json=payload, timeout=timeout)
+            remaining = timeout - (time.monotonic() - t0)
+            if remaining <= 0:
+                raise httpx.TimeoutException(
+                    "overall call budget exhausted before this retry attempt")
+            resp = await self._client.post(self._completion_url, json=payload, timeout=remaining)
             resp.raise_for_status()
             return resp.json()
 

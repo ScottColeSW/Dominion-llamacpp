@@ -55,6 +55,25 @@ class Settings(BaseSettings):
     # 127.0.0.1, not "localhost" -- see ollama_client.py's docstring for
     # why (IPv6/IPv4 resolution-order hang, not a stylistic choice).
     ollama_url: str = "http://127.0.0.1:11434"
+    # Scott: "RAM usage climbing every round during a live show," then
+    # separately, "ollama really manages the memory well if we use it
+    # with the right parameters." Root cause: ollama_client.py never sent
+    # a keep_alive on /api/generate at all, so Ollama fell back to its own
+    # default (5 minutes) -- with a real show cycling through TEXT_MODELS'
+    # whole ~4-5-model pool well inside any single 5-minute window, every
+    # one of them ends up resident in memory AT ONCE for as long as the
+    # show keeps running (and can still be resident when the NEXT show
+    # starts, since Ollama's model cache lives in the daemon, not this
+    # process). A short, explicit keep_alive caps how many models can
+    # pile up before an idle one actually unloads -- the real tradeoff is
+    # memory vs. cold-load latency (an unloaded model's next call pays a
+    # real reload cost, see docs/ENGINE_NOTES.md's 86s-cold measurement)
+    # so this is deliberately override-able, not hardcoded, rather than
+    # this codebase silently picking a value for a tradeoff Scott may
+    # want tuned differently. Ollama's own accepted formats: a duration
+    # string ("30s", "5m"), a plain number of seconds, or "-1" (never
+    # unload) / "0" (unload immediately after each call).
+    ollama_keep_alive: str = "1m"
     llamacpp_url: str = "http://127.0.0.1:8080"
     # Where llama-server's own --models-dir points (README.md's "llama.cpp
     # setup" section) -- the model picker (server/model_catalog.py) scans
@@ -67,7 +86,17 @@ class Settings(BaseSettings):
     # per backend, independently declared here the same way TEXT_MODELS/
     # LLAMACPP_MODELS are independent of each other -- not exposed in the
     # M8 model picker for v1, a deliberate cut, not an oversight.
-    host_model_ollama: str = "llama3.2:latest"
+    #
+    # Bumped from llama3.2:latest to a bigger model deliberately: the Host
+    # speaks maybe 3 times a duel (announce_challenge/announce_duel_result/
+    # announce_continue_decision), nowhere near attempt_question's
+    # every-single-turn call volume for players, so it can absorb real
+    # cold-load cost far more easily than TEXT_MODELS can (measured 37s vs.
+    # the fast tier's 9-24s). Also frees llama3.2:latest to be purely a
+    # player voice instead of double-duty as Host+player, and a bigger
+    # model is more likely to actually hold onto an opinionated persona
+    # instruction consistently, which the Host doesn't have yet.
+    host_model_ollama: str = "qwen2.5:7b"
     host_model_llamacpp: str = "llama-3.2-3b-instruct"
 
     # The Commentator (agents/commentator_agent.py, M11) -- a second,
@@ -88,6 +117,12 @@ class Settings(BaseSettings):
     # generate_timeout so the whole announcement beat (host build-up +
     # this call + the reaction) stays inside what a live show can afford.
     continue_decision_timeout: float = 6.0
+    # choose_target -- Scott: "needs to be more out loud like an
+    # interview and quicker. we give them 7 seconds to pick before we
+    # choose for them, first adjacent." Same tight-live-beat reasoning as
+    # continue_decision_timeout above, just a hard number Scott named
+    # directly rather than one this codebase measured its way to.
+    target_decision_timeout: float = 7.0
 
     # Bounded retry + circuit breaker (inference/retry.py) shared by every
     # backend client -- a live model call is worth one quick retry on a

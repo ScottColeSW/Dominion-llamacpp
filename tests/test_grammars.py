@@ -38,6 +38,19 @@ class IndexChoiceGrammarTest(unittest.TestCase):
         grammar = index_choice_grammar(2, with_memo=False)
         self.assertNotIn("MEMO", grammar)
 
+    def test_with_reason_requires_a_reason_after_the_index(self) -> None:
+        # Scott: choose_target "needs to be more out loud like an
+        # interview" -- same "VERDICT: reason" shape push_retreat_grammar
+        # already constrains decide_continue to.
+        grammar = index_choice_grammar(2, with_memo=True, with_reason=True)
+        self.assertIn('idx ": " reason', grammar)
+        self.assertIn("reason ::=", grammar)
+        self.assertIn("MEMO: ", grammar)
+
+    def test_without_reason_has_no_reason_rule(self) -> None:
+        grammar = index_choice_grammar(2, with_memo=True, with_reason=False)
+        self.assertNotIn("reason ::=", grammar)
+
 
 class PushRetreatGrammarTest(unittest.TestCase):
     def test_has_both_verdicts_and_memo(self) -> None:

@@ -98,6 +98,26 @@ class HistoryBackendComparisonTest(unittest.TestCase):
         stats = get_stats(self.db_path)
         self.assertEqual(stats["shows_recorded"], 1)
 
+    def test_scripted_shows_are_excluded_from_the_real_aggregates(self) -> None:
+        # Scott: "all the 'scripted' stats need to be separated from the
+        # rest, it skews all the data too much." A scripted-only batch
+        # (scripts/run_show_batch.py --scripted-only) writes to the same
+        # tables as a real live show -- shows_recorded/duels_recorded/
+        # by_reason are meant to describe real model behavior, so a
+        # scripted show must not inflate them, even though ScriptedAgent
+        # still gets its own row in `models` (it's a real, useful baseline
+        # to compare against, just not a "model" to blend into model
+        # aggregates).
+        self._record_show("ollama", "real-model", seed=1)
+        self._record_show("scripted", "scripted", seed=2)
+        stats = get_stats(self.db_path)
+        self.assertEqual(stats["shows_recorded"], 1)
+        self.assertEqual(stats["scripted_shows_recorded"], 1)
+        self.assertEqual(stats["duels_recorded"], 1)
+        self.assertEqual(sum(r["total"] for r in stats["by_reason"].values()), 1)
+        models = {(m["backend"], m["model"]): m for m in stats["models"]}
+        self.assertIn(("scripted", "scripted"), models)
+
 
 if __name__ == "__main__":
     unittest.main()

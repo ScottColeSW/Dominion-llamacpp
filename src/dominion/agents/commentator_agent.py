@@ -21,8 +21,8 @@ from typing import Any, Dict, Optional
 
 from ..inference.base import InferenceClient
 from ..inference.config import settings
-from ..engine.models import Player
-from .llm_agent import _trim_to_last_sentence
+from ..engine.models import GameState, Player
+from .llm_agent import _history_block, _trim_to_last_sentence
 
 
 def _stats_for(stats_snapshot: Optional[Dict[str, Any]], backend: str,
@@ -44,7 +44,11 @@ class ScriptedCommentatorAgent:
         self.rng = rng
 
     async def react_to_matchup(self, challenger: Player, defender: Player,
-                                tested_domain: str) -> str:
+                                tested_domain: str, game: Optional[GameState] = None) -> str:
+        # game accepted but unused here -- genuinely decorative, no duel
+        # count or show history needed for a canned line. Matches
+        # LLMCommentatorAgent's signature so its super().react_to_matchup(...)
+        # fallback call doesn't need special-casing.
         templates = [
             f"{challenger.kingdom_name} really thinks they can take "
             f"{defender.kingdom_name} on {tested_domain} tonight.",
@@ -95,7 +99,7 @@ class LLMCommentatorAgent(ScriptedCommentatorAgent):
         self.stats_snapshot = stats_snapshot
 
     async def react_to_matchup(self, challenger: Player, defender: Player,
-                                tested_domain: str) -> str:
+                                tested_domain: str, game: Optional[GameState] = None) -> str:
         # Scott caught a real gap here live: the commentator kept saying
         # there was "no real recorded history" on a player who very
         # visibly had a real win streak going RIGHT NOW, on screen. The
@@ -175,18 +179,33 @@ class LLMCommentatorAgent(ScriptedCommentatorAgent):
         stats_block = " ".join(stats_lines) if stats_lines else (
             "No cross-show recorded history on either contestant yet -- this is still early data."
         )
+        # Scott: "Commentator is still wrong about duel counts and what has
+        # happened in this game so far." Real gap: this call never accepted
+        # `game` at all, unlike every other live agent call (choose_target,
+        # decide_continue, intro_line_combined) -- it had no duel count and
+        # no access to GameState.memory's "SHOW SO FAR" feed to be right
+        # OR wrong about; any specific duel count or show-history claim it
+        # made was pure invention. game.duel_count counts duels already
+        # RESOLVED (incremented after run_duel returns, in game.py) -- this
+        # call fires during the challenge announcement, before that
+        # increment, so the upcoming duel is duel_count + 1.
+        duel_count_line = (
+            f" This will be duel #{game.duel_count + 1} of tonight's show." if game else ""
+        )
         prompt = (
             "You are the color commentator on a live TV trivia game show, a separate "
             "voice from the host, there to give the audience real insight, not just hype.\n"
             f"Upcoming matchup: {challenger.kingdom_name} challenging {defender.kingdom_name} "
-            f"on {tested_domain}.\n"
-            f"What's actually happening in TONIGHT'S show so far: {live_block}\n"
+            f"on {tested_domain}.{duel_count_line}\n"
+            f"What's actually happening in TONIGHT'S show so far: {live_block}"
+            f"{_history_block(game)}\n"
             f"Cross-show history you have on these two contestants (may be sparse -- that's "
             f"fine, the live facts above are real either way): {stats_block}\n"
             "React live, on air, in ONE short sentence that actually uses at least one of "
             "these real facts -- prefer tonight's live facts when they're the more "
             "interesting story, don't just default to 'no history' when a real streak is "
-            "sitting right there. Do not invent a stat that wasn't given to you. Tile count "
+            "sitting right there. Do not invent a stat, a duel count, or a past event that "
+            "wasn't given to you above. Tile count "
             "and cross-show win rate are separate, unrelated numbers -- a player's tile "
             "count can grow from board mechanics that have nothing to do with their own "
             "skill (a reshuffle, another player's leftover territory landing on them), so "
@@ -199,7 +218,7 @@ class LLMCommentatorAgent(ScriptedCommentatorAgent):
         result = await self.client.generate(self.model, prompt, timeout=settings.generate_timeout,
                                              num_predict=70)
         return _trim_to_last_sentence(result.text.strip()) if result.text else await super().react_to_matchup(
-            challenger, defender, tested_domain)
+            challenger, defender, tested_domain, game=game)
 
     async def react_to_advantage(self, player: Player, streak: int) -> str:
         prompt = (

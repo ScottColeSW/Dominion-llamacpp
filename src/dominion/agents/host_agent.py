@@ -60,7 +60,7 @@ class ScriptedHostAgent:
     async def announce_challenge(self, challenger: Player, defender: Player,
                                   tested_domain: str, challenger_streak: int = 0,
                                   defender_streak: int = 0, challenger_territory: int = 0,
-                                  defender_territory: int = 0) -> str:
+                                  defender_territory: int = 0, final_duel: bool = False) -> str:
         # M32 Fix 1: ports web/index.html's old preduelHostLine -- a
         # SEPARATE scripted line that used to fire right before this
         # exact announcement, from its own streak/territory-aware
@@ -68,6 +68,25 @@ class ScriptedHostAgent:
         # two disconnected code paths; this folds that tiered logic
         # (hot streak first, then a real size mismatch, then the
         # existing generic pool) directly into this one call instead.
+        #
+        # Scott caught this live: "no one seemed to know when it was the
+        # last duel of the whole game." With exactly two active players
+        # left, this next duel's loser is eliminated and the winner is
+        # therefore, by construction, the sole owner of the entire board
+        # (see game.py's is_final_duel) -- genuinely the deciding duel of
+        # the whole show, not just another matchup. Checked FIRST, ahead
+        # of even a hot streak or a territory mismatch: knowing this is
+        # the last one matters more than either.
+        if final_duel:
+            return self.rng.choice([
+                f"This is it -- whoever wins this one walks away with the ENTIRE board. "
+                f"{challenger.kingdom_name} against {defender.kingdom_name}, winner takes all.",
+                f"Down to just these two. One duel left, and the whole board goes to whoever "
+                f"wins it -- {challenger.kingdom_name} versus {defender.kingdom_name}, on "
+                f"{tested_domain}.",
+                f"This is the final duel of the night. {challenger.kingdom_name} and "
+                f"{defender.kingdom_name}, everything comes down to this one.",
+            ])
         hot_streak = max(challenger_streak, defender_streak)
         if hot_streak >= 3:
             hot_player, cool_player = (
@@ -214,7 +233,7 @@ class LLMHostAgent(ScriptedHostAgent):
     async def announce_challenge(self, challenger: Player, defender: Player,
                                   tested_domain: str, challenger_streak: int = 0,
                                   defender_streak: int = 0, challenger_territory: int = 0,
-                                  defender_territory: int = 0) -> str:
+                                  defender_territory: int = 0, final_duel: bool = False) -> str:
         # M32 Fix 1: same streak/territory context ScriptedHostAgent's
         # fallback now uses (ported from the old, separate
         # preduelHostLine) -- added to the prompt only when actually
@@ -222,6 +241,18 @@ class LLMHostAgent(ScriptedHostAgent):
         # model can reference a real streak or size mismatch instead of
         # never hearing about either.
         context_lines = ""
+        # Scott: "no one seemed to know when it was the last duel of the
+        # whole game." Same final_duel signal ScriptedHostAgent's fallback
+        # now leads with (see there for why exactly-2-active-players means
+        # this duel decides the whole show) -- told to the model as an
+        # unambiguous fact, not just folded in as one more context line,
+        # so it can't get lost under a streak/territory mention instead.
+        if final_duel:
+            context_lines += (
+                "\nTHIS IS THE FINAL DUEL OF THE ENTIRE SHOW -- only these two players are "
+                "still active, so whoever wins this one becomes the sole owner of the whole "
+                "board and wins the grand prize. Make sure the audience knows this is it."
+            )
         hot_streak = max(challenger_streak, defender_streak)
         if hot_streak >= 3:
             hot_name = (challenger.kingdom_name if challenger_streak >= defender_streak
@@ -262,7 +293,7 @@ class LLMHostAgent(ScriptedHostAgent):
         return _trim_to_last_sentence(result.text.strip()) if result.text else await super().announce_challenge(
             challenger, defender, tested_domain, challenger_streak=challenger_streak,
             defender_streak=defender_streak, challenger_territory=challenger_territory,
-            defender_territory=defender_territory)
+            defender_territory=defender_territory, final_duel=final_duel)
 
     async def announce_finale(self, champion: Player, total_duels: int, prize: int) -> str:
         prompt = (

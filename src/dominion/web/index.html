@@ -442,8 +442,17 @@
        align-items: stretch below), so the chatter feed can genuinely fill
        whatever vertical room that leaves rather than stopping at a fixed
        max-height -- Scott's ask: audience bigger, board smaller, "reactions
-       scroll being the full height remaining." */
-    display: flex; flex-direction: column;
+       scroll being the full height remaining." Flexbox stretch alone only
+       grows every row participant to match whichever is naturally
+       TALLEST, which let unbounded chatter content make this panel
+       itself the tallest and stretch the board's own row taller to
+       match it -- see syncSidePanelHeightsToBoard's own comment. The
+       real cap now comes from JS setting max-height directly from the
+       board's measured rendered height; overflow: hidden here is the
+       safety net so nothing can visually spill past that even if the
+       amphitheater's own fixed-size content (flex-shrink: 0) plus a
+       full chatter feed briefly exceeds it. */
+    display: flex; flex-direction: column; overflow: hidden;
   }
   /* A small kicker label, since a plain row of colored dots read as
      ambiguous -- Scott's own guess that it might be "the in-house
@@ -527,7 +536,10 @@
     width: 100%; max-width: 300px; flex: 1 1 220px;
     background: rgba(23,16,42,0.5); border: 1px solid #2c1f45; border-radius: 14px;
     padding: 10px 16px 12px;
-    display: flex; flex-direction: column;
+    /* Same height-cap fix as .audience-panel (see its own comment and
+       syncSidePanelHeightsToBoard) -- this panel shares the identical
+       flexbox-stretch-doesn't-cap-to-a-specific-sibling issue. */
+    display: flex; flex-direction: column; overflow: hidden;
   }
   .scoreboard-label {
     font-size: 0.78em; text-transform: uppercase; letter-spacing: 2px;
@@ -548,6 +560,11 @@
     white-space: nowrap; color: var(--text);
   }
   .scoreboard-count { color: var(--gold); font-weight: 700; flex-shrink: 0; }
+  /* Cash won from capturing territory (game.py's TILE_PRIZE_VALUE), shown
+     right alongside the tile count itself -- a distinct green rather than
+     the count's own gold, so the two numbers (how much land vs. how much
+     it's actually paid out) read as separate facts at a glance. */
+  .scoreboard-prize { color: #7cd992; font-weight: 600; font-size: 0.85em; flex-shrink: 0; margin-left: 6px; }
   /* The very top of the board -- highlighted the same way a leaderboard
      leader usually is, since "who's actually winning right now" is the
      whole point of this panel existing. */
@@ -639,8 +656,38 @@
     position: fixed; inset: 0; z-index: 1200; background: #050208;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     transition: opacity .6s ease;
+    /* Scott: "the models are not selectable/unselectable again." This
+       card is solid/opaque and covers the whole viewport, and used to
+       default to pointer-events: auto (only switching to none once
+       .fade landed) -- so a user's very FIRST click on the page, if it
+       happened to land on a model checkbox underneath, got swallowed by
+       THIS card's own dismiss handler instead of ever reaching the
+       checkbox. Confirmed live: click a checkbox as the very first
+       interaction, it silently does nothing; click it again right after,
+       it works. pointer-events: none from the start fixes this at the
+       source -- a click now passes straight through to whatever's
+       actually underneath (the checkbox toggles correctly) while still
+       bubbling up to document, which is all waitForFirstInteraction's
+       own listener ever needed to detect the gesture and unlock audio.
+       The card's own visual fade (opacity transition) is completely
+       unaffected; this only ever controlled whether it blocked clicks,
+       never whether it faded. */
+    pointer-events: none;
   }
-  #preShowTitleCard.fade { opacity: 0; pointer-events: none; }
+  /* Scott: "splash screen didn't proceed to the board screen after I
+     clicked. the host started talking correctly, but no screen change."
+     Real cause: this rule -- the ONE thing that actually makes .fade
+     visually fade -- was accidentally deleted outright by the edit above
+     (pointer-events: none moved onto the base rule, but opacity: 0 never
+     got carried over with it). The .fade CLASS was still being added
+     correctly by JS, and pointer-events: none correctly let clicks pass
+     through to the real show running underneath (which is exactly why
+     the Host still spoke and the show still progressed) -- but with no
+     CSS rule left to actually apply for .fade, the card's opacity never
+     changed from 1, so it just sat there, fully opaque, permanently
+     covering the entire viewport no matter how far the real show behind
+     it had actually gotten. */
+  #preShowTitleCard.fade { opacity: 0; }
   .pre-show-title {
     font-size: 3.2em; font-weight: 900; letter-spacing: 6px; color: var(--gold);
     text-shadow: 0 0 30px rgba(245,197,66,0.5);
@@ -919,6 +966,21 @@
   .stage-kicker {
     text-align: center; font-size: 0.85em; letter-spacing: 3px; text-transform: uppercase;
     color: var(--gold); margin-bottom: 10px;
+  }
+  /* Scott: "no one seemed to know when it was the last duel of the whole
+     game." The Host says so out loud now (see host_agent.py's final_duel
+     clause), but a spoken line alone can be missed (muted tab, stepped
+     away) -- this is the same fact, always on screen for the whole
+     decisive duel, not just spoken once at the start of it. */
+  .final-duel-banner {
+    display: none; text-align: center; font-size: 1.1em; font-weight: 800;
+    letter-spacing: 2px; text-transform: uppercase; color: #ff5a40;
+    text-shadow: 0 0 14px rgba(255,90,64,0.65); margin-bottom: 10px;
+    animation: finalDuelPulse 1.6s ease-in-out infinite;
+  }
+  .final-duel-banner.show { display: block; }
+  @keyframes finalDuelPulse {
+    0%, 100% { opacity: 0.75; } 50% { opacity: 1; }
   }
   /* Shared height cap for the two player badges and the image panel
      between them, so the question image can never render larger than the
@@ -1412,6 +1474,7 @@
 
   <div id="duelStage">
     <div class="stage-kicker">The Challenge Stage</div>
+    <div class="final-duel-banner" id="finalDuelBanner">&#127942; Final Duel &mdash; Winner Takes All</div>
     <div class="duel-domain-tag" id="duelDomainTag">Domain on the line: &mdash;</div>
     <div class="stage-players">
       <div class="duel-player" id="playerLeft">
@@ -1591,6 +1654,7 @@ const clockLeft = document.getElementById('clockLeft');
 const clockRight = document.getElementById('clockRight');
 const duelImage = document.getElementById('duelImage');
 const duelDomainTag = document.getElementById('duelDomainTag');
+const finalDuelBanner = document.getElementById('finalDuelBanner');
 const duelGuess = document.getElementById('duelGuess');
 const duelSayLabel = document.getElementById('duelSayLabel');
 const duelGuessText = document.getElementById('duelGuessText');
@@ -1600,7 +1664,39 @@ const bonusRight = document.getElementById('bonusRight');
 const winnerTagLeft = document.getElementById('winnerTagLeft');
 const winnerTagRight = document.getElementById('winnerTagRight');
 const boardSvg = document.getElementById('boardSvg');
+const audiencePanelEl = document.getElementById('audiencePanel');
+const scoreboardPanelEl = document.getElementById('scoreboardPanel');
 const tileLayerEl = document.getElementById('tileLayer');
+
+// Scott: "the in-house audience block is too long. it can only extend to
+// the height of the board." #lowerRow's align-items: stretch (see its own
+// CSS comment) was meant to size the audience/scoreboard side panels to
+// match the board, but flexbox stretch doesn't work that way -- it grows
+// EVERY item in the row to match whichever one is naturally TALLEST, and
+// the audience panel's own chatter feed has no inherent cap, so a show
+// with plenty of accumulated chatter made the audience panel itself the
+// tallest participant, stretching the whole row (board included) to
+// match ITS height, not the other way around. There's no pure-CSS way to
+// say "cap this sibling to that OTHER sibling's real rendered height," so
+// this measures the board's actual height directly and applies it as an
+// explicit max-height on both side panels -- authoritative regardless of
+// how much chatter/scoreboard content has accumulated, and stays correct
+// across any resize or responsive breakpoint via ResizeObserver (a plain
+// window resize listener would miss the board's OWN size changing, e.g.
+// the mobile/tablet layout's max-width breakpoints).
+function syncSidePanelHeightsToBoard() {
+  const h = boardSvg.getBoundingClientRect().height;
+  if (h <= 0) return;
+  if (audiencePanelEl) audiencePanelEl.style.maxHeight = h + 'px';
+  if (scoreboardPanelEl) scoreboardPanelEl.style.maxHeight = h + 'px';
+}
+if (window.ResizeObserver) {
+  new ResizeObserver(syncSidePanelHeightsToBoard).observe(boardSvg);
+} else {
+  // Old-browser fallback: at least catches window resizes, even without
+  // ResizeObserver's finer-grained "the board's own box changed" signal.
+  window.addEventListener('resize', syncSidePanelHeightsToBoard);
+}
 const curtainOverlay = document.getElementById('curtainOverlay');
 const curtainText = document.getElementById('curtainText');
 const curtainSparkles = document.getElementById('curtainSparkles');
@@ -1621,6 +1717,13 @@ const quitBtn = document.getElementById('quitBtn');
 // `let`, not `const`, specifically so that sync can happen at all.
 let BASE_CLOCK = 30;
 const BONUS_SECONDS = 5;
+// Same "one real place, synced from show_start" pattern as BASE_CLOCK --
+// the real, authoritative value lives in agents/llm_agent.py's
+// MIN_CHARGED_SECONDS. Read by the live clock tick's reconcile step
+// (see the agentThinkingEl handler) to know how long a live attempt is
+// guaranteed to be charged AT LEAST, regardless of how fast the real
+// reply actually came back.
+let LIVE_TURN_CHARGE_FLOOR_SECONDS = 3;
 // #15: which backend actually ran this show (ollama/llamacpp/scripted) --
 // set once from show_start, read by the champion badge's "Powered by"
 // tag. Never read anywhere in this file before #15; every other backend
@@ -2404,7 +2507,12 @@ const HOST_LINES = {
   // moment on screen.
   stillThinking: [
     (name) => `Come on, ${name}, the clock isn't going to wait!`,
-    (name) => `${name}, the board is on the edge of its seat right now.`,
+    // Scott: "why does the host say '...the board is waiting...' instead
+    // of 'we are all waiting'?" -- fair catch, a game BOARD doesn't have
+    // a seat to sit on the edge of; it's the audience/room that's
+    // waiting, matching every other line in this pool's own framing
+    // ("the whole room is leaning in").
+    (name) => `${name}, we're all on the edge of our seats right now.`,
     (name) => `Any second now, ${name}...`,
     (name) => `We need an answer, ${name} -- the clock doesn't care how tough this one is!`,
     (name) => `Let's go, ${name}! Time's ticking!`,
@@ -2447,15 +2555,6 @@ function pickHostVoice() {
   }
   return voices.find(v => v.lang && v.lang.startsWith('en')) || voices[0];
 }
-if (window.speechSynthesis) {
-  // The voice list loads asynchronously on first page load in some
-  // browsers (Chrome in particular) -- this fires once it's actually
-  // populated, so the very first host line of a show isn't silently stuck
-  // with no voice chosen yet.
-  speechSynthesis.onvoiceschanged = () => { hostVoice = pickHostVoice(); };
-  hostVoice = pickHostVoice();
-}
-
 // M11: the Commentator gets its own voice, deliberately distinct from
 // hostVoice (excluded below) so the two AI voices are told apart by ear,
 // not just by the banner's own color -- same "excluding whichever one the
@@ -2473,10 +2572,26 @@ function pickCommentatorVoice() {
   return voices.find(v => v.lang && v.lang.startsWith('en') && v !== hostVoice) || voices[0];
 }
 if (window.speechSynthesis) {
+  // Scott: "host voice changed just now." Root cause: two SEPARATE
+  // onvoiceschanged assignments used to exist here (the second silently
+  // overwrote the first -- it's a single-handler property, not
+  // addEventListener), and both unconditionally RE-PICKED hostVoice/
+  // commentatorVoice every time this event fired. That event's real job
+  // is only to catch the case where NO voice was available yet on the
+  // very first synchronous call below (the voice list loads
+  // asynchronously in some browsers, Chrome in particular) -- but it can
+  // fire MORE than once, e.g. as Windows SAPI discovers additional
+  // installed voices over time, not just once at page load. If a
+  // higher-preference voice became available partway through an
+  // already-running show, the old unconditional re-pick would silently
+  // swap the Host's (or Commentator's) voice out from under a show
+  // that's already using it. Guarded now: once a real voice has actually
+  // been chosen, a later firing of this same event never re-picks it.
   speechSynthesis.onvoiceschanged = () => {
-    hostVoice = pickHostVoice();
-    commentatorVoice = pickCommentatorVoice();
+    if (!hostVoice) hostVoice = pickHostVoice();
+    if (!commentatorVoice) commentatorVoice = pickCommentatorVoice();
   };
+  hostVoice = pickHostVoice();
   commentatorVoice = pickCommentatorVoice();
 }
 // Shared by the host and every contestant below -- one utterance at a time
@@ -2819,12 +2934,18 @@ function burstHostLine(data) {
   return pickVaried(templates, 'burst');
 }
 function scrambleHostLine(data) {
+  // Scott: "the tile prize money could escalate at least at the board
+  // scramble, to escalate the tension of money on the line" -- new_tile_prize
+  // (game.py's TILE_PRIZE_VALUE * TILE_PRIZE_ESCALATION_MULTIPLIER) is a
+  // real, already-in-effect number by the time this line airs, not a
+  // teaser, so it's stated plainly rather than invented.
   const templates = [
     "Hold onto your hats, the board is changing shape!", "Here comes the Scramble, everybody!",
     "Everything you thought you knew about this board is about to change!",
     "Nobody's territory is safe now!", "The whole board just got shaken up!",
     `Down to ${data.active_players} kingdoms, and the board just redrew itself around them!`,
     "Territory nobody earned, gone in an instant. That's the Scramble for you.",
+    `The board's reshuffled, and so is the money -- every tile from here on is worth ${fmtMoney(data.new_tile_prize)}!`,
   ];
   return pickVaried(templates, 'scramble');
 }
@@ -3184,6 +3305,32 @@ function playCrowdBlip() {
   playTone(1046.50 + Math.random() * 200, 0, 0.12, 'sine', 0.05);
 }
 
+// Scott: "the sound on the guesses is wrong. we need the audience cheers
+// and boos back... can you make a boo sound to use until I make one?" A
+// synthesized placeholder standing in for a real recorded crowd-boo clip --
+// a low, descending groan (sawtooth, sliding down rather than a fixed
+// pitch) so it reads as clearly disapproving next to playCrowdBlip's
+// bright, fixed-pitch sine used for a correct answer. Swap this out for a
+// real recorded clip in SOUND_FILES/playRecordedSound whenever one's
+// added; nothing else in the wrong-answer reaction path needs to change.
+function playCrowdBoo() {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const t0 = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(220 + Math.random() * 30, t0);
+  osc.frequency.exponentialRampToValueAtTime(100, t0 + 0.55);
+  gain.gain.setValueAtTime(0, t0);
+  gain.gain.linearRampToValueAtTime(0.14, t0 + 0.06);
+  gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.6);
+  osc.connect(gain);
+  gain.connect(masterGain);
+  osc.start(t0);
+  osc.stop(t0 + 0.65);
+}
+
 // Real-time reaction to a single duel turn: a chance at a short audience
 // exclamation, and a smaller chance at a catty aside from another player
 // watching from the sidelines. Deliberately not on every turn -- constant
@@ -3215,7 +3362,14 @@ async function maybeReactToTurn(d) {
   if (Math.random() < audienceChance) {
     addChatterLine(pickVaried(REACTION_EXCLAIM, 'crowdExclaim'), 'audience', 'Crowd');
     bounceAmphitheater();
-    playCrowdBlip();
+    // Scott: "the sound on the guesses is wrong. we need the audience
+    // cheers and boos back." A genuinely wrong guess gets the boo instead
+    // of the same bright blip a correct answer gets -- previously this
+    // fired the identical tone regardless of outcome. 'passed' isn't a
+    // wrong guess (nothing to boo -- it already gets its own playCrowdBlip
+    // in playDuelTurn's own 'passed' branch), so it keeps the neutral blip.
+    if (d.outcome === 'incorrect') playCrowdBoo();
+    else playCrowdBlip();
   }
   if (Math.random() < 0.18) {
     const otherId = pickOtherPlayer([stageChallengerId, stageDefenderId]);
@@ -3543,6 +3697,17 @@ const SOUND_FILES = {
   crowdRally: 'sounds/audience/crowd-rally.mp3',
   crowdConcert: 'sounds/audience/crowd-concert.mp3',
   crowdApplause: 'sounds/audience/crowd-applause.mp3',
+  // Scott: "I've added the sound for 'thinking' moments." A short one-shot
+  // cue (same short-hit treatment as the crowd tracks above, not a full
+  // underscore track) -- played the instant the agent_thinking/
+  // host_thinking banner first appears (see the dispatch loop's own
+  // handlers), i.e. the moment a real live call actually starts, not on
+  // every subsequent poll of the same still-pending decision. Renamed
+  // from the original filename on disk (retro_computer_beepi_#3-....mp3)
+  // -- a literal "#" in a path passed to new Audio() gets parsed as a URL
+  // fragment delimiter, silently truncating the actual filename and
+  // failing to load.
+  thinking: 'sounds/thinking-beep.mp3',
 };
 const soundNodes = {}; // key -> { audioEl } -- lazily created, reused across plays
 
@@ -3967,8 +4132,13 @@ function cardFor(ev) {
         question_cap: 'question limit reached',
       };
       const reasonText = REASON_TEXT[d.reason] || d.reason.replace('_', ' ');
+      // Tile prize money -- Scott: "add prize money to the tiles, so every
+      // win gives them some additional incentive." Only worth stating when
+      // it's actually non-zero (always true for a real win, but a defensive
+      // check regardless -- see game.py's tile_prize).
+      const prizeText = d.tile_prize ? ` Banks <b>${fmtMoney(d.tile_prize)}</b> in prize money.` : '';
       return card('result prize-highlight', 'Duel Result',
-        `<b>${displayName(d.winner_id)}</b> defeats ${displayName(d.loser_id)} (${reasonText}). New domain: <b>${d.winner_domain_after}</b>.`, '&#127942;');
+        `<b>${displayName(d.winner_id)}</b> defeats ${displayName(d.loser_id)} (${reasonText}). New domain: <b>${d.winner_domain_after}</b>.${prizeText}`, '&#127942;');
     }
     case 'advantage_earned':
       return card('advantage prize-highlight', 'Advantage Earned',
@@ -3987,7 +4157,8 @@ function cardFor(ev) {
       // BURST_PRIZE_BONUS.
       return card('burst prize-highlight', 'Burst Prize', `After duel ${d.duel_count}: ${displayName(d.leader_id)} leads with <b>${d.territory}</b> region(s) (${d.leader_domain}) and banks a <b>${fmtMoney(d.bonus)}</b> burst prize.`, '&#127942;');
     case 'scramble':
-      return card('scramble', 'The Scramble', `The board redraws around ${d.active_players} remaining players.`);
+      return card('scramble', 'The Scramble',
+        `The board redraws around ${d.active_players} remaining players. Tile prizes escalate to <b>${fmtMoney(d.new_tile_prize)}</b> from here on.`);
     case 'continues':
       return card('challenge', 'Pushing On', `${displayName(d.player_id)} keeps the spotlight and continues.`);
     case 'retreats':
@@ -4315,6 +4486,16 @@ let playerStartDomain = {};
 // the winner; not cleared for eliminated players, but they're never shown
 // again so that's harmless.
 let playerStreak = {};
+// player_id -> cumulative cash won so far tonight from capturing
+// territory (game.py's TILE_PRIZE_VALUE, awarded per tile on every duel
+// win), from duel_result's winner_prize_money field -- Scott: "add prize
+// money to the tiles, so every win gives them some additional incentive,
+// and we can put it on the Territory board along with the count." Kept
+// as its own dict (not derived from tile count on the fly) since the
+// server is the one authoritative source: it only ever grows, even if a
+// tile it was earned for later changes hands again, which a live
+// count-times-value calc here couldn't reproduce.
+let playerPrizeMoney = {};
 // player_id -> temperament_label ("Cautious"/"Balanced"/"Aggressive"), from
 // draw_assignment. Fixed for the whole run, folded into the expertise line
 // in the duel badge so the audience can see a contestant's playing style
@@ -4503,7 +4684,10 @@ function renderScoreboard() {
     const count = document.createElement('span');
     count.className = 'scoreboard-count';
     count.textContent = counts[playerId];
-    row.append(rank, dot, name, count);
+    const prize = document.createElement('span');
+    prize.className = 'scoreboard-prize';
+    prize.textContent = fmtMoney(playerPrizeMoney[playerId] || 0);
+    row.append(rank, dot, name, count, prize);
     scoreboardListEl.appendChild(row);
   });
 }
@@ -4917,6 +5101,26 @@ function flyBackToTile(cachedFromRect, playerId) {
 // next one's own duel_result can ever land.
 let lastWinnerStageRect = null;
 let clockState = { left: BASE_CLOCK, right: BASE_CLOCK };
+// Scott: "the clock is ticking down on the wrong player." Root cause (found
+// after a full audit, see the plan this was built from): fire_commentator
+// (game.py) runs the Commentator's live matchup reaction as a detached
+// background task, so its commentator_line event can land, over the wire,
+// in the middle of a DIFFERENT duel's active liveTick window. The old
+// reconcile block below fired on ANY non-thinking event, on the implicit
+// assumption that "whatever arrives next after an agent_thinking banner is
+// that same decision's own completion" -- false once a background-emitted
+// event can interleave. That premature commit corrupted clockState before
+// the real duel_turn for the in-flight attempt ever arrived. Fixed by
+// gating the commit on the SPECIFIC turn it belongs to (liveTick.playerId
+// below), not on adjacency in the stream. A capped trace
+// (window.__clockTrace) and console.warn tripwires are added alongside so
+// any FUTURE variant of this class of bug is caught with full context on
+// first occurrence, not guessed at again.
+window.__clockTrace = [];
+function traceClock(event, detail) {
+  window.__clockTrace.push({ t: Date.now(), event, ...detail });
+  if (window.__clockTrace.length > 200) window.__clockTrace.shift();
+}
 // Drives a genuinely live, real-time-ticking clock display while a live
 // agent_thinking('attempt') call is actually in flight -- Scott: "game
 // clocks are not independantly counting down in battles... they have to be
@@ -4925,14 +5129,22 @@ let clockState = { left: BASE_CLOCK, right: BASE_CLOCK };
 // short compressed animation once the reply landed -- exactly the
 // "stalling, then jumps" behavior reported. Set by startLiveClockTick,
 // read/cleared by the generic "thinking period ended" handler below;
-// { clockKey, intervalId, startedAt, fromVal, pausedBaseline }.
+// { clockKey, intervalId, startedAt, fromVal, pausedBaseline, playerId }.
+// playerId is what lets the reconcile block below confirm a duel_turn
+// actually belongs to THIS tick before committing it -- see its own comment.
 let liveTick = null;
 function startLiveClockTick(playerId) {
   // Defensive only -- duel.py's on_before_attempt/on_turn pairing means
   // exactly one duel_turn always follows, which is what normally clears
   // this. Doesn't commit the stale tick's value first, unlike the normal
   // clear path below -- shouldn't ever actually fire given that pairing.
-  if (liveTick) stopLiveClockTick();
+  // Warned now (not silent) -- if this ever DOES fire, it's a real pairing
+  // violation worth knowing about immediately, not just quietly patched over.
+  if (liveTick) {
+    console.warn('startLiveClockTick: a previous liveTick was still active', liveTick);
+    traceClock('startLiveClockTick.staleTickOverwritten', { stale: liveTick, newPlayerId: playerId });
+    stopLiveClockTick();
+  }
   const isChallenger = playerId === stageChallengerId;
   const clockKey = isChallenger ? 'left' : 'right';
   const clockEl = isChallenger ? clockLeft : clockRight;
@@ -4946,10 +5158,12 @@ function startLiveClockTick(playerId) {
     const elapsedSeconds = pausedAwareElapsed(startedAt, pausedBaseline) / 1000;
     clockEl.textContent = displaySeconds(fromVal - elapsedSeconds);
   }, 100);
-  liveTick = { clockKey, intervalId, startedAt, fromVal, pausedBaseline };
+  liveTick = { clockKey, intervalId, startedAt, fromVal, pausedBaseline, playerId };
+  traceClock('startLiveClockTick', { playerId, clockKey, fromVal, stageChallengerId, stageDefenderId });
 }
 function stopLiveClockTick() {
   if (liveTick) clearInterval(liveTick.intervalId);
+  traceClock('stopLiveClockTick', { hadTick: !!liveTick, playerId: liveTick?.playerId });
   liveTick = null;
 }
 // Tracks whatever prompt is currently on screen so the reveal animation
@@ -4962,11 +5176,34 @@ let lastDuelPrompt = null;
 // now two pre_duel_intro events (challenger, then defender) stream in
 // between the badge setup and the actual first duel_turn -- firing the
 // countdown early would play it out from underneath those intro lines.
-// Set true here, consumed (and cleared) by the first duel_turn of THIS
-// duel, so it fires exactly once, after both sides have had their say.
+// Set true here, consumed (and cleared) by the agent_thinking that STARTS
+// the challenger's first attempt of THIS duel (not the duel_turn that
+// completes it -- see that call site's own comment for why: the clock's
+// reconcile block commits unconditionally the instant a duel_turn
+// arrives, so firing this on completion meant the clock had already
+// moved before the audience was told to get ready), so it fires exactly
+// once, after both sides have had their say and before either clock
+// starts moving.
 let duelCountdownPending = false;
 
 async function openStage(d) {
+  // Scott: "the winner doesn't slide into the challenger position...
+  // rather they move to the challenger's position out of the blue." A
+  // continuing winner ALWAYS becomes the next duel's CHALLENGER
+  // (game.py keeps the spotlight on them), but they only visually stay
+  // put if they were ALSO the challenger last duel -- shouldToddle below
+  // only covers a genuinely NEW pick, and the ordinary case just
+  // silently trusts "they're already standing there." That trust is
+  // wrong specifically when they were the DEFENDER (right side) last
+  // duel: their face just snapped into the left badge with no
+  // transition connecting the two positions at all. Detected here,
+  // before stageChallengerId/stageDefenderId get overwritten for the
+  // new duel -- reuses the exact rect duel_result's own handler already
+  // caches for the retreat case (lastWinnerStageRect), the one case
+  // that rect was captured for but never actually consumed.
+  const slideFromDefenderRect =
+    (d.challenger_id === stageDefenderId && d.challenger_id !== stageChallengerId)
+      ? lastWinnerStageRect : null;
   stageChallengerId = d.challenger_id;
   stageDefenderId = d.defender_id;
   stageTestedDomain = d.tested_domain;
@@ -5024,6 +5261,10 @@ async function openStage(d) {
   streakRight.textContent = rightStreak >= 2 ? `\u{1F525} ${rightStreak}-win streak` : '';
   streakRight.classList.toggle('show', rightStreak >= 2);
   duelDomainTag.textContent = 'Domain on the line: ' + d.tested_domain;
+  // Scott: "no one seemed to know when it was the last duel of the whole
+  // game." Stays visible for the whole decisive duel, not just a line
+  // spoken once at the start of it -- see the CSS rule's own comment.
+  finalDuelBanner.classList.toggle('show', !!d.final_duel);
   // Left blank rather than a placeholder line: the countdown should be the
   // first thing that appears in this panel, not a "the image comes up
   // first" caption that then gets replaced by the countdown a moment later.
@@ -5042,7 +5283,41 @@ async function openStage(d) {
   const duelBaseClock = d.base_clock || BASE_CLOCK;
   const leftStart = duelBaseClock + (d.challenger_using_bonus ? BONUS_SECONDS : 0);
   const rightStart = duelBaseClock + (d.defender_using_bonus ? BONUS_SECONDS : 0);
+  // Tripwire: a non-null liveTick here means a duel_turn never arrived to
+  // complete the previous attempt before this new duel opened -- an
+  // engine-side on_before_attempt/on_turn pairing violation, not just a
+  // frontend quirk. Should never actually happen; worth knowing loudly if
+  // it ever does rather than silently overwriting clockState out from
+  // under it.
+  //
+  // Scott: "first duel charged 3 seconds on the challenger before the
+  // match started... I wish we could isolate this." Root cause: this
+  // branch only ever WARNED -- it never actually stopped the stale
+  // interval. startLiveClockTick's own setInterval callback writes
+  // straight to clockEl.textContent every 100ms (not through clockState),
+  // so a leftover tick from the PREVIOUS duel's last turn kept running
+  // right through this reset, and its very next 100ms fire overwrote the
+  // fresh "30" this function just set two lines below with leftover math
+  // from a duel that's already over -- landing on whichever of
+  // left/right the stale tick's own clockKey happened to be, which reads
+  // exactly as "the challenger's clock was already docked before
+  // anything happened." Now actually stopped here, not just logged, so a
+  // pairing violation (if one ever recurs) can't bleed into the next
+  // duel's display even though it's still surfaced loudly below.
+  if (liveTick) {
+    console.warn('openStage: liveTick still active when a new duel opened', liveTick);
+    traceClock('openStage.staleLiveTickAtOpen', { stale: liveTick, newChallengerId: d.challenger_id, newDefenderId: d.defender_id });
+    showUnmissablePopup(
+      `\u{26A0}\u{FE0F} STALE CLOCK TICK AT DUEL OPEN<br>`
+      + `A live tick from the previous duel was still running.<br>`
+      + `<span style="font-size:14px;font-weight:400;">(click to download full clock trace)</span>`,
+      { staleLiveTick: liveTick, newChallengerId: d.challenger_id, newDefenderId: d.defender_id,
+        clockTrace: window.__clockTrace }
+    );
+    stopLiveClockTick();
+  }
   clockState = { left: leftStart, right: rightStart };
+  traceClock('openStage.reset', { challengerId: d.challenger_id, defenderId: d.defender_id, leftStart, rightStart });
   clockLeft.textContent = String(leftStart);
   clockRight.textContent = String(rightStart);
   playerLeft.classList.remove('active', 'flash-correct', 'flash-wrong', 'flash-pass', 'victory',
@@ -5093,7 +5368,22 @@ async function openStage(d) {
       void faceLeft.offsetWidth; // force reflow so the animation replays every time
       faceLeft.classList.add('toddle-in');
     }));
+  } else if (slideFromDefenderRect) {
+    // The continuing-winner slide -- see this function's own comment
+    // above. Same flyMarker technique flyToStage/flyBackToTile already
+    // use (the real pixel-face avatar, not the plain dot -- faceOptions
+    // present is what selects that), badge-to-badge instead of
+    // tile-to-badge, and a constant scale (1 -> 1) since both ends are
+    // the same on-stage badge size -- this genuinely IS the same picture
+    // sliding from the right slot to the left one, not growing or
+    // shrinking like the board-tile fly-ins.
+    flights.push(flyMarker(slideFromDefenderRect, faceLeft.getBoundingClientRect(),
+                            d.challenger_id, null, 900, { from: 1, to: 1 }).then(() => {
+      void faceLeft.offsetWidth; // force reflow so the animation replays every time
+      faceLeft.classList.add('toddle-in');
+    }));
   }
+  lastWinnerStageRect = null;
   await Promise.all(flights);
   // M32 Fix 1: preduelHostLine used to fire its own separate scripted
   // line right here -- the Host speaking twice per duel through two
@@ -5198,14 +5488,27 @@ function stopRapidFireGuesses(rapidFire) {
 }
 
 async function playDuelTurn(d) {
+  // Tripwire: this turn's own challenger_id/defender_id (game.py's
+  // emit_turn always includes both) should always match whichever duel is
+  // currently open on stage. A mismatch would mean a turn event for a
+  // stage that's no longer current somehow reached here -- exactly the
+  // shape of bug the clock-corruption fix (see traceClock/liveTick.playerId
+  // above) was built to rule out; this catches any OTHER variant of it.
+  if (d.challenger_id !== stageChallengerId || d.defender_id !== stageDefenderId) {
+    console.warn('playDuelTurn: turn is for a stage that is no longer current', {
+      turnChallengerId: d.challenger_id, turnDefenderId: d.defender_id,
+      stageChallengerId, stageDefenderId,
+    });
+    traceClock('playDuelTurn.staleStage', {
+      turnChallengerId: d.challenger_id, turnDefenderId: d.defender_id,
+      stageChallengerId, stageDefenderId, playerId: d.player_id,
+    });
+  }
   const isChallenger = d.player_id === stageChallengerId;
   const activeEl = isChallenger ? playerLeft : playerRight;
-  const idleEl = isChallenger ? playerRight : playerLeft;
   const clockEl = isChallenger ? clockLeft : clockRight;
   const clockKey = isChallenger ? 'left' : 'right';
-
-  activeEl.classList.add('active');
-  idleEl.classList.remove('active');
+  traceClock('playDuelTurn', { playerId: d.player_id, clockKey, clockRemaining: d.clock_remaining, live: d.live });
 
   // A plain wrong answer keeps the exact same image up for the same player
   // to try again, Section 4, so the reveal animation should only replay
@@ -5245,9 +5548,26 @@ async function playDuelTurn(d) {
   // The guess-bubble reveal flourish keeps its own pacing regardless of the
   // clock -- unrelated cosmetic timing for cycling through blurted guesses,
   // scaled the same way it always was for a live turn.
-  const guessAnimMs = d.live
-    ? Math.min(LIVE_TURN_ANIM_MAX_MS, Math.max(LIVE_TURN_ANIM_MIN_MS, d.seconds_used * 300)) / FF_LEVELS[ffLevelIndex]
-    : tickDuration(d.seconds_used);
+  //
+  // Scott: "player with 0 time is still guessing for a moment. the host...
+  // needs to stop the game when a clock hits 0." A turn whose own
+  // clock_remaining is already 0 is, by construction, the LAST turn of the
+  // duel (duel.py's clocks[pid] <= 0 check ends the duel immediately, right
+  // after this exact turn is appended) -- so there's no "next turn" this
+  // flourish is pacing toward, only celebrateDuelWinner's own timeout beat
+  // waiting behind it. The ordinary flourish (up to LIVE_TURN_ANIM_MAX_MS
+  // for a live turn, or up to a full 8000ms via tickDuration for a
+  // scripted one) used to run in full regardless, so the audience watched
+  // this player keep blurting guesses for a beat AFTER their own badge
+  // already read zero, before the timeout stop ever kicked in. Capped to a
+  // quick snap here instead -- still a real, visible flick of a reveal, not
+  // an abrupt cut, just no lingering on a clock that's already run out.
+  const TIME_UP_GUESS_ANIM_MS = 400;
+  const guessAnimMs = d.clock_remaining > 0
+    ? (d.live
+        ? Math.min(LIVE_TURN_ANIM_MAX_MS, Math.max(LIVE_TURN_ANIM_MIN_MS, d.seconds_used * 300)) / FF_LEVELS[ffLevelIndex]
+        : tickDuration(d.seconds_used))
+    : TIME_UP_GUESS_ANIM_MS / FF_LEVELS[ffLevelIndex];
   // The clock's OWN animation is now just a tiny reconciliation snap for a
   // live turn -- it was already ticking live in real time during the whole
   // wait (see liveTick above), so there's nothing left to "catch up."
@@ -5510,6 +5830,54 @@ function appendFeedCard(el) {
   }
 }
 
+// Scott: "add a popup that I won't miss where you think that bonus should
+// happen. I suspect we are never hitting the code somewhere... you can
+// drop a whole file of state information when that popup clicks."
+// Diagnostic-only, purely for the push_streak%3==0 checkpoint (game.py's
+// advantage_earned) -- the existing feed card/host line for that event is
+// easy to lose in a fast-moving show; this can't be missed, and clicking
+// it downloads the FULL event log seen so far (not just this one event) as
+// JSON, so a "why didn't this fire" report comes with real, complete data
+// attached instead of a secondhand description. If this genuinely never
+// appears across a run with a confirmed 3+ win streak, the backend
+// checkpoint itself isn't firing -- if it DOES appear, the bug was always
+// in the existing card/host-line treatment being too subtle, not the
+// trigger. Self-contained (builds and tears down its own DOM), so no
+// markup changes needed elsewhere to add this.
+function showUnmissablePopup(html, debugPayload) {
+  const el = document.createElement('div');
+  el.innerHTML = html;
+  el.style.cssText = `
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(0.85);
+    z-index: 99999; background: #ff2d55; color: #fff; font-size: 26px; font-weight: 800;
+    line-height: 1.4; padding: 28px 44px; border-radius: 16px;
+    box-shadow: 0 0 0 6px #fff, 0 12px 48px rgba(0,0,0,0.55);
+    text-align: center; cursor: pointer; opacity: 0;
+    transition: opacity 0.25s ease, transform 0.25s ease; font-family: inherit;
+  `;
+  el.addEventListener('click', () => {
+    const blob = new Blob([JSON.stringify(debugPayload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `dominion-state-${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+  document.body.appendChild(el);
+  requestAnimationFrame(() => {
+    el.style.opacity = '1';
+    el.style.transform = 'translate(-50%, -50%) scale(1)';
+  });
+  setTimeout(() => {
+    el.style.opacity = '0';
+    el.style.transform = 'translate(-50%, -50%) scale(0.85)';
+    setTimeout(() => el.remove(), 300);
+  }, 5000);
+}
+
 async function runShowPlayback(queue) {
   const events = queue.items;
   for (let i = 0; ; i++) {
@@ -5531,10 +5899,71 @@ async function runShowPlayback(queue) {
       agentThinkingEl.textContent =
         `\u{1F9E0} P${ev.data.player_id + 1}: ${displayName(ev.data.player_id)} (${ev.data.model}) is ${THINKING_LABEL[ev.data.decision] || 'deciding'}…`;
       agentThinkingEl.classList.add('show');
+      // Scott's new recorded cue -- a short one-shot "beep" right as a real
+      // live decision actually starts, same short-hit treatment as the
+      // crowdRally/crowdConcert tracks (see SOUND_FILES' own comment).
+      playRecordedSound('thinking', { volume: 0.5 });
       // Only 'attempt' is a real duel-clock turn (target/intro/tax/continue
       // decisions don't charge either player's clock) -- see engine/game.py's
       // emit call sites.
       if (ev.data.decision === 'attempt') {
+        if (duelCountdownPending) {
+          duelCountdownPending = false;
+          // Scott: "the last thing the host should say before the 'get
+          // ready' shows is 'Get ready to compete!'" -- a fixed line,
+          // not a varied pool, since this is a specific closing cue the
+          // host hits every single duel right as the interview beat
+          // hands off to the countdown visual.
+          //
+          // Scott: "clock barely moves, seems to fight itself." Root
+          // cause: this used to fire on the COMPLETING duel_turn of the
+          // first attempt, not its start -- the reconcile block above
+          // commits the clock unconditionally the instant a duel_turn
+          // arrives, so by the time this ran, the first turn's result
+          // was already reflected in clockState. The audience watched
+          // the clock sit at its post-first-turn value for several real
+          // seconds BEFORE this "get ready" beat and the actual reveal
+          // ever played -- the first answer had effectively already
+          // happened, clock-wise, before being told to get ready for
+          // it. Moved here instead, to the agent_thinking that STARTS
+          // the challenger's first attempt (duel.py's turn_order always
+          // has the challenger act first), so the countdown plays and
+          // finishes BEFORE startLiveClockTick below ever starts moving
+          // the clock at all -- no charge against either player's time
+          // for the countdown itself, and nothing to reconcile before
+          // the audience has even seen "get ready."
+          await speakAndHold(sayHostText('Get ready to compete!'), 200);
+          await playCountdownIntro();
+          startDramaMusic();
+        }
+        // Scott: "the box highlight is off now... the sequence of the
+        // handover is wrong." Root cause: the stage box's .active class
+        // used to be set only inside playDuelTurn, which runs once a
+        // turn COMPLETES -- so the highlight always showed whoever just
+        // FINISHED acting, one full turn behind whoever was actually on
+        // the clock. Set here instead, the same moment the live tick
+        // starts, so the highlight moves to whoever's turn it actually
+        // is right when it becomes their turn, not after they've already
+        // answered.
+        const isChallengerTurn = ev.data.player_id === stageChallengerId;
+        (isChallengerTurn ? playerLeft : playerRight).classList.add('active');
+        (isChallengerTurn ? playerRight : playerLeft).classList.remove('active');
+        // Scott: "1. highlight the player, [2.] show the question, [3.]
+        // let them answer." Root cause of "charged before the Question
+        // appeared": playCountdownIntro above reuses this SAME duelImage
+        // element for its own "GET READY... 3... 2... 1..." visual,
+        // overwriting the actual question question_drawn's handler
+        // already revealed there moments earlier -- and nothing put the
+        // real question back afterward, so the audience saw countdown
+        // digits, then a ticking clock, and only found out what was
+        // actually being asked once the whole turn (and the answer with
+        // it) had already landed in playDuelTurn. Restoring the real
+        // question here, after the highlight and right before the clock
+        // starts, both undoes that overwrite AND enforces the order
+        // Scott wants as a hard sequence, not just a lucky ordering --
+        // harmless on every OTHER turn too (no countdown involved, so
+        // lastDuelPrompt is already exactly this text; a no-op re-assign).
+        duelImage.textContent = lastDuelPrompt || '';
         startLiveClockTick(ev.data.player_id);
       }
       // Echoes the same live-call status right on that player's own
@@ -5577,21 +6006,88 @@ async function runShowPlayback(queue) {
       const speaker = ev.data.role === 'commentator' ? 'The Commentator' : 'Rex Domain';
       agentThinkingEl.textContent = `\u{1F399}️ ${speaker} is thinking of what to say…`;
       agentThinkingEl.classList.add('show');
+      playRecordedSound('thinking', { volume: 0.5 });
       continue;
     }
-    if (agentThinkingEl.classList.contains('show')) {
-      agentThinkingEl.classList.remove('show');
-      clearTimeout(stillThinkingTimer);
+    // Scott: "the clock is ticking down on the wrong player." Root cause
+    // (full audit in the plan this was built from): fire_commentator
+    // (game.py) runs the Commentator's matchup reaction as a detached
+    // background task, so its commentator_line event can land, over the
+    // wire, in the MIDDLE of a different duel's active liveTick window.
+    // This block used to commit/stop liveTick on the mere ARRIVAL of any
+    // non-thinking event -- an implicit "whatever shows up next after the
+    // banner must be this decision's own completion" assumption that a
+    // background-emitted event breaks. Fixed by checking the actual
+    // pairing instead of stream adjacency: only a 'duel_turn' whose own
+    // player_id matches the specific attempt liveTick was started for
+    // ever commits/stops it now. This is correct by construction --
+    // 'attempt' is the only decision that ever starts a liveTick, and
+    // duel.py's on_before_attempt/on_turn pairing is strictly 1:1 within a
+    // duel, so no future background event type (commentator or otherwise)
+    // can trip this again, regardless of what else interleaves on the wire.
+    if (liveTick && ev.type === 'duel_turn' && ev.data.player_id === liveTick.playerId) {
       // Commit wherever the live tick visually landed as the new baseline
       // BEFORE stopping it -- playDuelTurn's own `fromVal = clockState[...]`
       // read (unchanged) picks this up automatically, so the clock's final
       // reconciliation animation only ever has to cover the last fraction
       // of a second, not the whole real wait.
-      if (liveTick) {
-        const elapsedSeconds = pausedAwareElapsed(liveTick.startedAt, liveTick.pausedBaseline) / 1000;
-        clockState[liveTick.clockKey] = Math.max(0, liveTick.fromVal - elapsedSeconds);
-        stopLiveClockTick();
+      //
+      // Scott: "clocks are not running at a wall-clock rate... not
+      // accurate to true time," then later caught this exact fix's own
+      // bug live via a real trace: "jumping up and down in number."
+      // History: this used to hold for a FIXED floor
+      // (LIVE_TURN_CHARGE_FLOOR_SECONDS, llm_agent.py's
+      // MIN_CHARGED_SECONDS) before committing an ESTIMATE based on real
+      // elapsed time. That assumed every attempt eventually gets charged
+      // AT LEAST that floor -- true for a genuine LLM call, but false the
+      // instant a call falls back to ScriptedAgent, which charges via a
+      // DIFFERENT, LOWER floor (ScriptedAgent.attempt_question's own
+      // max(1, ...) formula). Scott's own trace proved it: reconcile
+      // committed an estimate of ~26.94 (30 - a forced 3.06s hold) for a
+      // turn playDuelTurn immediately revealed was actually charged only
+      // 2s (clock_remaining: 28) -- a guaranteed visible jump UP on
+      // essentially every fallback turn, which is the common case per
+      // that same trace (every turn logged "live": false).
+      //
+      // Fixed by not guessing at all: ev.data.seconds_used and
+      // ev.data.clock_remaining are the real, already-known, server-
+      // authoritative charge for THIS exact turn (live or scripted,
+      // doesn't matter which) -- duel_turn always carries both. Hold for
+      // exactly that long (a genuinely fast reply still reads as "at
+      // least a beat," matching the original floor's own intent, just
+      // per-turn accurate instead of a blanket guess), then commit the
+      // exact authoritative value directly. No estimate, no possible
+      // mismatch with what playDuelTurn reveals next, regardless of
+      // whether this turn ends up live or falls back.
+      const targetMs = ev.data.seconds_used * 1000;
+      while (pausedAwareElapsed(liveTick.startedAt, liveTick.pausedBaseline) < targetMs) {
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
+      clockState[liveTick.clockKey] = ev.data.clock_remaining;
+      traceClock('reconcile.committed', {
+        playerId: liveTick.playerId, clockKey: liveTick.clockKey,
+        secondsUsed: ev.data.seconds_used, clockRemaining: ev.data.clock_remaining,
+      });
+      stopLiveClockTick();
+    } else if (liveTick && ev.type !== 'agent_thinking' && ev.type !== 'host_thinking') {
+      // Any other event arriving while a liveTick is active is exactly
+      // the interleaving this fix exists to ignore -- traced, not acted
+      // on, so a future "it happened again" report comes with a precise
+      // record of what actually interleaved instead of another guess.
+      traceClock('reconcile.ignored', { eventType: ev.type, liveTickPlayerId: liveTick.playerId, liveTickClockKey: liveTick.clockKey });
+    }
+    // Scott: "'commentator_line' events (and any future fire_commentator-
+    // style background emit) shouldn't dismiss a decision's own thinking
+    // banner either -- the decision they're describing hasn't actually
+    // resolved just because an unrelated background line happened to
+    // land. Lower-stakes than the clock fix above (cosmetic only), but
+    // the same false-adjacency assumption, so closed the same way: a
+    // documented allowlist a future engineer extends when adding another
+    // background-emitted event type.
+    const OUT_OF_BAND_EVENT_TYPES = new Set(['commentator_line']);
+    if (agentThinkingEl.classList.contains('show') && !OUT_OF_BAND_EVENT_TYPES.has(ev.type)) {
+      agentThinkingEl.classList.remove('show');
+      clearTimeout(stillThinkingTimer);
       if (Object.keys(playerThinking).length) {
         // Deferred to at least PLAYER_THINKING_MIN_MS after it was set, not
         // cleared immediately -- a fast enough model reply could otherwise
@@ -5627,6 +6123,9 @@ async function runShowPlayback(queue) {
         clockState = { left: BASE_CLOCK, right: BASE_CLOCK };
         clockLeft.textContent = String(BASE_CLOCK);
         clockRight.textContent = String(BASE_CLOCK);
+      }
+      if (typeof ev.data.min_charged_seconds === 'number') {
+        LIVE_TURN_CHARGE_FLOOR_SECONDS = ev.data.min_charged_seconds;
       }
       continue;
     }
@@ -5719,6 +6218,24 @@ async function runShowPlayback(queue) {
       appendFeedCard(spotlightEl);
       continue;
     }
+    if (ev.type === 'target_chosen') {
+      // Scott: "'choosing a target' part of the players role needs to be
+      // more out loud like an interview and quicker." Same interview-
+      // banner shell decide_continue's own choice beat already uses
+      // (web/index.html's 'continues'/'retreats' handler below), played
+      // BEFORE the Host's own challenge announcement -- the player names
+      // who they're going after and why, in their own words, ahead of
+      // the Host formally declaring the matchup. Server-side this call is
+      // now capped at a tight 7s (settings.target_decision_timeout), so
+      // this beat is meant to read as quick, not a long held moment.
+      interviewTagEl.textContent = '🎯 The Pick';
+      interviewEl.textContent = `${displayName(ev.data.player_id)}: ${ev.data.reason}`;
+      interviewBannerEl.classList.add('show');
+      await speakAndHold(speakPlayerLine(ev.data.player_id, ev.data.reason), 1300);
+      interviewBannerEl.classList.remove('show');
+      interviewTagEl.textContent = '🎤 Interview';
+      continue;
+    }
     if (ev.type === 'challenge_declared') {
       if (ev.data.challenger_using_bonus) {
         // Told to the host, ahead of the duel: an explicit, held beat so
@@ -5764,17 +6281,16 @@ async function runShowPlayback(queue) {
     }
     if (ev.type === 'commentator_line') {
       // M11: the second AI voice (agents/commentator_agent.py), a beat
-      // after the Host's own line, not a replacement for it -- awaited
-      // for 'matchup' (the per-duel beat, same pacing treatment as the
-      // Host's challenge announcement) so the next beat doesn't talk
-      // over it; fired-and-forget for the rarer special-event moments
-      // ('advantage', 'scramble'), which land alongside other narrative
-      // events already competing for airtime.
-      if (ev.data.moment === 'matchup') {
-        await speakAndHold(sayCommentatorText(ev.data.text), 1200);
-      } else {
-        sayCommentatorText(ev.data.text);
-      }
+      // after the Host's own line, not a replacement for it. Server-side,
+      // every Commentator call (including 'matchup') now runs as its own
+      // background task rather than blocking the show's actual flow
+      // (Scott: "make the calls to the Commentator async so he doesn't
+      // stop the flow") -- since none of them are guaranteed to land at
+      // their originally-intended spot in the stream anymore, none of
+      // them pause playback waiting for the line to finish speaking
+      // either; whatever beat is already playing when this arrives just
+      // keeps going, same as the rarer special-event moments always did.
+      sayCommentatorText(ev.data.text);
       continue;
     }
     if (ev.type === 'pre_duel_intro') {
@@ -5783,17 +6299,62 @@ async function runShowPlayback(queue) {
       await showDomainIntro(ev.data.player_id, ev.data.role, ev.data.text);
       continue;
     }
+    if (ev.type === 'question_drawn') {
+      // Scott: "clocks are running before the question is out." Before
+      // this event existed, the question/answer only ever reached the
+      // frontend bundled inside the COMPLETED duel_turn -- the same
+      // event that reveals the outcome -- so the clock (which correctly
+      // starts the instant a player begins thinking) had already been
+      // visibly ticking for a while by the time the audience found out
+      // what was even being asked. duel.py now emits this the instant
+      // the question is actually decided, before the next attempt (and
+      // its clock) starts, so the reveal lands first.
+      //
+      // Scott: "not sure why you decided to put the question shown
+      // before the 3,2,1, go but that's wrong. just remove the visual."
+      // duelImage is the SAME element playCountdownIntro uses for its
+      // own "GET READY... 3... 2... 1..." visual on a duel's first turn
+      // -- writing the real question into it here, before that countdown
+      // even starts, put the actual image on screen too early, ahead of
+      // the countdown that's supposed to be the first thing shown there.
+      // The countdown itself doesn't need the image at all, so this now
+      // only writes duelImage once no countdown is still pending for
+      // this duel; the agent_thinking handler's own restore (right
+      // before the clock starts) is what actually reveals it, from
+      // lastDuelPrompt, right after the countdown finishes -- unchanged
+      // by this, still exactly where the reveal is meant to land. The
+      // answer text isn't part of the countdown visual at all, so it
+      // keeps updating immediately regardless.
+      if (!duelCountdownPending) {
+        if (ev.data.prompt !== lastDuelPrompt) {
+          duelImage.style.animation = 'none';
+          void duelImage.offsetWidth;
+          duelImage.style.animation = '';
+        }
+        duelImage.textContent = ev.data.prompt;
+      }
+      lastDuelPrompt = ev.data.prompt;
+      duelAnswerText.textContent = ev.data.answer;
+      continue;
+    }
     if (ev.type === 'duel_turn') {
-      if (duelCountdownPending) {
-        duelCountdownPending = false;
-        // Scott: "the last thing the host should say before the 'get
-        // ready' shows is 'Get ready to compete!'" -- a fixed line, not
-        // a varied pool, since this is a specific closing cue the host
-        // hits every single duel right as the interview beat hands off
-        // to the countdown visual.
-        await speakAndHold(sayHostText('Get ready to compete!'), 200);
-        await playCountdownIntro();
-        startDramaMusic();
+      // Scott: "every turn is at least 1 tick/second, hard rule.
+      // visually, mathematically." The engine already enforces this by
+      // construction (duel.py's forced-pass/lucky-blurt floors, llm_agent.
+      // py's MIN_CHARGED_SECONDS, scripted_agent.py's max(1, ...)) -- this
+      // is a live tripwire on that guarantee itself, not a fix, so a
+      // future regression anywhere in those floors gets caught the moment
+      // it ships instead of surfacing as another vague "clock looks
+      // wrong" report.
+      if (ev.data.seconds_used < 1) {
+        console.warn('duel_turn: seconds_used below the 1-tick floor', ev.data);
+        traceClock('duel_turn.subOneTickViolation', { playerId: ev.data.player_id, secondsUsed: ev.data.seconds_used });
+        showUnmissablePopup(
+          `\u{26A0}\u{FE0F} SUB-1-SECOND TURN CHARGED<br>`
+          + `P${ev.data.player_id + 1} was charged ${ev.data.seconds_used}s, below the 1-tick floor.<br>`
+          + `<span style="font-size:14px;font-weight:400;">(click to download full clock trace)</span>`,
+          { violatingTurn: ev.data, clockTrace: window.__clockTrace }
+        );
       }
       const s = ensureStats(ev.data.player_id);
       if (ev.data.outcome === 'correct') { s.correct++; s.totalCorrectSeconds += ev.data.seconds_used; }
@@ -5858,6 +6419,7 @@ async function runShowPlayback(queue) {
       await closeStage();
       playerDomain[ev.data.winner_id] = ev.data.winner_domain_after;
       playerStreak[ev.data.winner_id] = ev.data.winner_streak;
+      playerPrizeMoney[ev.data.winner_id] = ev.data.winner_prize_money;
       captureTiles(ev.data.territory_gained, ev.data.winner_id);
       playTerritoryCaptureSound();
       relabelPlayerTiles(ev.data.winner_id);
@@ -5879,8 +6441,20 @@ async function runShowPlayback(queue) {
       appendFeedCard(el);
       playBonusCrescendo();
       playCrowdBurst(0.5);
-      sayHostText(milestoneHostLine(ev.data));
-      await sleep(700);
+      // Scott: "host voice is getting cut off when talking about money."
+      // Root cause: speakUtterance calls speechSynthesis.cancel()
+      // unconditionally on every new utterance (see its own comment) --
+      // this fired sayHostText without awaiting it, then moved on after a
+      // fixed 700ms with no relationship to how long the line actually
+      // takes to speak. A dollar figure read aloud ("five hundred
+      // thousand dollars") is genuinely long, and the very next
+      // speech-producing event (the next duel's Host line, a player
+      // reacting, etc.) would cancel this one mid-word the moment it
+      // fired before this one finished. speakAndHold actually waits for
+      // the utterance itself (or the old fixed floor, whichever is
+      // longer), same fix already applied everywhere else in this file
+      // that speaks a Host line.
+      await speakAndHold(sayHostText(milestoneHostLine(ev.data)), 700);
       continue;
     }
     if (ev.type === 'advantage_earned') {
@@ -5890,8 +6464,13 @@ async function runShowPlayback(queue) {
       const el = cardFor(ev);
       appendFeedCard(el);
       playCrowdBurst(0.45);
-      sayHostText(advantageHostLine(ev.data));
-      await sleep(850);
+      showUnmissablePopup(
+        `\u{1F525} STREAK BONUS TRIGGERED<br>${displayName(ev.data.player_id)} — `
+        + `${ev.data.streak}-win streak<br>`
+        + `<span style="font-size:14px;font-weight:400;">(click to download full state)</span>`,
+        { triggeringEvent: ev, allEventsSoFar: events }
+      );
+      await speakAndHold(sayHostText(advantageHostLine(ev.data)), 850);
       continue;
     }
     if (ev.type === 'threepeat_drive') {
@@ -5904,8 +6483,7 @@ async function runShowPlayback(queue) {
       const el2 = cardFor(ev);
       appendFeedCard(el2);
       playCrowdBurst(0.6);
-      sayHostText(threepeatDriveHostLine(ev.data));
-      await sleep(850);
+      await speakAndHold(sayHostText(threepeatDriveHostLine(ev.data)), 850);
       continue;
     }
     if (ev.type === 'forced_reconnect') {
@@ -5937,28 +6515,30 @@ async function runShowPlayback(queue) {
       // time_bonus_banked below instead, which never seizes anything. This
       // is the event that actually seizes a domain, so it's the one that
       // should get that line.
-      sayHostText(domainTaxHostLine(ev.data));
-      await sleep(700);
+      // Scott: "host voice is getting cut off when talking about money" --
+      // see territory_milestone's own comment above for the root cause
+      // (speakUtterance's unconditional speechSynthesis.cancel(), fired
+      // before a NOT-awaited sayHostText's utterance had actually
+      // finished). Same fix throughout this block.
+      await speakAndHold(sayHostText(domainTaxHostLine(ev.data)), 700);
       continue;
     }
     if (ev.type === 'time_bonus_banked') {
       const el = cardFor(ev);
       appendFeedCard(el);
-      sayHostText(bankedBonusHostLine(ev.data));
-      await sleep(700);
+      await speakAndHold(sayHostText(bankedBonusHostLine(ev.data)), 700);
       continue;
     }
     if (ev.type === 'burst_prize') {
       const el = cardFor(ev);
       appendFeedCard(el);
-      sayHostText(burstHostLine(ev.data));
-      await sleep(700);
+      await speakAndHold(sayHostText(burstHostLine(ev.data)), 700);
       continue;
     }
     if (ev.type === 'scramble') {
       const el = cardFor(ev);
       appendFeedCard(el);
-      sayHostText(scrambleHostLine(ev.data));
+      await speakAndHold(sayHostText(scrambleHostLine(ev.data)), 700);
       await rebuildBoardAfterScramble(ev.data);
       continue;
     }

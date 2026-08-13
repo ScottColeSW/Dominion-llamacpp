@@ -173,8 +173,27 @@ def get_stats(db_path: str = DB_PATH) -> Dict[str, Any]:
     conn = sqlite3.connect(db_path, timeout=5)
     conn.row_factory = sqlite3.Row
     try:
-        totals = conn.execute("SELECT COUNT(*) AS n FROM shows").fetchone()["n"]
-        duel_totals = conn.execute("SELECT COUNT(*) AS n FROM duels").fetchone()["n"]
+        # Scott: "all the 'scripted' stats need to be separated from the
+        # rest, it skews all the data too much." shows_recorded/
+        # duels_recorded and the home-turf challenger/defender split below
+        # are meant to describe real LLM behavior -- a scripted-only batch
+        # (scripts/run_show_batch.py --scripted-only, or DOMINION_SCRIPTED_
+        # ONLY=1) writes to the exact same tables, and ScriptedAgent's own
+        # heuristics have nothing to do with any model's actual
+        # reliability, so mixing them in dilutes/skews numbers that are
+        # supposed to be about live models. scripted_shows_recorded is
+        # reported alongside, not just dropped, so the split is visible
+        # rather than silently hidden data.
+        totals = conn.execute(
+            "SELECT COUNT(*) AS n FROM shows WHERE backend != 'scripted'"
+        ).fetchone()["n"]
+        scripted_totals = conn.execute(
+            "SELECT COUNT(*) AS n FROM shows WHERE backend = 'scripted'"
+        ).fetchone()["n"]
+        duel_totals = conn.execute(
+            "SELECT COUNT(*) AS n FROM duels d JOIN shows s ON d.show_id = s.id "
+            "WHERE s.backend != 'scripted'"
+        ).fetchone()["n"]
 
         by_reason = {
             row["reason"]: {
@@ -183,10 +202,11 @@ def get_stats(db_path: str = DB_PATH) -> Dict[str, Any]:
                 "defender_wins": row["defender_wins"],
             }
             for row in conn.execute(
-                "SELECT reason, COUNT(*) AS total, "
-                "SUM(winner_id = challenger_id) AS challenger_wins, "
-                "SUM(winner_id = defender_id) AS defender_wins "
-                "FROM duels GROUP BY reason"
+                "SELECT d.reason AS reason, COUNT(*) AS total, "
+                "SUM(d.winner_id = d.challenger_id) AS challenger_wins, "
+                "SUM(d.winner_id = d.defender_id) AS defender_wins "
+                "FROM duels d JOIN shows s ON d.show_id = s.id "
+                "WHERE s.backend != 'scripted' GROUP BY d.reason"
             )
         }
 
@@ -311,6 +331,7 @@ def get_stats(db_path: str = DB_PATH) -> Dict[str, Any]:
 
         return {
             "shows_recorded": totals,
+            "scripted_shows_recorded": scripted_totals,
             "duels_recorded": duel_totals,
             "by_reason": by_reason,
             "models": sorted(models.values(), key=lambda m: m["wins"], reverse=True),

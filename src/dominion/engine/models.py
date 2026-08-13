@@ -72,6 +72,12 @@ class Player:
     time_bonus_banked: bool = False
     disposition: Dict[str, str] = field(default_factory=dict)  # domain -> "confident"/"uneasy"
     milestone_paid: bool = False  # whether the territory milestone bonus has been awarded yet
+    # Cumulative cash actually won so far tonight from capturing territory
+    # (game.py's TILE_PRIZE_VALUE, awarded per tile on every duel win) --
+    # separate from the one-time MILESTONE_BONUS/BURST_PRIZE_BONUS/
+    # GRAND_PRIZE checkpoints, and never decreases even if a tile it was
+    # earned for later changes hands again.
+    prize_money: int = 0
     # A fixed-for-the-run playing-style trait, 0.0 (most cautious) to 1.0
     # (most aggressive), assigned randomly at the draft and never changed.
     # Deliberately independent of base_accuracy/skill -- this is a style
@@ -115,6 +121,33 @@ class Player:
     # re-read and could double down on being wrong about.
     private_notes: List[str] = field(default_factory=list)
     PRIVATE_NOTE_LIMIT = 2
+    # Scott: "I think I assumed they knew they lost or won. this is not
+    # the case really. we should make it clear to them." GameState.memory
+    # already records "X defeated Y" in the THIRD person for every player
+    # to read (see its own comment) -- fine for reading about someone
+    # ELSE's duel, but a model reading about its own win third-person has
+    # no strong signal that this fact is about IT, not just show trivia.
+    # This is the explicit, second-person, first-person-ready version of
+    # that same fact, set only on the winner right when a duel resolves
+    # (game.py) and read directly off the winning Player -- no game/history
+    # plumbing needed since decide_continue/intro_line_combined already
+    # get the Player object directly. Naturally never stale: a player who
+    # wins again overwrites it with the new duel's own note before it could
+    # ever be read twice, and a loser is eliminated outright (exit_interview
+    # already states the loss explicitly), so this only ever needs to
+    # describe "the most recent duel THIS still-active player won."
+    last_result_note: str = ""
+    # Scott: "the player 2 interview can include some answers given by
+    # player 1" -- i.e. the NEXT opponent's interview (intro_line_combined)
+    # should be able to reference this player's own recent trivia answers,
+    # not just the aggregate domain_familiarity/opponent_record numbers.
+    # Set on THIS player directly after every attempt_question turn
+    # (duel.py), unlike duel.py's own last_own_attempt dict (which is
+    # local to one run_duel call and feeds a player's OWN next attempt) --
+    # this one lives on the Player itself specifically so it survives past
+    # this duel ending, for whoever draws this player as their next
+    # opponent to read.
+    last_attempt_note: str = ""
 
     def remember_note(self, note: str) -> None:
         if not note:

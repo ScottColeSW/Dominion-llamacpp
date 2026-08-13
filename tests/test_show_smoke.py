@@ -61,6 +61,37 @@ class ShowSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(not e.data["live"] for e in host_lines))  # SCRIPTED_ONLY
         self.assertTrue(all(e.data["text"] for e in host_lines))
 
+    async def test_target_chosen_events_carry_a_spoken_reason(self) -> None:
+        # Scott: "'choosing a target' part of the players role needs to be
+        # more out loud like an interview." Proves the wiring end to end
+        # in scripted-only mode -- ScriptedAgent.choose_target's new
+        # (target_id, reason) return actually reaches a real event, not
+        # just LLMAgent's live path. One per duel where a real choice
+        # existed at all (a spotlighted player with only one adjacent
+        # opponent, or the forced Threepeat Drive path, never emits this
+        # -- see game.py's guard), so this is an upper bound, not
+        # necessarily exactly PLAYER_COUNT - 1.
+        _, log = await self._run(3)
+        target_events = [e for e in log if e.type == "target_chosen"]
+        self.assertTrue(target_events)
+        self.assertTrue(all(e.data["reason"] for e in target_events))
+        self.assertTrue(all(e.data["target_id"] is not None for e in target_events))
+
+    async def test_exactly_one_challenge_declared_is_flagged_as_the_final_duel(self) -> None:
+        # Scott: "no one seemed to know when it was the last duel of the
+        # whole game." Exactly one challenge_declared per show should be
+        # flagged final_duel=True -- the one where, going in, only two
+        # players were still active -- and it has to be the LAST
+        # challenge_declared in the whole log, since the show ends the
+        # instant that duel resolves.
+        for seed in (1, 2, 3, 4, 5):
+            with self.subTest(seed=seed):
+                _, log = await self._run(seed)
+                declared = [e for e in log if e.type == "challenge_declared"]
+                final_flagged = [e for e in declared if e.data["final_duel"]]
+                self.assertEqual(len(final_flagged), 1)
+                self.assertIs(final_flagged[0], declared[-1])
+
     async def test_host_line_events_appear_for_m32_duel_result_and_continue_reaction(self) -> None:
         # M32 Fix 2/3: announce_duel_result fires once per duel (every
         # elimination gets the Host's merged win/goodbye reaction, even
@@ -142,7 +173,7 @@ class ShowSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertLess(last_exit_index, finale_index)
 
     async def test_threepeat_drive_forces_a_push_with_no_target_decision(self) -> None:
-        # #13: seed 102 is a confirmed, stable repro where a real
+        # #13: seed 1 is a confirmed, stable repro where a real
         # push_streak%3==0 checkpoint fires with a genuinely non-adjacent
         # candidate available, and the resulting duel's winner/loser end
         # up with no safe reconnect bridge available (see the next test
@@ -150,12 +181,22 @@ class ShowSmokeTest(unittest.IsolatedAsyncioTestCase):
         # claims the conquest as a disconnected outpost, no bystander
         # tiles change hands, and the show's fundamental "always exactly
         # PLAYER_COUNT - 1 duels" shape still holds either way.
-        result, log = await self._run(102)
+        #
+        # Re-picked AGAIN here (previously seed 23, before that seed 102
+        # -- see git history for both): any change to how many rng.*
+        # calls ScriptedAgent itself makes (this time: choose_target's new
+        # spoken-reason pool, see agents/scripted_agent.py) shifts the
+        # entire downstream draw sequence for a fixed seed, which is why
+        # this exact scenario keeps landing on a different seed number
+        # every time -- the scenario itself is unaffected, just where it
+        # falls. A real fragility of pinning exact per-seed engine
+        # outcomes like this, not a sign anything is actually broken.
+        result, log = await self._run(1)
         events = list(log)
         self.assertEqual(result["total_duels"], PLAYER_COUNT - 1)
         drives = [e for e in events if e.type == "threepeat_drive"]
         self.assertEqual(len(drives), 1)
-        self.assertEqual(drives[0].data, {"player_id": 3, "target_id": 2, "streak": 3})
+        self.assertEqual(drives[0].data, {"player_id": 6, "target_id": 5, "streak": 3})
         # The forced push right after it has nothing to decide -- no
         # agent_thinking(decision="target") for that turn, and the
         # continues event says so explicitly.
@@ -169,11 +210,16 @@ class ShowSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(e.type == "player_eliminated_by_reconnect" for e in events))
 
     async def test_threepeat_drive_can_resolve_via_a_safe_reconnect_bridge(self) -> None:
-        # #13: seed 143 is a confirmed, stable repro of the OTHER branch --
+        # #13: seed 120 is a confirmed, stable repro of the OTHER branch --
         # a safe bridge (one that doesn't fully strip any bystander) does
         # exist for this particular matchup, so forced_reconnect actually
-        # fires instead of falling back to an outpost.
-        result, log = await self._run(143)
+        # fires instead of falling back to an outpost. Re-picked (again --
+        # see the sibling test above) from seed 59, before that 44, before
+        # that 143 -- this time because TEXT_MODELS dropped phi3:mini
+        # (llm_agent.py), which shifts the draft's own draw sequence and
+        # thus everything downstream for a fixed seed, same fragility the
+        # sibling test's own comment already documents.
+        result, log = await self._run(120)
         self.assertEqual(result["total_duels"], PLAYER_COUNT - 1)
         drives = [e for e in log if e.type == "threepeat_drive"]
         reconnects = [e for e in log if e.type == "forced_reconnect"]

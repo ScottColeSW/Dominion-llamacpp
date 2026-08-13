@@ -9,13 +9,20 @@ import unittest
 from unittest.mock import AsyncMock
 
 from dominion.agents.commentator_agent import LLMCommentatorAgent, ScriptedCommentatorAgent
-from dominion.engine.models import Player
+from dominion.engine.models import GameState, Player
 from dominion.inference.base import GenerationResult
 
 
 def _player(pid: int, name: str, model: str = "test-model") -> Player:
     return Player(id=pid, domain="Dogs", kingdom_name=name, profession="tester",
                   origin_domain="Cats", model=model)
+
+
+def _game(challenger: Player, defender: Player, duel_count: int = 0) -> GameState:
+    game = GameState(players={0: challenger, 1: defender}, owner={0: 0, 1: 1},
+                      board_adj={0: {1}, 1: {0}}, active_ids={0, 1})
+    game.duel_count = duel_count
+    return game
 
 
 class ScriptedCommentatorAgentTest(unittest.IsolatedAsyncioTestCase):
@@ -181,6 +188,53 @@ class LLMCommentatorAgentTest(unittest.IsolatedAsyncioTestCase):
         await agent.react_to_matchup(challenger, defender, "Dogs")
         prompt = client.generate.call_args.args[1]
         self.assertIn("A is riding a 4-duel win streak tonight", prompt)
+
+    async def test_matchup_prompt_includes_a_real_duel_count(self) -> None:
+        # Scott: "Commentator is still wrong about duel counts and what
+        # has happened in this game so far." Real gap: react_to_matchup
+        # never accepted `game` at all before this fix, so it had no duel
+        # count to be right OR wrong about -- any number it said was
+        # invented. game.duel_count counts duels already RESOLVED
+        # (incremented after run_duel returns, in game.py), and this call
+        # fires during the challenge announcement for the NEXT one, before
+        # that increment -- so duel_count=4 means this is duel #5.
+        client = AsyncMock()
+        client.generate.return_value = GenerationResult(
+            text="Reacting.", think_seconds=0.5, raw_latency_seconds=0.5)
+        agent = LLMCommentatorAgent(random.Random(1), model="m", client=client, backend="ollama")
+        challenger, defender = _player(0, "A"), _player(1, "B")
+        game = _game(challenger, defender, duel_count=4)
+        await agent.react_to_matchup(challenger, defender, "Dogs", game=game)
+        prompt = client.generate.call_args.args[1]
+        self.assertIn("duel #5", prompt)
+
+    async def test_matchup_prompt_includes_what_happened_so_far(self) -> None:
+        # Same gap, the other half of Scott's report: GameState.memory
+        # (the "SHOW SO FAR" feed every other live agent call already
+        # gets via _history_block) never reached the Commentator either.
+        client = AsyncMock()
+        client.generate.return_value = GenerationResult(
+            text="Reacting.", think_seconds=0.5, raw_latency_seconds=0.5)
+        agent = LLMCommentatorAgent(random.Random(1), model="m", client=client, backend="ollama")
+        challenger, defender = _player(0, "A"), _player(1, "B")
+        game = _game(challenger, defender)
+        game.remember("A defeated C in a Cats duel (timeout). C is eliminated and out of the game.")
+        await agent.react_to_matchup(challenger, defender, "Dogs", game=game)
+        prompt = client.generate.call_args.args[1]
+        self.assertIn("A defeated C in a Cats duel", prompt)
+
+    async def test_matchup_prompt_omits_duel_count_and_history_with_no_game(self) -> None:
+        # game=None (the default) has to stay a safe no-op -- some callers
+        # (this method's own scripted fallback path, or a test that
+        # doesn't care about show history) never pass one.
+        client = AsyncMock()
+        client.generate.return_value = GenerationResult(
+            text="Reacting.", think_seconds=0.5, raw_latency_seconds=0.5)
+        agent = LLMCommentatorAgent(random.Random(1), model="m", client=client, backend="ollama")
+        challenger, defender = _player(0, "A"), _player(1, "B")
+        await agent.react_to_matchup(challenger, defender, "Dogs")
+        prompt = client.generate.call_args.args[1]
+        self.assertNotIn("duel #", prompt)
 
     async def test_advantage_falls_back_and_succeeds(self) -> None:
         client = AsyncMock()

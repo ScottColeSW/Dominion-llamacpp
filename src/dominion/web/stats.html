@@ -161,6 +161,16 @@ async function load() {
     return;
   }
 
+  // Scott: "all the 'scripted' stats need to be separated from the rest,
+  // it skews all the data too much." ScriptedAgent has no real model
+  // behind it at all, so its numbers aren't a fair comparison against a
+  // genuine LLM's -- split into its own table entirely (below) rather
+  // than just sorted to the bottom of the same one. shows_recorded/
+  // duels_recorded/the home-turf split above are already computed
+  // server-side excluding scripted shows (history.py's get_stats).
+  const realModels = (data.models || []).filter(m => m.backend !== 'scripted');
+  const scriptedModels = (data.models || []).filter(m => m.backend === 'scripted');
+
   const timeoutRow = data.by_reason.timeout || { total: 0, challenger_wins: 0, defender_wins: 0 };
   const capRow = data.by_reason.question_cap || { total: 0, challenger_wins: 0, defender_wins: 0 };
   const allDuels = data.duels_recorded || 1;
@@ -171,8 +181,13 @@ async function load() {
   html += `<div class="summary-bar">
     <div class="summary-stat"><div class="num">${data.shows_recorded}</div><div class="label">Shows Recorded</div></div>
     <div class="summary-stat"><div class="num">${data.duels_recorded}</div><div class="label">Duels Recorded</div></div>
-    <div class="summary-stat"><div class="num">${data.models.length}</div><div class="label">Models Tracked</div></div>
+    <div class="summary-stat"><div class="num">${realModels.length}</div><div class="label">Models Tracked</div></div>
   </div>`;
+  if (data.scripted_shows_recorded) {
+    html += `<div class="h2h-note">${data.scripted_shows_recorded} scripted-only
+      show(s) also recorded, excluded from every number above and from the
+      Leaderboard below -- see Scripted Baseline at the bottom of this page.</div>`;
+  }
 
   html += `<div class="home-turf">
     <div><b>Home-turf note:</b> every duel still tests the
@@ -201,7 +216,7 @@ async function load() {
     <th>Model</th><th>Backend</th><th>Shows</th><th>Duels</th><th>Wins</th><th>Win %</th><th>Accuracy</th>
     <th>Avg Correct (s)</th><th>Fallback %</th><th>Avg Latency (s)</th><th>Champs</th><th>Push %</th>
   </tr></thead><tbody>`;
-  data.models.forEach((m, i) => {
+  realModels.forEach((m, i) => {
     html += `<tr class="${i === 0 ? 'rank-1' : ''}">
       <td>${i === 0 ? '\u{1F451} ' : ''}${m.model}</td>
       <td>${backendTag(m.backend)}</td>
@@ -218,6 +233,39 @@ async function load() {
     </tr>`;
   });
   html += `</tbody></table>`;
+
+  // Scott: "all the 'scripted' stats need to be separated from the rest,
+  // it skews all the data too much." Its own small section, not folded
+  // into the real Leaderboard at all -- ScriptedAgent is a useful
+  // baseline to compare a model against, but it isn't itself a model,
+  // and giving it Win %/Accuracy columns right next to real LLM entries
+  // invited reading it as a genuine competitor.
+  if (scriptedModels.length) {
+    html += `<h2>Scripted Baseline</h2>`;
+    html += `<div class="h2h-note">ScriptedAgent's own heuristics (no model behind
+      it at all) -- a reference point for what "no real reasoning" looks like,
+      not a competitor. Kept separate from the Leaderboard and every summary
+      number above so it can't skew what those are meant to say about real
+      models.</div>`;
+    html += `<table><thead><tr>
+      <th>Backend</th><th>Shows</th><th>Duels</th><th>Wins</th><th>Win %</th><th>Accuracy</th>
+      <th>Avg Correct (s)</th><th>Champs</th><th>Push %</th>
+    </tr></thead><tbody>`;
+    scriptedModels.forEach(m => {
+      html += `<tr>
+        <td>${backendTag(m.backend)}</td>
+        <td>${m.games_played}</td>
+        <td>${m.as_challenger + m.as_defender}</td>
+        <td>${m.wins}</td>
+        <td>${pct(m.win_rate)}</td>
+        <td>${pct(m.accuracy)}</td>
+        <td>${num(m.avg_correct_seconds, 2)}</td>
+        <td>${m.championships}</td>
+        <td>${pct(m.push_rate)}</td>
+      </tr>`;
+    });
+    html += `</tbody></table>`;
+  }
 
   // Head-to-head: only rows for a MODEL_FAMILIES pair where at least one
   // side has real recorded data -- an empty page-wide section would be
@@ -269,7 +317,7 @@ async function load() {
   </div>`;
 
   html += `<h2>Player Cards</h2><div class="cards">`;
-  data.models.forEach(m => {
+  realModels.forEach(m => {
     html += `<div class="card">
       <div class="model-name">${m.model}</div>
       <div class="champ-badge">${m.championships} championship${m.championships === 1 ? '' : 's'} &middot; ${m.games_played} games played</div>

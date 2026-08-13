@@ -4,6 +4,7 @@ Emits everything to an EventLog so the frontend never needs game logic of
 its own (Section 10 of the design doc).
 """
 from __future__ import annotations
+import asyncio
 import os
 import random
 from collections import Counter
@@ -17,7 +18,7 @@ from .models import (
     PROFESSION_DOMAIN_AFFINITY, PROFESSION_DOMAIN_WEIGHT,
 )
 from ..agents.scripted_agent import ScriptedAgent
-from ..agents.llm_agent import LLMAgent, TEXT_MODELS
+from ..agents.llm_agent import LLMAgent, MIN_CHARGED_SECONDS, TEXT_MODELS
 from ..agents.host_agent import LLMHostAgent, ScriptedHostAgent, host_model_for_backend
 from ..agents.commentator_agent import (
     LLMCommentatorAgent, ScriptedCommentatorAgent, commentator_model_for_backend,
@@ -90,6 +91,29 @@ BURST_PRIZE_BONUS = 500_000
 # ever changes to allow one, would be GRAND_PRIZE * 1.25 each.
 MILESTONE_TERRITORY = 5
 MILESTONE_BONUS = 1_000_000
+# Scott: "we need to add prize money to the tiles, so every win gives them
+# some additional incentive." Every OTHER cash award in the show is tied to
+# a checkpoint or a threshold (BURST_PRIZE_BONUS every few duels,
+# MILESTONE_BONUS once at a territory size, GRAND_PRIZE only at the very
+# end) -- there was no reward at all for the single most common event in
+# the whole show, an ordinary duel win. Smaller than either of those (a
+# frequent, per-tile baseline incentive, not a rare checkpoint), and scales
+# with however many tiles a win actually captures (territory_gained below
+# -- normally just the loser's own home tile, but can be more if the split
+# also hands the winner a chain of the loser's earlier conquests).
+# Accumulates on Player.prize_money for the life of the show -- once
+# earned it's kept, even if that exact tile later changes hands again.
+TILE_PRIZE_VALUE = 250_000
+# Scott: "consider the tile prize money could escalate at least at the
+# board scramble, to escalate the tension of money on the line." The
+# Scramble (game.scrambled below) already marks a real narrative turn --
+# board reshuffled, fewer players left, the back half of the show -- so
+# it's the natural point for the stakes themselves to visibly step up too,
+# not just the board. Doubles TILE_PRIZE_VALUE for every duel win from
+# the Scramble onward; a flat multiplier applied at the one existing
+# escalation checkpoint rather than a continuous per-duel ramp, matching
+# how every other bonus in this file is a checkpoint, not a curve.
+TILE_PRIZE_ESCALATION_MULTIPLIER = 2
 
 
 def _make_kingdom_name(rng: random.Random, a_pool: list, b_pool: list) -> str:
@@ -136,6 +160,7 @@ async def _default_client_for_backend(backend: str) -> AsyncIterator[InferenceCl
             max_retry_attempts=settings.retry_max_attempts,
             circuit_breaker_failure_threshold=settings.circuit_breaker_failure_threshold,
             circuit_breaker_cooldown_seconds=settings.circuit_breaker_cooldown_seconds,
+            keep_alive=settings.ollama_keep_alive,
         )
     try:
         yield client
@@ -182,6 +207,32 @@ async def _run_show(seed: Optional[int] = None, log=None,
         if events is not None:
             events.emit(type_, **data)
 
+    # Commentator lines are pure color commentary, never load-bearing for
+    # the show's actual pacing -- Scott: "make the calls to the Commentator
+    # async so he doesn't stop the flow." Unlike the Host (whose lines gate
+    # real sequencing -- a challenge has to be announced before the duel
+    # it's announcing), the Commentator's reactions can land whenever
+    # they're ready without holding up anything else, so each one now runs
+    # as its own background task instead of being awaited inline.
+    # Exceptions are swallowed here rather than propagating into the task's
+    # own unhandled-exception machinery -- same "never let this block or
+    # crash a live show" contract every other agent call already has
+    # (LLMCommentatorAgent itself already falls back to a scripted line on
+    # a clean failure; this is belt-and-suspenders for a genuinely
+    # unexpected one). Collected so the whole batch gets a real chance to
+    # land before the stream ends -- see the gather right before this
+    # function returns.
+    commentator_tasks: List["asyncio.Task[None]"] = []
+
+    def fire_commentator(moment, coro) -> None:
+        async def _run() -> None:
+            try:
+                text = await coro
+            except Exception:
+                return
+            emit("commentator_line", moment=moment, text=text, live=not SCRIPTED_ONLY)
+        commentator_tasks.append(asyncio.create_task(_run()))
+
     # --- Pre-production already happened; this is the on-air draw. ---
     domains = pick_domains(PLAYER_COUNT, rng)
     board_adj = build_pyramid_13()  # Revision 15: locked pyramid tessellation
@@ -191,8 +242,14 @@ async def _run_show(seed: Optional[int] = None, log=None,
     # duel.py's single authoritative definition instead of hardcoding a
     # second copy of the number -- fired once, right at the top of the
     # show, well before any duel's clock is ever actually displayed.
+    # min_charged_seconds: llm_agent.py's floor under a live attempt's
+    # charged clock time (a deliberate game-pacing choice, not a timing
+    # bug -- see MIN_CHARGED_SECONDS's own docstring) -- threaded through
+    # so the frontend's live clock tick can know, same as base_clock, not
+    # keep a second hardcoded copy that could silently drift out of sync.
     emit("show_start", title="Dominion (Agent vs. Agent)", players=PLAYER_COUNT,
-         backend=effective_backend, base_clock=BASE_CLOCK)
+         backend=effective_backend, base_clock=BASE_CLOCK,
+         min_charged_seconds=MIN_CHARGED_SECONDS)
 
     # Phase 1: seed the whole board with domains first, independent of who
     # ends up standing where. Which domain lands on which tile is decided
@@ -301,17 +358,36 @@ async def _run_show(seed: Optional[int] = None, log=None,
              remaining_after=len(remaining_nodes), temperament=player.temperament,
              temperament_label=player.temperament_label(), model=player.model)
 
+    # The Commentator's own rng, deliberately NOT the same `rng` instance
+    # every other agent shares. Its calls now run as detached background
+    # tasks (see fire_commentator) rather than awaited inline, so they can
+    # genuinely execute concurrently with the rest of this function -- a
+    # SHARED random.Random is not safe under that, since two coroutines
+    # both calling rng.choice()/.random() on the same instance while
+    # interleaved makes the exact draw SEQUENCE (and therefore this whole
+    # show's outcome from that point on, given everything downstream reads
+    # the same stream) depend on event-loop scheduling instead of purely on
+    # the seed. Caught by test_show_smoke.py: seed 102's "confirmed, stable
+    # repro" of a Threepeat Drive silently stopped firing once the
+    # Commentator's scripted-fallback rng.choice() calls could land at an
+    # unpredictable point in the middle of the main draw sequence. A
+    # separate stream, keyed off the real show seed (not off `rng` itself,
+    # which would also perturb the shared sequence by however many draws
+    # this seeding consumes), keeps the WHOLE show fully deterministic
+    # per-seed again -- this stream's own draws just no longer have to
+    # happen in any particular order relative to the main one.
+    commentator_rng = random.Random(None if seed is None else f"commentator-{seed}")
     if SCRIPTED_ONLY:
         agents = {pid: ScriptedAgent(rng) for pid in players}
         host_agent = ScriptedHostAgent(rng)
-        commentator_agent = ScriptedCommentatorAgent(rng)
+        commentator_agent = ScriptedCommentatorAgent(commentator_rng)
     else:
         assert client is not None  # guaranteed by run_show's wrapper above
         agents = {pid: LLMAgent(rng, model=players[pid].model, client=client) for pid in players}
         host_agent = LLMHostAgent(
             rng, model=host_model_for_backend(effective_backend), client=client)
         commentator_agent = LLMCommentatorAgent(
-            rng, model=commentator_model_for_backend(effective_backend), client=client,
+            commentator_rng, model=commentator_model_for_backend(effective_backend), client=client,
             backend=effective_backend, stats_snapshot=stats_snapshot)
     game = GameState(players=players, owner=owner, board_adj=board_adj,
                       active_ids=set(players.keys()))
@@ -340,7 +416,16 @@ async def _run_show(seed: Optional[int] = None, log=None,
             game.pending_threepeat_target = None
         else:
             emit("agent_thinking", player_id=active_pid, model=active_player.model, decision="target")
-            target_id = await agent.choose_target(active_player, game)
+            target_id, target_reason = await agent.choose_target(active_player, game)
+            # Scott: "'choosing a target' part of the players role needs
+            # to be more out loud like an interview and quicker." A real,
+            # spoken moment now (same shape as decide_continue's own
+            # (choice, reason) pair) instead of a silent id -- the
+            # frontend plays this as an interview beat before the Host's
+            # own challenge announcement.
+            if target_id is not None:
+                emit("target_chosen", player_id=active_pid, target_id=target_id,
+                     reason=target_reason)
         if target_id is None:
             # This spotlighted player has no adjacent opponents right now
             # (can happen once the board fragments into several owners,
@@ -378,9 +463,18 @@ async def _run_show(seed: Optional[int] = None, log=None,
         # advantage." The structural edge is real and documented, just no
         # longer something this engine tries to correct for.
         tested_domain = defender.domain
+        # Scott caught this live: "no one seemed to know when it was the
+        # last duel of the whole game." With exactly two active players
+        # left, THIS duel's loser is eliminated and the winner is
+        # therefore, by construction, the sole owner of the entire board
+        # (see game.sole_owner/the while loop's own exit condition) --
+        # genuinely decisive, not just another matchup, and known for a
+        # fact right here, before the duel even starts (active_ids only
+        # shrinks once a loser is actually eliminated, further down).
+        is_final_duel = len(game.active_ids) == 2
         emit("challenge_declared", challenger_id=active_pid, defender_id=target_id,
              tested_domain=tested_domain, challenger_using_bonus=challenger_bonus,
-             defender_using_bonus=False, base_clock=BASE_CLOCK)
+             defender_using_bonus=False, base_clock=BASE_CLOCK, final_duel=is_final_duel)
         # M32 Fix 2: snapshotted here, BEFORE run_duel/territory transfer
         # touches anything, so announce_duel_result's is_upset check
         # below can compare each side's territory as it genuinely stood
@@ -416,17 +510,17 @@ async def _run_show(seed: Optional[int] = None, log=None,
             active_player, defender, tested_domain,
             challenger_streak=active_player.push_streak, defender_streak=defender.push_streak,
             challenger_territory=len(active_player.territory),
-            defender_territory=len(defender.territory))
+            defender_territory=len(defender.territory), final_duel=is_final_duel)
         emit("host_line", moment="challenge", text=host_line, live=not SCRIPTED_ONLY)
 
         # The Commentator (M11) -- a second AI voice, a beat after the
         # Host's own announcement, not a replacement for it. Grounded in
         # real cross-show history when stats_snapshot is available (a
         # live show); ScriptedCommentatorAgent's canned pool otherwise.
-        emit("host_thinking", role="commentator")
-        commentator_line = await commentator_agent.react_to_matchup(
-            active_player, defender, tested_domain)
-        emit("commentator_line", moment="matchup", text=commentator_line, live=not SCRIPTED_ONLY)
+        # Fired as a background task (see fire_commentator) -- doesn't
+        # block the pre-duel interview or the duel itself from starting.
+        fire_commentator("matchup", commentator_agent.react_to_matchup(
+            active_player, defender, tested_domain, game=game))
 
         # The pre-duel interview: ONE combined round per side now -- used to
         # be three separate rounds (origin domain, tested domain, read on
@@ -495,6 +589,7 @@ async def _run_show(seed: Optional[int] = None, log=None,
             question_cap=EFFECTIVE_QUESTION_CAP, on_turn=emit_turn,
             on_before_attempt=lambda pid, model: emit(
                 "agent_thinking", player_id=pid, model=model, decision="attempt"),
+            on_question_drawn=lambda q: emit("question_drawn", **q),
             game=game)
         if challenger_bonus:
             active_player.time_bonus_banked = False
@@ -681,6 +776,10 @@ async def _run_show(seed: Optional[int] = None, log=None,
         winner.territory |= winner_gain
         for r in winner_gain:
             game.owner[r] = winner_id
+        tile_prize_rate = (TILE_PRIZE_VALUE * TILE_PRIZE_ESCALATION_MULTIPLIER
+                           if game.scrambled else TILE_PRIZE_VALUE)
+        tile_prize = tile_prize_rate * len(territory_gained)
+        winner.prize_money += tile_prize
 
         was_challenger_win = (winner_id == active_pid)
         if was_challenger_win:
@@ -751,7 +850,8 @@ async def _run_show(seed: Optional[int] = None, log=None,
              winner_domain_after=winner.domain, questions_seen=result.questions_seen,
              clocks_remaining=result.clocks_remaining, turns=len(result.turns_log),
              territory_gained=territory_gained, winner_streak=winner.push_streak,
-             is_upset=is_upset, is_close=is_close)
+             is_upset=is_upset, is_close=is_close, tile_prize=tile_prize,
+             winner_prize_money=winner.prize_money)
 
         # Show-wide memory (Scott: "everyone, all agents, will be more and
         # more informed as the game proceeds") -- a plain-English fact any
@@ -779,6 +879,23 @@ async def _run_show(seed: Optional[int] = None, log=None,
             f"({result.reason.replace('_', ' ')}). {loser.kingdom_name} is eliminated and out "
             f"of the game."
         )
+        # Scott: "I think I assumed they knew they lost or won. this is
+        # not the case really." Explicit, second-person version of the
+        # same fact, just for the winner (see Player.last_result_note's
+        # own comment) -- read directly by decide_continue (this exact
+        # duel's immediate next decision) and woven differently into
+        # intro_line_combined (the FOLLOWING duel's pre-duel interview,
+        # framed around whoever the new opponent turns out to be, not a
+        # repeat of this same sentence). Only a challenger's win actually
+        # inherits the loser's domain (see was_challenger_win's own
+        # comment above -- a winning defender keeps their own ground), so
+        # the note only claims that when it's actually true.
+        winner.last_result_note = (
+            f"You just won! You defeated {loser.kingdom_name} in a {tested_domain} duel and "
+            + (f"inherited their {winner.domain} territory."
+               if was_challenger_win else
+               "successfully defended your own ground.")
+        )
 
         for reassigned_id, tiles in reassignments:
             emit("territory_reassigned", to_id=reassigned_id, tiles=tiles)
@@ -796,9 +913,7 @@ async def _run_show(seed: Optional[int] = None, log=None,
 
         if winner.push_streak > 0 and winner.push_streak % 3 == 0:
             emit("advantage_earned", player_id=winner_id, streak=winner.push_streak)
-            emit("host_thinking", role="commentator")
-            advantage_comment = await commentator_agent.react_to_advantage(winner, winner.push_streak)
-            emit("commentator_line", moment="advantage", text=advantage_comment, live=not SCRIPTED_ONLY)
+            fire_commentator("advantage", commentator_agent.react_to_advantage(winner, winner.push_streak))
             if rng.random() < 0.8:
                 emit("agent_thinking", player_id=winner_id, model=winner.model, decision="tax")
                 target_pid = await agents[winner_id].choose_tax_target(winner, game)
@@ -827,11 +942,8 @@ async def _run_show(seed: Optional[int] = None, log=None,
                 game.pending_threepeat_target = threepeat_target_id
                 emit("threepeat_drive", player_id=winner_id, target_id=threepeat_target_id,
                      streak=winner.push_streak)
-                emit("host_thinking", role="commentator")
-                drive_comment = await commentator_agent.react_to_threepeat_drive(
-                    winner, players[threepeat_target_id])
-                emit("commentator_line", moment="threepeat_drive", text=drive_comment,
-                     live=not SCRIPTED_ONLY)
+                fire_commentator("threepeat_drive", commentator_agent.react_to_threepeat_drive(
+                    winner, players[threepeat_target_id]))
 
         # Burst prize checkpoint.
         if game.duel_count % BURST_CHECKPOINT_EVERY == 0 and game.sole_owner() is None:
@@ -847,10 +959,9 @@ async def _run_show(seed: Optional[int] = None, log=None,
             _apply_scramble(game)
             game.scrambled = True
             emit("scramble", active_players=len(game.active_ids),
-                 board_size=len(game.owner), new_owner=dict(game.owner))
-            emit("host_thinking", role="commentator")
-            scramble_comment = await commentator_agent.react_to_scramble(len(game.active_ids))
-            emit("commentator_line", moment="scramble", text=scramble_comment, live=not SCRIPTED_ONLY)
+                 board_size=len(game.owner), new_owner=dict(game.owner),
+                 new_tile_prize=TILE_PRIZE_VALUE * TILE_PRIZE_ESCALATION_MULTIPLIER)
+            fire_commentator("scramble", commentator_agent.react_to_scramble(len(game.active_ids)))
             game.remember(f"The board was scrambled -- {len(game.active_ids)} players remain, territory reshuffled.")
 
         if game.sole_owner() is not None:
@@ -936,6 +1047,14 @@ async def _run_show(seed: Optional[int] = None, log=None,
     emit("finale", champion_id=champion_id, champion_domain=champion.domain,
          champion_kingdom=champion.kingdom_name, champion_profession=champion.profession,
          prize=GRAND_PRIZE, total_duels=game.duel_count)
+
+    # Any still-in-flight Commentator background tasks (see
+    # fire_commentator) get a real chance to land before the stream closes
+    # -- normally an instant no-op, since by the finale they've had the
+    # rest of the whole show's worth of real time to finish, but this is
+    # what stops a genuinely slow last one from being silently dropped.
+    if commentator_tasks:
+        await asyncio.gather(*commentator_tasks, return_exceptions=True)
 
     return {
         "champion_id": champion_id,

@@ -62,6 +62,19 @@ class ScriptedHostAgentTest(unittest.IsolatedAsyncioTestCase):
         line = await agent.announce_challenge(challenger, defender, "Dogs")
         self.assertIn("Defender Kingdom", line)
 
+    async def test_announce_challenge_leads_with_final_duel_over_a_hot_streak(self) -> None:
+        # Scott: "no one seemed to know when it was the last duel of the
+        # whole game." final_duel takes priority over every other tier,
+        # including a real hot streak that would otherwise win the pick.
+        agent = ScriptedHostAgent(random.Random(1))
+        challenger, defender = _player(0, "Streaky Kingdom"), _player(1, "Quiet Kingdom")
+        line = await agent.announce_challenge(challenger, defender, "Dogs",
+                                                challenger_streak=4, defender_streak=0,
+                                                final_duel=True)
+        self.assertIn("Streaky Kingdom", line)
+        self.assertIn("Quiet Kingdom", line)
+        self.assertNotIn("4", line)
+
     async def test_announce_duel_result_mentions_winner_and_loser(self) -> None:
         agent = ScriptedHostAgent(random.Random(1))
         winner, loser = _player(0, "Winner Kingdom"), _player(1, "Loser Kingdom")
@@ -111,6 +124,19 @@ class LLMHostAgentTest(unittest.IsolatedAsyncioTestCase):
         prompt = client.generate.call_args.args[1]
         self.assertIn("5-duel win streak", prompt)
         self.assertIn("bigger kingdom", prompt)
+
+    async def test_challenge_prompt_flags_the_final_duel_unambiguously(self) -> None:
+        # Scott: "no one seemed to know when it was the last duel of the
+        # whole game." Told to the model as a plain, unmissable fact.
+        client = AsyncMock()
+        client.generate.return_value = GenerationResult(
+            text="A real line.", think_seconds=0.5, raw_latency_seconds=0.5)
+        agent = LLMHostAgent(random.Random(1), model="m", client=client)
+        challenger, defender = _player(0, "A"), _player(1, "B")
+        await agent.announce_challenge(challenger, defender, "Dogs", final_duel=True)
+        prompt = client.generate.call_args.args[1]
+        self.assertIn("FINAL DUEL", prompt)
+        self.assertIn("sole owner of the whole board", prompt)
 
     async def test_challenge_prompt_omits_context_when_nothing_notable(self) -> None:
         client = AsyncMock()

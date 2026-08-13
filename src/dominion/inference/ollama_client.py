@@ -30,6 +30,7 @@ class OllamaInferenceClient:
         max_retry_attempts: int = 2,
         circuit_breaker_failure_threshold: int = 5,
         circuit_breaker_cooldown_seconds: float = 30.0,
+        keep_alive: str = "5m",
     ) -> None:
         # 127.0.0.1, not "localhost" -- on some machines "localhost"
         # resolves to the IPv6 loopback first, but Ollama only listens on
@@ -43,6 +44,12 @@ class OllamaInferenceClient:
         self._max_retry_attempts = max_retry_attempts
         self._breaker = CircuitBreaker(
             circuit_breaker_failure_threshold, circuit_breaker_cooldown_seconds)
+        # See settings.ollama_keep_alive's own comment for the full "RAM
+        # climbing every round" story -- sent on every /api/generate call
+        # below so Ollama actually unloads an idle model instead of
+        # falling back to its own 5-minute default, which let this show's
+        # whole model pool pile up in memory at once.
+        self._keep_alive = keep_alive
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -58,17 +65,39 @@ class OllamaInferenceClient:
     ) -> GenerationResult:
         if grammar is not None:
             logger.debug("ollama_grammar_unsupported", model=model)
-        payload: Dict[str, Any] = {"model": model, "prompt": prompt, "stream": False}
+        payload: Dict[str, Any] = {
+            "model": model, "prompt": prompt, "stream": False, "keep_alive": self._keep_alive,
+        }
         if num_predict is not None:
             payload["options"] = {"num_predict": num_predict}
 
         t0 = time.monotonic()
         attempts = 0
 
+        # Scott's traces: a single duel_turn charging 41s, and separately a
+        # liveTick that ran 57 real seconds before landing a turn charged
+        # at only 1s ("clock... seems to fight itself"). Root cause: this
+        # closure used to pass the SAME full `timeout` to every retry
+        # attempt, so call_with_retry (retry.py) could genuinely spend up
+        # to max_attempts * timeout of real wall-clock time -- e.g. one
+        # attempt genuinely timing out around ~30s, then a retry that
+        # falls back fast, landing a small charged seconds_used despite
+        # the audience having just watched the live clock tick for nearly
+        # a minute. duel.py's whole clock model (attempt_question's
+        # call_timeout, derived from time_remaining) assumes ONE call
+        # costs at most `timeout` -- that assumption only holds if retries
+        # share the same budget instead of each getting a fresh one.
+        # Shrinking `timeout` here by elapsed time on each attempt makes
+        # the TOTAL time across every retry bounded by the original
+        # `timeout`, matching what duel.py already assumed.
         async def _call() -> Dict[str, Any]:
             nonlocal attempts
             attempts += 1
-            resp = await self._client.post(self._generate_url, json=payload, timeout=timeout)
+            remaining = timeout - (time.monotonic() - t0)
+            if remaining <= 0:
+                raise httpx.TimeoutException(
+                    "overall call budget exhausted before this retry attempt")
+            resp = await self._client.post(self._generate_url, json=payload, timeout=remaining)
             resp.raise_for_status()
             return resp.json()
 

@@ -13,6 +13,7 @@ from dominion.agents.llm_agent import LLMAgent, MIN_CHARGED_SECONDS
 from dominion.engine.content import Domain, Question
 from dominion.engine.models import GameState, Player
 from dominion.inference.base import GenerationResult
+from dominion.inference.config import settings
 
 
 def _player(pid: int, name: str) -> Player:
@@ -137,6 +138,51 @@ class OpponentHistoryLineTest(unittest.IsolatedAsyncioTestCase):
             game.players[0], _question(), _domain(), distractors=["cat", "bird"], game=game)
         prompt = client.generate.call_args.args[1]
         self.assertNotIn("faced B", prompt)
+
+
+class ChooseTargetInterviewTest(unittest.IsolatedAsyncioTestCase):
+    """Scott: "'choosing a target' part of the players role needs to be
+    more out loud like an interview and quicker. we give them 7 seconds
+    to pick before we choose for them, first adjacent." """
+
+    async def test_returns_the_models_spoken_reason(self) -> None:
+        game = _three_player_game()
+        options = game.adjacent_opponents(0)
+        client = AsyncMock()
+        client.supports_grammar = False
+        client.generate.return_value = GenerationResult(
+            text="1: They're weaker on defense.\nMEMO: none",
+            think_seconds=0.1, raw_latency_seconds=0.1)
+        agent = LLMAgent(random.Random(1), model="m", client=client)
+        target_id, reason = await agent.choose_target(game.players[0], game)
+        self.assertEqual(target_id, options[1])
+        self.assertEqual(reason, "They're weaker on defense.")
+
+    async def test_uses_the_tight_target_decision_timeout(self) -> None:
+        # Scott: "we give them 7 seconds to pick" -- a much tighter budget
+        # than the general-purpose generate_timeout every other call uses.
+        game = _three_player_game()
+        client = AsyncMock()
+        client.supports_grammar = False
+        client.generate.return_value = GenerationResult(
+            text="0: Going for it.\nMEMO: none", think_seconds=0.1, raw_latency_seconds=0.1)
+        agent = LLMAgent(random.Random(1), model="m", client=client)
+        await agent.choose_target(game.players[0], game)
+        self.assertEqual(client.generate.call_args.kwargs["timeout"], settings.target_decision_timeout)
+        self.assertLess(settings.target_decision_timeout, settings.generate_timeout)
+
+    async def test_falls_back_to_first_adjacent_on_an_unparseable_reply(self) -> None:
+        # Scott: "before we choose for them, first adjacent" -- NOT
+        # super().choose_target()'s fuller temperament-weighted pick.
+        game = _three_player_game()
+        client = AsyncMock()
+        client.supports_grammar = False
+        client.generate.return_value = GenerationResult(
+            text=None, think_seconds=None, raw_latency_seconds=0.1)
+        agent = LLMAgent(random.Random(1), model="m", client=client)
+        target_id, reason = await agent.choose_target(game.players[0], game)
+        self.assertEqual(target_id, min(game.adjacent_opponents(0)))
+        self.assertIn("closest", reason)
 
 
 if __name__ == "__main__":

@@ -37,6 +37,26 @@ async def test_ollama_generate_success() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_ollama_generate_sends_keep_alive() -> None:
+    # Scott: "RAM usage climbing every round during a live show," then
+    # "ollama really manages the memory well if we use it with the right
+    # parameters." Root cause: no keep_alive was ever sent, so Ollama fell
+    # back to its own 5-minute default, letting every model in the show's
+    # pool pile up in memory at once. Default here ("1m", see
+    # inference/config.py's ollama_keep_alive) and an explicit override
+    # both have to actually reach the request.
+    route = respx.post(f"{OLLAMA_URL}/api/generate").mock(
+        return_value=httpx.Response(200, json={"response": "ok"})
+    )
+    client = OllamaInferenceClient(OLLAMA_URL, keep_alive="30s")
+    await client.generate("llama3.2:latest", "prompt", timeout=5.0)
+    await client.aclose()
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["keep_alive"] == "30s"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_ollama_generate_malformed_json_falls_back() -> None:
     respx.post(f"{OLLAMA_URL}/api/generate").mock(
         return_value=httpx.Response(200, content=b"not json")

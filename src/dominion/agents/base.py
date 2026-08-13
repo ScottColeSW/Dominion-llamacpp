@@ -15,7 +15,7 @@ from .scripted_agent import AnswerAttempt
 
 
 class Agent(Protocol):
-    async def choose_target(self, player: Player, game: GameState) -> Optional[int]: ...
+    async def choose_target(self, player: Player, game: GameState) -> Tuple[Optional[int], str]: ...
 
     async def decide_continue(self, player: Player, game: GameState) -> Tuple[bool, str]: ...
 
@@ -31,6 +31,7 @@ class Agent(Protocol):
         time_remaining: Optional[float] = None,
         game: Optional[GameState] = None,
         previously_wrong: Optional[Set[str]] = None,
+        last_own_attempt: Optional[AnswerAttempt] = None,
     ) -> AnswerAttempt: ...
 
     async def intro_line_combined(
@@ -54,7 +55,7 @@ class HostAgent(Protocol):
     async def announce_challenge(self, challenger: Player, defender: Player,
                                   tested_domain: str, challenger_streak: int = 0,
                                   defender_streak: int = 0, challenger_territory: int = 0,
-                                  defender_territory: int = 0) -> str: ...
+                                  defender_territory: int = 0, final_duel: bool = False) -> str: ...
 
     async def announce_finale(self, champion: Player, total_duels: int, prize: int) -> str: ...
 
@@ -72,7 +73,7 @@ class CommentatorAgent(Protocol):
     special events, never every duel_turn)."""
 
     async def react_to_matchup(self, challenger: Player, defender: Player,
-                                tested_domain: str) -> str: ...
+                                tested_domain: str, game: Optional[GameState] = None) -> str: ...
 
     async def react_to_advantage(self, player: Player, streak: int) -> str: ...
 

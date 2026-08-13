@@ -57,7 +57,6 @@ MODEL_DISPLAY_NAMES = {
     "llama3.2:latest": "Llama 3.2",
     "qwen2.5:3b": "Qwen 2.5",
     "gemma2:2b": "Gemma 2",
-    "phi3:mini": "Phi-3 Mini",
 }
 # Fallback parameter sizes if Ollama is unreachable (so the panel still
 # shows something meaningful offline) -- overridden by the real
@@ -66,7 +65,6 @@ MODEL_FALLBACK_PARAMS = {
     "llama3.2:latest": "3.2B",
     "qwen2.5:3b": "3.09B",
     "gemma2:2b": "2.6B",
-    "phi3:mini": "3.8B",
 }
 
 
@@ -232,6 +230,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         max_retry_attempts=settings.retry_max_attempts,
         circuit_breaker_failure_threshold=settings.circuit_breaker_failure_threshold,
         circuit_breaker_cooldown_seconds=settings.circuit_breaker_cooldown_seconds,
+        keep_alive=settings.ollama_keep_alive,
     )
     app.state.llamacpp_client = LlamaCppInferenceClient(
         settings.llamacpp_url,

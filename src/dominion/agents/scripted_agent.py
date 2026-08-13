@@ -82,14 +82,19 @@ class ScriptedAgent:
         self.base_accuracy = base_accuracy
         self.base_pass_chance = base_pass_chance
 
-    async def choose_target(self, player: Player, game: GameState) -> Optional[int]:
+    async def choose_target(self, player: Player, game: GameState) -> Tuple[Optional[int], str]:
         # async for interface uniformity with LLMAgent (agents/base.py) --
         # this body is pure/synchronous and never actually awaits anything.
+        #
+        # Returns (target_id, reason) now, not just a bare id -- Scott's
+        # ask: this choice "needs to be more out loud like an interview,"
+        # same (choice, spoken reason) shape decide_continue already has.
         options = game.adjacent_opponents(player.id)
         if not options:
-            return None
+            return None, "no one left in range to challenge."
         if len(options) == 1:
-            return options[0]
+            only = game.players[options[0]]
+            return options[0], f"{only.kingdom_name}'s the only one in range. Here I come."
         # Temperament shapes WHO gets challenged, not just whether to keep
         # going: aggressive players (temperament -> 1.0) lean toward
         # whoever holds the most territory adjacent to them -- the bigger
@@ -99,21 +104,43 @@ class ScriptedAgent:
         # weights -- i.e. the exact old random-choice behavior.
         exponent = (player.temperament - 0.5) * 4  # -2..+2
         weights = [max(0.05, len(game.players[pid].territory) ** exponent) for pid in options]
-        return self.rng.choices(options, weights=weights, k=1)[0]
+        chosen = self.rng.choices(options, weights=weights, k=1)[0]
+        target = game.players[chosen]
+        if player.temperament > 0.65:
+            reason = self.rng.choice([
+                f"{target.kingdom_name} has the most to lose. That's exactly who I want.",
+                f"Why go small? {target.kingdom_name} is the real prize here.",
+            ])
+        elif player.temperament < 0.35:
+            reason = self.rng.choice([
+                f"{target.kingdom_name} looks like the safest fight I've got right now.",
+                f"No sense taking a risk I don't have to. {target.kingdom_name} it is.",
+            ])
+        else:
+            reason = self.rng.choice([
+                f"{target.kingdom_name} makes the most sense for me right now.",
+                f"I'm going after {target.kingdom_name}.",
+            ])
+        return chosen, reason
 
     async def attempt_question(self, player: Player, question: Question, domain: Domain,
                                 miss_streak: int = 0, distractors: Optional[List[str]] = None,
                                 time_remaining: Optional[float] = None,
                                 game: Optional[GameState] = None,
-                                previously_wrong: Optional[Set[str]] = None) -> AnswerAttempt:
-        # distractors/time_remaining/game are accepted but unused here --
-        # ScriptedAgent already "cheats" via question.answer directly, and
-        # is never slow enough for time_remaining to matter. They exist on
-        # this signature so the shared call site (duel.py) can pass them
-        # uniformly to any agent; LLMAgent (ollama_agent.py) is the one
-        # that actually uses them -- distractors as real multiple-choice
-        # options for a live model that must NOT be handed the answer, and
-        # time_remaining to cap how long it'll wait for a reply.
+                                previously_wrong: Optional[Set[str]] = None,
+                                last_own_attempt: Optional[AnswerAttempt] = None) -> AnswerAttempt:
+        # distractors/time_remaining/game/last_own_attempt are accepted but
+        # unused here -- ScriptedAgent already "cheats" via question.answer
+        # directly, and is never slow enough for time_remaining to matter,
+        # nor does its heuristic reason over its own past accuracy the way
+        # a live model needs telling. They exist on this signature so the
+        # shared call site (duel.py) can pass them uniformly to any agent;
+        # LLMAgent (ollama_agent.py) is the one that actually uses them --
+        # distractors as real multiple-choice options for a live model that
+        # must NOT be handed the answer, time_remaining to cap how long
+        # it'll wait for a reply, and last_own_attempt (Scott: "the players
+        # need to know they got an answer right or wrong too") to tell it
+        # plainly whether its own last guess anywhere in this duel landed.
         # Revision 25: the frontend now animates each turn in genuine real
         # time (one real second per simulated second, per Scott's explicit
         # request), so how long a turn *feels* to watch is a direct,
@@ -224,6 +251,21 @@ class ScriptedAgent:
                 return True, "I know their ground better than my own right now. I'm coming for it."
             if my_edge > their_edge:
                 return False, "I'd rather they come to me -- this is my strongest ground."
+            # Scott caught this exact gap live: a player rode a real streak,
+            # then retreated anyway with only one opponent left to face --
+            # "that's not right." _domain_edge ties at 0-0 far more often
+            # than it resolves either way (most domains connect to neither
+            # a player's origin_domain nor their profession), and a tie
+            # used to fall straight through to the ordinary temperament/
+            # streak-decay roll below, letting a player retreat on pure
+            # accumulated caution with zero actual domain-knowledge
+            # justification -- exactly the "illogical fallback" this whole
+            # 2-player clause exists to rule out, just narrower than
+            # intended (only caught a CLEAR edge, not the tie case, which
+            # is the common one). Retreating doesn't even avoid anything
+            # here anyway (the only other player left just becomes next
+            # turn's challenger regardless), so a genuine tie pushes too.
+            return True, "no real edge either way, so I'm not going to hide. Let's finish this."
         base_rate = 0.65 + 0.20 * player.temperament       # 0.5 -> 0.75
         decay_rate = 0.23 - 0.16 * player.temperament      # 0.5 -> 0.15
         floor = 0.15 + 0.20 * player.temperament           # 0.5 -> 0.25

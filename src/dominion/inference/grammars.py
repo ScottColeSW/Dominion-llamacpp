@@ -31,7 +31,7 @@ def _alternation(values: List[str]) -> str:
     return " | ".join(_literal(v) for v in values)
 
 
-def index_choice_grammar(count: int, *, with_memo: bool = False) -> str:
+def index_choice_grammar(count: int, *, with_memo: bool = False, with_reason: bool = False) -> str:
     """Constrains the reply to exactly one of "0".."count-1" -- the shape
     choose_target and choose_tax_target's prompts both already ask for
     (see llm_agent.py's _parse_index, which stays the parser for both
@@ -40,15 +40,28 @@ def index_choice_grammar(count: int, *, with_memo: bool = False) -> str:
     always present (still free text, still capped in practice by
     num_predict), one further reliability improvement over Ollama's
     "usually there, not guaranteed" MEMO: line.
+
+    with_reason=True (choose_target only, Scott: make target selection
+    "more out loud like an interview") requires a spoken "IDX: reason"
+    first line instead of a bare index -- same "VERDICT: reason" shape
+    push_retreat_grammar already constrains decide_continue to, so the
+    reason is guaranteed present under grammar, same reliability win
+    with_memo already gives the MEMO line.
     """
     if count <= 0:
         raise ValueError("index_choice_grammar requires count > 0")
     idx_alt = _alternation([str(i) for i in range(count)])
+    if with_reason:
+        idx_part = 'idx ": " reason'
+        idx_def = f"idx ::= {idx_alt}\nreason ::= [^\\n]+\n"
+    else:
+        idx_part = "idx"
+        idx_def = f"idx ::= {idx_alt}\n"
     if not with_memo:
-        return f"root ::= idx\nidx ::= {idx_alt}\n"
+        return f"root ::= {idx_part}\n{idx_def}"
     return (
-        f'root ::= idx "\\n" "MEMO: " memo\n'
-        f"idx ::= {idx_alt}\n"
+        f'root ::= {idx_part} "\\n" "MEMO: " memo\n'
+        f"{idx_def}"
         "memo ::= [^\\n]+\n"
     )
 

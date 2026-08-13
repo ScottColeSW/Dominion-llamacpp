@@ -125,6 +125,32 @@ class TwoPlayerEndgameHeuristicTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(keep_going)
         self.assertIn("come to me", reason)
 
+    async def test_scripted_agent_pushes_on_a_genuine_domain_tie(self) -> None:
+        # Scott caught this live: a player rode a real 3-win streak, then
+        # retreated anyway with only one opponent left to face -- "that's
+        # not right." A 0-0 tie (neither domain connects to the mover's
+        # origin_domain or profession) is the COMMON case, not a rare
+        # edge, and used to fall straight through to the ordinary
+        # temperament/streak-decay roll, which can and did retreat with
+        # zero actual domain-knowledge justification. Both "Circus" and
+        # "Trains" score 0 for a Cats-origin "tester".
+        game = self._two_player_game(mover_domain="Circus", opponent_domain="Trains")
+        agent = ScriptedAgent(random.Random(1))
+        keep_going, reason = await agent.decide_continue(game.players[0], game)
+        self.assertTrue(keep_going)
+        self.assertIn("not going to hide", reason)
+
+    async def test_llm_prompt_leans_push_on_a_genuine_domain_tie(self) -> None:
+        client = AsyncMock()
+        client.supports_grammar = False
+        client.generate.return_value = GenerationResult(
+            text="PUSH: Let's go.\nMEMO: none", think_seconds=0.5, raw_latency_seconds=0.5)
+        agent = LLMAgent(random.Random(1), model="m", client=client)
+        game = self._two_player_game(mover_domain="Circus", opponent_domain="Trains")
+        await agent.decide_continue(game.players[0], game)
+        prompt = client.generate.call_args.args[1]
+        self.assertIn("lean PUSH", prompt)
+
     async def test_llm_prompt_names_the_real_domain_tradeoff_with_two_players_left(self) -> None:
         client = AsyncMock()
         client.supports_grammar = False
