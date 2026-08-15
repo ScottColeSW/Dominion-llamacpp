@@ -1739,7 +1739,7 @@ const quitBtn = document.getElementById('quitBtn');
 // instant show_start streams in, same trust pattern already used for
 // challenge_declared's own base_clock field per duel (see openStage).
 // `let`, not `const`, specifically so that sync can happen at all.
-let BASE_CLOCK = 30;
+let BASE_CLOCK = 20;
 const BONUS_SECONDS = 5;
 // Same "one real place, synced from show_start" pattern as BASE_CLOCK --
 // the real, authoritative value lives in agents/llm_agent.py's
@@ -5662,20 +5662,43 @@ async function playDuelTurn(d) {
   // can pace a repeat-free cycle through the actual turn duration instead
   // of a fixed interval.
   const rapidFire = startRapidFireGuesses(d.player_id, d.distractors, guessAnimMs, d.lucky_blurt, d.answer);
-  // Waits for whichever actually takes longer -- the clock's own
-  // animation, or the rapid-fire burst genuinely finishing its cycle on
-  // its own terms (rapidFire.done). A live turn's clock reconciliation is
-  // now a short fixed snap (LIVE_CLOCK_RECONCILE_MS) while the burst can
-  // legitimately need several seconds, especially a full lucky-blurt
-  // cycle -- awaiting the clock alone used to cut the burst off before it
-  // ever reached its final flick, the real bug behind "the blurt aren't
-  // counting when they are correct" (the turn WAS scored correctly the
-  // whole time; the animation just never visibly finished landing on it).
-  await Promise.all([animateClock(clockEl, fromVal, toVal, clockAnimMs), rapidFire.done]);
+  // Scott's priority ordering for this whole sequence: "blurt priority is
+  // less than clock. answer is higher priority than clock. game end
+  // interruption is the highest priority matching clock==0." This used to
+  // await the clock's reconciliation AND the blurt burst together
+  // (Promise.all) -- an ordinary blurt can run up to tickDuration's 8s
+  // ceiling for a scripted turn, which held up everything after it,
+  // including, transitively, the NEXT player's own clock start (the
+  // dispatch loop can't reach that event until this whole function
+  // returns). Cut short here once the clock settles instead, EXCEPT for a
+  // genuine lucky_blurt turn, which still gets its full cycle: the real
+  // answer is deliberately the LAST flick in that burst (see
+  // startRapidFireGuesses), and cutting it off early was the exact past
+  // bug this code was originally written to fix ("the blurt aren't
+  // counting when they are correct" -- the turn WAS scored correctly, the
+  // animation just never visibly reached the flick that showed it).
+  // Ordinary blurts have no such payoff moment to protect, so clock
+  // genuinely does outrank them.
+  await (d.lucky_blurt
+    ? Promise.all([animateClock(clockEl, fromVal, toVal, clockAnimMs), rapidFire.done])
+    : animateClock(clockEl, fromVal, toVal, clockAnimMs));
   clockState[clockKey] = toVal;
 
   stopRapidFireGuesses(rapidFire);
   duelSayLabel.textContent = displayName(d.player_id) + ' says:';
+
+  // Scott: "game end interruption is the highest priority matching
+  // clock==0." This turn's own clock_remaining already tells us whether
+  // it ends the duel (duel.py's clocks[pid] <= 0 check, right after this
+  // exact turn is appended) -- if so, the reveal-pacing sleeps below get
+  // skipped entirely rather than lingering on a beat nobody needs a
+  // dramatic pause for anymore, cutting straight to celebrateDuelWinner's
+  // own timeout beat instead. Answer priority over the clock (the OTHER
+  // half of Scott's ordering) is why these sleeps stay awaited at all on
+  // an ordinary turn, unlike the blurt cut above -- the next player's own
+  // clock/highlight genuinely shouldn't start until this answer has
+  // actually been shown.
+  const isGameEnd = d.clock_remaining <= 0;
 
   if (d.outcome === 'passed') {
     // Performed as a real moment now, not just a text swap -- Scott: "the
@@ -5694,19 +5717,22 @@ async function playDuelTurn(d) {
     if (Math.random() < 0.35) {
       sayHostText(passHostLine(d.clock_remaining));
     }
-    await sleep(300);
-    activeEl.classList.add('flash-pass');
-    await sleep(360);
-    activeEl.classList.remove('flash-pass');
+    if (!isGameEnd) {
+      await sleep(300);
+      activeEl.classList.add('flash-pass');
+      await sleep(360);
+      activeEl.classList.remove('flash-pass');
+    }
   } else {
     duelGuessText.textContent = d.guess;
     duelGuess.classList.add('show', d.correct ? 'correct' : 'wrong');
     speakPlayerLine(d.player_id, d.guess);
-    await sleep(250);
-
-    activeEl.classList.add(d.correct ? 'flash-correct' : 'flash-wrong');
-    await sleep(d.correct ? 420 : 320);
-    activeEl.classList.remove('flash-correct', 'flash-wrong');
+    if (!isGameEnd) {
+      await sleep(250);
+      activeEl.classList.add(d.correct ? 'flash-correct' : 'flash-wrong');
+      await sleep(d.correct ? 420 : 320);
+      activeEl.classList.remove('flash-correct', 'flash-wrong');
+    }
   }
 
   // Real-time audience texture: a chance for a short crowd reaction (and,

@@ -108,10 +108,16 @@ QUESTION_CAP = 30  # total across BOTH players in one duel, not per-player
 # into "4.0"-looking float output despite every individual charge already
 # being a clean integer.
 #
-# Raised from 25 to 30 (Scott, after seeing the wall-clock-accuracy fix's
-# real numbers: ~18-20s per live turn on his machine) -- 25 gave a player
-# almost no room to survive a single slow real call.
-BASE_CLOCK = 30
+# Raised from 25 to 30 earlier (Scott, after seeing the wall-clock-accuracy
+# fix's real numbers: ~18-20s per live turn) -- 25 gave a player almost no
+# room to survive a single slow real call. Brought back down to 20 now that
+# the retry-budget/circuit-breaker fixes (inference/retry.py,
+# ollama_client.py/llamacpp_client.py) and the cleaned-up model roster have
+# made real turns reliably fast again -- Scott: "nailed it! ... we can
+# decrease the time for each duel from 30 second clocks to 20 second
+# clocks now." A tighter clock reads as more urgent/exciting on screen as
+# long as it isn't starving a genuine live call, which it no longer is.
+BASE_CLOCK = 20
 # Revision 21 added CHALLENGER_HOME_TURF_HANDICAP here (a flat clock head
 # start for the challenger, compensating for domain_record/
 # _domain_familiarity_line's real accumulated-experience edge for whoever

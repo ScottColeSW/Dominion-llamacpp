@@ -11,6 +11,8 @@ from __future__ import annotations
 import time
 from typing import Awaitable, Callable, Optional, TypeVar
 
+import httpx
+
 T = TypeVar("T")
 
 
@@ -74,9 +76,34 @@ async def call_with_retry(
             result = await fn()
         except Exception as exc:  # noqa: BLE001 -- deliberately broad, see class docstring
             last_exc = exc
-            breaker.record_failure()
-            if breaker.is_open():
-                break
+            # Scott: "there is a fallback trap... when we fallback once, we
+            # decide to always fallback after once." Root cause: every
+            # exception here used to count the same toward the breaker,
+            # including a perfectly ordinary read timeout from a call that
+            # simply had a tight budget (a low time_remaining, or a
+            # cold-loading model) -- inference/config.py's own comment on
+            # these settings already describes the INTENDED distinction
+            # ("a transient failure (a dropped connection, not a real
+            # timeout)"), just never actually enforced it. This game's own
+            # call sites hand out short timeouts constantly by design
+            # (attempt_question caps its wait to roughly what's left on
+            # the clock), so hitting circuit_breaker_failure_threshold
+            # consecutive read timeouts is a normal, frequent occurrence,
+            # not evidence Ollama is actually down -- yet it tripped the
+            # SAME breaker, which then force-failed EVERY subsequent call
+            # (even from players with plenty of time left) for a full
+            # circuit_breaker_cooldown_seconds, compounding one slow turn
+            # into many forced fallbacks. A genuine inability to reach the
+            # backend at all (ConnectError/ConnectTimeout) or a real error
+            # response still counts; the response just being slow doesn't.
+            is_mere_slowness = (
+                isinstance(exc, httpx.TimeoutException)
+                and not isinstance(exc, httpx.ConnectTimeout)
+            )
+            if not is_mere_slowness:
+                breaker.record_failure()
+                if breaker.is_open():
+                    break
             continue
         breaker.record_success()
         return result

@@ -182,21 +182,26 @@ class ShowSmokeTest(unittest.IsolatedAsyncioTestCase):
         # tiles change hands, and the show's fundamental "always exactly
         # PLAYER_COUNT - 1 duels" shape still holds either way.
         #
-        # Re-picked AGAIN here (previously seed 23, before that seed 102
-        # -- see git history for both): any change to how many rng.*
-        # calls ScriptedAgent itself makes (this time: choose_target's new
-        # spoken-reason pool, see agents/scripted_agent.py) shifts the
-        # entire downstream draw sequence for a fixed seed, which is why
-        # this exact scenario keeps landing on a different seed number
-        # every time -- the scenario itself is unaffected, just where it
-        # falls. A real fragility of pinning exact per-seed engine
-        # outcomes like this, not a sign anything is actually broken.
-        result, log = await self._run(1)
+        # Re-picked AGAIN here (previously seed 1, before that seed 23,
+        # before that seed 102 -- see git history for all three): any
+        # change to how many rng.* calls happen before this scenario --
+        # this time duel.py's BASE_CLOCK dropping from 30 to 20 (Scott,
+        # once tonight's retry/circuit-breaker fixes made real turns
+        # reliably fast again: "we can decrease the time for each duel
+        # from 30 second clocks to 20 second clocks now"), which changes
+        # how many turns fit before a timeout and thus how many rng draws
+        # happen per duel -- shifts the entire downstream draw sequence
+        # for a fixed seed, which is why this exact scenario keeps
+        # landing on a different seed number every time -- the scenario
+        # itself is unaffected, just where it falls. A real fragility of
+        # pinning exact per-seed engine outcomes like this, not a sign
+        # anything is actually broken.
+        result, log = await self._run(4)
         events = list(log)
         self.assertEqual(result["total_duels"], PLAYER_COUNT - 1)
         drives = [e for e in events if e.type == "threepeat_drive"]
         self.assertEqual(len(drives), 1)
-        self.assertEqual(drives[0].data, {"player_id": 6, "target_id": 5, "streak": 3})
+        self.assertEqual(drives[0].data, {"player_id": 9, "target_id": 5, "streak": 3})
         # The forced push right after it has nothing to decide -- no
         # agent_thinking(decision="target") for that turn, and the
         # continues event says so explicitly.
@@ -210,16 +215,15 @@ class ShowSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(e.type == "player_eliminated_by_reconnect" for e in events))
 
     async def test_threepeat_drive_can_resolve_via_a_safe_reconnect_bridge(self) -> None:
-        # #13: seed 120 is a confirmed, stable repro of the OTHER branch --
+        # #13: seed 61 is a confirmed, stable repro of the OTHER branch --
         # a safe bridge (one that doesn't fully strip any bystander) does
         # exist for this particular matchup, so forced_reconnect actually
         # fires instead of falling back to an outpost. Re-picked (again --
-        # see the sibling test above) from seed 59, before that 44, before
-        # that 143 -- this time because TEXT_MODELS dropped phi3:mini
-        # (llm_agent.py), which shifts the draft's own draw sequence and
-        # thus everything downstream for a fixed seed, same fragility the
-        # sibling test's own comment already documents.
-        result, log = await self._run(120)
+        # see the sibling test above) from seed 120, before that 59,
+        # before that 44, before that 143 -- this time because duel.py's
+        # BASE_CLOCK dropped from 30 to 20, same fragility the sibling
+        # test's own comment already documents.
+        result, log = await self._run(61)
         self.assertEqual(result["total_duels"], PLAYER_COUNT - 1)
         drives = [e for e in log if e.type == "threepeat_drive"]
         reconnects = [e for e in log if e.type == "forced_reconnect"]

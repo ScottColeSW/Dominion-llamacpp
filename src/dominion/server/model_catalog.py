@@ -33,6 +33,25 @@ def _fetch_json(url: str, timeout: float) -> Optional[dict]:
         return None
 
 
+# Scott's own /api/run-show request picked phi3:mini and
+# nomic-embed-text:latest alongside a real model, from this picker -- the
+# first is confirmed dead against this machine's Ollama (dropped from
+# TEXT_MODELS, agents/llm_agent.py, for the same reason: two separate
+# /api/generate calls, one right after a fresh re-pull, both failed to
+# return anything at all), and the second isn't a chat model at all --
+# Ollama's own /api/tags reports its capabilities as ["embedding"] only,
+# no "completion". Neither could ever produce a usable trivia answer, so
+# two of three selected models were guaranteed to fail every single
+# attempt regardless of anything else -- which read as a heavy fallback
+# rate that had nothing to do with the actual backend/breaker fixes.
+# EXCLUDED_MODELS is a small, explicit, project-specific list for facts
+# Ollama's own API has no way to self-report (a model that's simply dead
+# on this machine); the completion-capability filter below is the durable,
+# general fix for the OTHER case (embedding-only models), since any future
+# embedding model pulled in would otherwise show up here too.
+EXCLUDED_MODELS = {"phi3:mini"}
+
+
 def _ollama_installed_models() -> Dict[str, Any]:
     data = _fetch_json(f"{settings.ollama_url}/api/tags", OLLAMA_TAGS_TIMEOUT)
     reachable = data is not None
@@ -40,7 +59,13 @@ def _ollama_installed_models() -> Dict[str, Any]:
     for entry in (data or {}).get("models", []):
         name = entry.get("name") or entry.get("model")
         size = entry.get("size")
-        if name and isinstance(size, (int, float)):
+        capabilities = entry.get("capabilities") or []
+        if (
+            name
+            and isinstance(size, (int, float))
+            and name not in EXCLUDED_MODELS
+            and "completion" in capabilities
+        ):
             models.append({"name": name, "size_bytes": int(size)})
     return {"reachable": reachable, "models": models}
 
