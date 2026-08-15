@@ -571,6 +571,23 @@
   .scoreboard-row.leader .scoreboard-name, .scoreboard-row.leader .scoreboard-count {
     color: var(--gold);
   }
+  /* Scott: "The Territory board needs to have headers." A static row,
+     same flex children/classes as a real scoreboard-row so its columns
+     line up exactly, just muted and non-interactive. */
+  .scoreboard-header {
+    font-size: 0.68em; text-transform: uppercase; letter-spacing: 1px;
+    color: var(--dim); opacity: 0.75; padding-bottom: 4px; margin-bottom: 3px;
+    border-bottom: 1px solid rgba(255,255,255,0.12);
+  }
+  /* Scott: "I'd like to see eliminated players Striken (strikeout) from
+     the board instead of removed (this will allow us to see losers who
+     walk away with some winnings and improve our 1,2,3rd place winner
+     stage we need to build)." */
+  .scoreboard-row.eliminated .scoreboard-name,
+  .scoreboard-row.eliminated .scoreboard-count {
+    text-decoration: line-through; opacity: 0.5;
+  }
+  .scoreboard-row.eliminated .scoreboard-dot { opacity: 0.35; }
 
   #stage { width: 100%; max-width: 820px; margin-top: 18px; display: flex; flex-direction: column; gap: 10px; }
 
@@ -1561,6 +1578,13 @@
          other side. -->
     <div class="scoreboard-panel" id="scoreboardPanel">
       <div class="scoreboard-label">Territory</div>
+      <div class="scoreboard-row scoreboard-header">
+        <span class="scoreboard-rank">#</span>
+        <span class="scoreboard-dot" style="visibility:hidden"></span>
+        <span class="scoreboard-name">Player</span>
+        <span class="scoreboard-count">Tiles</span>
+        <span class="scoreboard-prize">Winnings</span>
+      </div>
       <div class="scoreboard-list" id="scoreboardList"></div>
     </div>
   </div>
@@ -1747,9 +1771,26 @@ let isPaused = false;
 let pauseWaiters = [];
 // Total real time spent paused so far this show, plus (while a pause is
 // actively in progress) time since THIS pause began -- pausedAwareElapsed
-// subtracts both from a raw Date.now() delta so anything timing itself
-// against real elapsed time (the duel clock, the blurt cycle) freezes in
-// place instead of "catching up" the instant the pause lifts.
+// subtracts both from a raw performance.now() delta so anything timing
+// itself against real elapsed time (the duel clock, the blurt cycle)
+// freezes in place instead of "catching up" the instant the pause lifts.
+//
+// Scott brought in outside advice on "honest" web clocks (server-time-sync
+// + RTT compensation + monotonic tracking). The sync/RTT half doesn't fit
+// here -- that solves "what's the true current time, independent of a
+// possibly-wrong client clock," which matters for things like anti-cheat
+// or absolute timestamps; this clock only ever measures REAL ELAPSED TIME
+// since a local event (a turn starting), and the server's own
+// clock_remaining is already the authoritative value that overwrites the
+// display the instant a turn resolves -- stronger than a sync endpoint
+// would add, and already built. The monotonic-clock half DOES apply
+// though: every timer here used to read Date.now(), which is wall-clock
+// time and can jump if the OS clock gets NTP-corrected or adjusted while a
+// show is running (an unlikely but real cause of a clock glitch that has
+// nothing to do with any of tonight's other, already-fixed bugs).
+// performance.now() is a monotonic counter immune to that -- switched
+// throughout this whole pause/elapsed chain together, since mixing the two
+// time bases would corrupt the math (different epochs).
 let pausedAccumulatedMs = 0;
 let currentPauseStartedAt = null;
 // Running total of ALL pause time since the show started, past pauses
@@ -1757,7 +1798,7 @@ let currentPauseStartedAt = null;
 // elapsed-since-I-started clock (see pausedAwareElapsed below for why).
 function totalPausedMs() {
   let paused = pausedAccumulatedMs;
-  if (isPaused && currentPauseStartedAt !== null) paused += Date.now() - currentPauseStartedAt;
+  if (isPaused && currentPauseStartedAt !== null) paused += performance.now() - currentPauseStartedAt;
   return paused;
 }
 // Bug Scott caught: "if you press pause and let it sit, the time in pause
@@ -1778,7 +1819,7 @@ function totalPausedMs() {
 // of pause time accrued SINCE that baseline is ever subtracted, so a pause
 // from three duels ago can no longer bleed into this one.
 function pausedAwareElapsed(startedAt, pausedBaseline = 0) {
-  return Date.now() - startedAt - (totalPausedMs() - pausedBaseline);
+  return performance.now() - startedAt - (totalPausedMs() - pausedBaseline);
 }
 function waitWhilePaused() {
   if (!isPaused) return Promise.resolve();
@@ -1795,13 +1836,13 @@ function setPaused(next) {
   pauseBtn.classList.toggle('active', isPaused);
   pauseBtn.textContent = isPaused ? '▶ Resume' : '⏸ Pause';
   if (isPaused) {
-    currentPauseStartedAt = Date.now();
+    currentPauseStartedAt = performance.now();
     if (window.speechSynthesis) speechSynthesis.pause();
     wasMutedBeforePause = muted;
     const ctx = getAudioCtx();
     if (ctx && masterGain && !muted) masterGain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.05);
   } else {
-    pausedAccumulatedMs += Date.now() - currentPauseStartedAt;
+    pausedAccumulatedMs += performance.now() - currentPauseStartedAt;
     currentPauseStartedAt = null;
     if (window.speechSynthesis) speechSynthesis.resume();
     const ctx = getAudioCtx();
@@ -4662,13 +4703,33 @@ function renderScoreboard() {
   for (const owner of Object.values(tileOwner)) {
     counts[owner] = (counts[owner] || 0) + 1;
   }
-  const ranked = Object.keys(counts)
-    .map(Number)
-    .sort((a, b) => counts[b] - counts[a] || a - b);
+  // Scott: "I'd like to see eliminated players Striken (strikeout) from
+  // the board instead of removed (this will allow us to see losers who
+  // walk away with some winnings and improve our 1,2,3rd place winner
+  // stage we need to build)." An eliminated player's last tile changing
+  // hands already drops them out of tileOwner/counts entirely -- without
+  // this, they'd just silently vanish from the one panel that already
+  // tracks territory AND prize money side by side, which a future Place
+  // Stage needs preserved, not discarded. Unioned back in at 0 tiles from
+  // playerEliminated instead, so their final prize total (never cleared
+  // on elimination -- see Player.prize_money's own comment) stays
+  // visible, just struck through and sunk to the bottom.
+  const allIds = new Set([
+    ...Object.keys(counts).map(Number),
+    ...Object.keys(playerEliminated).map(Number),
+  ]);
+  const ranked = [...allIds].sort((a, b) => {
+    const aOut = !!playerEliminated[a], bOut = !!playerEliminated[b];
+    if (aOut !== bOut) return aOut ? 1 : -1;
+    return (counts[b] || 0) - (counts[a] || 0) || a - b;
+  });
   scoreboardListEl.innerHTML = '';
   ranked.forEach((playerId, i) => {
+    const isOut = !!playerEliminated[playerId];
     const row = document.createElement('div');
-    row.className = 'scoreboard-row' + (i === 0 && counts[playerId] > 0 ? ' leader' : '');
+    row.className = 'scoreboard-row'
+      + (i === 0 && counts[playerId] > 0 ? ' leader' : '')
+      + (isOut ? ' eliminated' : '');
     const rank = document.createElement('span');
     rank.className = 'scoreboard-rank';
     rank.textContent = (i + 1) + '.';
@@ -4683,7 +4744,7 @@ function renderScoreboard() {
     name.textContent = `P${Number(playerId) + 1}: ${displayName(playerId)}`;
     const count = document.createElement('span');
     count.className = 'scoreboard-count';
-    count.textContent = counts[playerId];
+    count.textContent = counts[playerId] || 0;
     const prize = document.createElement('span');
     prize.className = 'scoreboard-prize';
     prize.textContent = fmtMoney(playerPrizeMoney[playerId] || 0);
@@ -4895,7 +4956,7 @@ async function animateClock(clockEl, fromVal, toVal, ms) {
   const clampedTo = Math.max(0, toVal);
   const clampedFrom = Math.max(0, fromVal);
   const span = clampedFrom - clampedTo;
-  const start = Date.now();
+  const start = performance.now();
   // Snapshot of all pause time accrued BEFORE this animation started --
   // pausedAwareElapsed only ever subtracts pause time accrued after this
   // point, so an old pause from an earlier duel can't leak in here.
@@ -5149,7 +5210,7 @@ function startLiveClockTick(playerId) {
   const clockKey = isChallenger ? 'left' : 'right';
   const clockEl = isChallenger ? clockLeft : clockRight;
   const fromVal = clockState[clockKey];
-  const startedAt = Date.now();
+  const startedAt = performance.now();
   const pausedBaseline = totalPausedMs();
   // Deliberately NOT scaled by FF_LEVELS[ffLevelIndex] -- this replays
   // genuine backend wait time already elapsed in the real world, not a
@@ -5166,12 +5227,34 @@ function stopLiveClockTick() {
   traceClock('stopLiveClockTick', { hadTick: !!liveTick, playerId: liveTick?.playerId });
   liveTick = null;
 }
+// Scott's outside advice on "honest" clocks flagged this edge case:
+// browsers throttle setInterval hard (down to roughly once a second or
+// worse) the instant a tab isn't the focused/foreground one, so a live
+// tick's normal 100ms cadence can sit stale for a while after the tab
+// regains focus, waiting for its next (still lagging) fire. Doesn't need
+// a full resync against the server (see totalPausedMs's own comment for
+// why this clock doesn't work that way) -- just an immediate recompute
+// from the same real elapsed-time formula the interval itself already
+// uses, the moment visibility actually returns, so the display catches up
+// right away instead of visibly lagging for another beat.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !liveTick) return;
+  const elapsedSeconds = pausedAwareElapsed(liveTick.startedAt, liveTick.pausedBaseline) / 1000;
+  const clockEl = liveTick.clockKey === 'left' ? clockLeft : clockRight;
+  clockEl.textContent = displaySeconds(liveTick.fromVal - elapsedSeconds);
+});
 // Tracks whatever prompt is currently on screen so the reveal animation
 // only replays when the image actually changes (a fresh question after a
 // pass, or the fresh image the other player gets after a correct answer),
 // never on a plain wrong answer, which by design keeps the same image up
 // for the same player to try again, Section 4.
 let lastDuelPrompt = null;
+// Companion to lastDuelPrompt above -- tracks the current question's real
+// answer the same way, so the agent_thinking handler's post-countdown
+// restore can put both back on screen together (see that restore's own
+// comment for why this pairing matters: "the answer shows before the
+// question" was Scott's exact report when only the prompt was gated).
+let lastDuelAnswer = null;
 // The countdown/music used to fire at the end of openStage() itself, but
 // now two pre_duel_intro events (challenger, then defender) stream in
 // between the badge setup and the actual first duel_turn -- firing the
@@ -5270,6 +5353,7 @@ async function openStage(d) {
   // first" caption that then gets replaced by the countdown a moment later.
   duelImage.textContent = '';
   lastDuelPrompt = null; // a fresh duel always reveals its first image as new
+  lastDuelAnswer = null;
   duelGuess.classList.remove('show', 'correct', 'wrong', 'passed');
   duelSayLabel.textContent = 'They say:';
   duelGuessText.textContent = '—';
@@ -5963,7 +6047,13 @@ async function runShowPlayback(queue) {
         // Scott wants as a hard sequence, not just a lucky ordering --
         // harmless on every OTHER turn too (no countdown involved, so
         // lastDuelPrompt is already exactly this text; a no-op re-assign).
+        //
+        // Scott: "the answer shows before the question." Restoring
+        // duelAnswerText right alongside duelImage here too -- question_
+        // drawn now gates both behind the same countdown check, so both
+        // need restoring together, not just the image.
         duelImage.textContent = lastDuelPrompt || '';
+        duelAnswerText.textContent = lastDuelAnswer || '';
         startLiveClockTick(ev.data.player_id);
       }
       // Echoes the same live-call status right on that player's own
@@ -6322,9 +6412,15 @@ async function runShowPlayback(queue) {
       // this duel; the agent_thinking handler's own restore (right
       // before the clock starts) is what actually reveals it, from
       // lastDuelPrompt, right after the countdown finishes -- unchanged
-      // by this, still exactly where the reveal is meant to land. The
-      // answer text isn't part of the countdown visual at all, so it
-      // keeps updating immediately regardless.
+      // by this, still exactly where the reveal is meant to land.
+      //
+      // Scott: "the answer shows before the question." This block used
+      // to gate duelImage behind duelCountdownPending but leave
+      // duelAnswerText updating unconditionally -- on a duel's first
+      // turn, that meant "Answer sought: X" was already visible while
+      // the actual question was still hidden behind the countdown. Same
+      // gate now applies to both, and the agent_thinking handler's
+      // restore (below) puts both back together too.
       if (!duelCountdownPending) {
         if (ev.data.prompt !== lastDuelPrompt) {
           duelImage.style.animation = 'none';
@@ -6332,9 +6428,10 @@ async function runShowPlayback(queue) {
           duelImage.style.animation = '';
         }
         duelImage.textContent = ev.data.prompt;
+        duelAnswerText.textContent = ev.data.answer;
       }
       lastDuelPrompt = ev.data.prompt;
-      duelAnswerText.textContent = ev.data.answer;
+      lastDuelAnswer = ev.data.answer;
       continue;
     }
     if (ev.type === 'duel_turn') {
@@ -6396,6 +6493,11 @@ async function runShowPlayback(queue) {
       // stage drama, so it should update as soon as the fact is true.
       playerEliminated[ev.data.loser_id] = true;
       renderModelRosterPlayers();
+      // Strikes the loser through on the Territory scoreboard right away
+      // too (see renderScoreboard's own comment) -- territory_reassigned
+      // events elsewhere would eventually trigger this same re-render on
+      // their own, but not necessarily before this exact instant.
+      renderScoreboard();
       await celebrateDuelWinner(ev.data);
       // The loser's send-off -- a spoken goodbye line + a "toddling off
       // screen" exit animation, with the winner re-spotlighted alone --

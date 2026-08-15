@@ -43,6 +43,21 @@ from .llm_agent import _trim_to_last_sentence
 # prompts below use this name; web/index.html's static welcome line is
 # the actual self-introduction moment ("Good evening, I'm Rex Domain...").
 HOST_NAME = "Rex Domain"
+# Scott, from outside research on what makes an AI game host fun to
+# watch: "An Opinionated System Prompt: Give the host clear biases or
+# quirks." "The host still seems dull... did we glean any tips from the
+# .md I gave?" -- genuinely missing before this; every prompt below only
+# ever described the ROLE (announcer), never a personality. Builds on the
+# king/ruler theme HOST_NAME already leans on (Rex = ruler) rather than
+# reaching for something unrelated to this show -- a theatrical royal
+# herald, not a neutral TV voice. Threaded into every one of this class's
+# prompts below as its own short sentence, so it's a consistent trait
+# every time the Host speaks, not a one-off flourish on a single line.
+HOST_PERSONA = (
+    "You're a theatrical royal herald at heart, and you treat every duel "
+    "like a proclamation of conquest -- never miss a chance for a kingly "
+    "flourish"
+)
 
 
 class ScriptedHostAgent:
@@ -268,8 +283,8 @@ class LLMHostAgent(ScriptedHostAgent):
             )
         prompt = (
             f"You are {HOST_NAME}, the live host of a TV trivia game show, in front of a "
-            f"real studio audience. Announce the next matchup, live, on air, in ONE or TWO "
-            f"short punchy sentences a real game show host would actually say out loud. "
+            f"real studio audience. {HOST_PERSONA}. Announce the next matchup, live, on "
+            f"air, in ONE or TWO short punchy sentences a real game show host would actually say out loud. "
             f"You don't need to say your own name in every line -- only if it actually fits "
             f"naturally.\n"
             f"Challenger: {challenger.kingdom_name} ({challenger.profession}).\n"
@@ -297,7 +312,8 @@ class LLMHostAgent(ScriptedHostAgent):
 
     async def announce_finale(self, champion: Player, total_duels: int, prize: int) -> str:
         prompt = (
-            f"You are {HOST_NAME}, the live host of a TV trivia game show. The show just "
+            f"You are {HOST_NAME}, the live host of a TV trivia game show. {HOST_PERSONA}. "
+            f"The show just "
             f"ended: {champion.kingdom_name} ({champion.profession}) is the sole owner of "
             f"the entire board after {total_duels} duels -- every tile, the bragging rights "
             f"that come with owning all of it, AND a ${prize:,} grand prize. "
@@ -329,7 +345,8 @@ class LLMHostAgent(ScriptedHostAgent):
         else:
             drama_note = "A clean, decisive win, nothing especially close or upsetting about it."
         prompt = (
-            f"You are {HOST_NAME}, the live host of a TV trivia game show. A duel on "
+            f"You are {HOST_NAME}, the live host of a TV trivia game show. {HOST_PERSONA}. "
+            f"A duel on "
             f"{tested_domain} just ended: {winner.kingdom_name} won, and {loser.kingdom_name} "
             f"is eliminated -- out of the show for good. {drama_note}\n"
             f"Announce this live, on air, in ONE or TWO short sentences that do BOTH things "
@@ -353,7 +370,7 @@ class LLMHostAgent(ScriptedHostAgent):
         # decision is actually made.
         verdict = "keeps pushing" if keep_going else "pulls back to defend"
         prompt = (
-            f"You are {HOST_NAME}, the live host of a TV trivia game show. "
+            f"You are {HOST_NAME}, the live host of a TV trivia game show. {HOST_PERSONA}. "
             f"{player.kingdom_name} just made a real decision, live, on air: they said "
             f'"{reason}" and {verdict}.\n'
             f"React to that specific choice and reason, live, on air, in ONE short "

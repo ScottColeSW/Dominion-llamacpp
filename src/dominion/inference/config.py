@@ -87,16 +87,22 @@ class Settings(BaseSettings):
     # LLAMACPP_MODELS are independent of each other -- not exposed in the
     # M8 model picker for v1, a deliberate cut, not an oversight.
     #
-    # Bumped from llama3.2:latest to a bigger model deliberately: the Host
-    # speaks maybe 3 times a duel (announce_challenge/announce_duel_result/
-    # announce_continue_decision), nowhere near attempt_question's
-    # every-single-turn call volume for players, so it can absorb real
-    # cold-load cost far more easily than TEXT_MODELS can (measured 37s vs.
-    # the fast tier's 9-24s). Also frees llama3.2:latest to be purely a
-    # player voice instead of double-duty as Host+player, and a bigger
-    # model is more likely to actually hold onto an opinionated persona
-    # instruction consistently, which the Host doesn't have yet.
-    host_model_ollama: str = "qwen2.5:7b"
+    # Bumped to qwen2.5:7b earlier, then reverted back here -- Scott:
+    # "we are falling back a lot now." The reasoning for the bump (Host
+    # speaks rarely, ~3 times a duel, so it can absorb cold-load cost far
+    # more easily than TEXT_MODELS's every-turn volume) only accounted for
+    # the Host's OWN calls, not the collateral cost: qwen2.5:7b was a 5th
+    # distinct model in hot rotation, sharing nothing with any player or
+    # the Commentator, and by far the slowest to cold-load (measured
+    # 31-37s vs. the fast tier's 9-24s). Every time the Host spoke, it
+    # evicted whatever player model Ollama had resident -- and a player's
+    # own call_timeout (roughly time_remaining + 1.5s) essentially never
+    # has 30+ real seconds of budget to survive that reload, so it fell
+    # back to ScriptedAgent almost every time. Sharing llama3.2:latest
+    # with the player pool again keeps the total distinct models actually
+    # cycling through Ollama's single-resident-model cache down to 3
+    # (llama3.2/qwen2.5:3b/gemma2:2b), same as before the bump.
+    host_model_ollama: str = "llama3.2:latest"
     host_model_llamacpp: str = "llama-3.2-3b-instruct"
 
     # The Commentator (agents/commentator_agent.py, M11) -- a second,
