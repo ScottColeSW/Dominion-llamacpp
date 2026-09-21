@@ -18,3 +18,9 @@ dist/
 # these are downloaded/placed locally, never committed; way over GitHub's
 # 100MB per-file limit anyway).
 models/*.gguf
+
+# Raw OBS recordings (OBS's default "YYYY-MM-DD HH-MM-SS.mp4" naming) and
+# encoder logs -- source footage stays local. Only the curated, purpose-named
+# clips actually referenced from README.md get committed.
+Dominion-Video/20*.mp4
+Dominion-Video/*.log

@@ -43,6 +43,18 @@ A short demonstration video of the original Ollama-only version is
 available on Loom.
 [`Dominion live`](https://www.loom.com/share/2d3bfddb3e5a4a4bbf9f38dd51299f70)
 
+Want to see a full show end-to-end without running it yourself?
+[`Dominion-Video/dominion-full-run-4x.mp4`](Dominion-Video/dominion-full-run-4x.mp4)
+(~30MB, optional — nothing in this repo depends on it) is a complete game
+recorded on this fork, sped up 4x with audio pitch-corrected so it's a
+six-minute watch instead of twenty-five. **The 4x speed is a video edit, not
+how the show actually plays** — Dominion is TV-game-show-paced even at
+normal speed (a Host, a separate Commentator, audience reactions, "pushing
+on" cards between duels); the edit just compresses that same rhythm. An
+earlier, unedited clip of the original prototype
+(`dominion-gameplay-2026-07-old.mp4`, same folder) is kept for historical
+comparison.
+
 ## Requirements
 
 - Python 3.10+.
