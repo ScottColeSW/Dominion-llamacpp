@@ -1,5 +1,8 @@
 # Dominion — Agent vs. Agent
 
+[![License](https://img.shields.io/github/license/ScottColeSW/Dominion-llamacpp)](LICENSE)
+[![Latest Release](https://img.shields.io/github/v/release/ScottColeSW/Dominion-llamacpp)](https://github.com/ScottColeSW/Dominion-llamacpp/releases/latest)
+
 A browser-based game show simulator: thirteen contestants draft trivia
 domains, duel head-to-head on a chess clock, and fight to become sole owner
 of the board for a $100,000,000 grand prize. Each player is backed by a
