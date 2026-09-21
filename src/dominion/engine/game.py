@@ -384,10 +384,30 @@ async def _run_show(seed: Optional[int] = None, log=None,
     else:
         assert client is not None  # guaranteed by run_show's wrapper above
         agents = {pid: LLMAgent(rng, model=players[pid].model, client=client) for pid in players}
-        host_agent = LLMHostAgent(
-            rng, model=host_model_for_backend(effective_backend), client=client)
+        host_model = host_model_for_backend(effective_backend)
+        commentator_model = commentator_model_for_backend(effective_backend)
+        if effective_backend == "ollama":
+            # Ollama only keeps one model warm at a time in practice (see
+            # host_model_ollama's own comment in inference/config.py) -- a
+            # Host or Commentator model that isn't already in the player
+            # pool is a distinct 4th/5th model in rotation, and costs a
+            # 30+s cold-load every time it speaks, which is often longer
+            # than that call's own timeout budget and falls back to
+            # scripted. The configured defaults were picked to overlap
+            # with the *default* player trio; if the picker was used to
+            # choose a different trio (M8), reuse whichever of THOSE
+            # models sorts first instead of silently reintroducing an
+            # unshared model. Deterministic (no rng draw), so this can't
+            # perturb the show's per-seed reproducibility.
+            player_models = {p.model for p in players.values()}
+            if player_models:
+                if host_model not in player_models:
+                    host_model = sorted(player_models)[0]
+                if commentator_model not in player_models:
+                    commentator_model = sorted(player_models)[0]
+        host_agent = LLMHostAgent(rng, model=host_model, client=client)
         commentator_agent = LLMCommentatorAgent(
-            commentator_rng, model=commentator_model_for_backend(effective_backend), client=client,
+            commentator_rng, model=commentator_model, client=client,
             backend=effective_backend, stats_snapshot=stats_snapshot)
     game = GameState(players=players, owner=owner, board_adj=board_adj,
                       active_ids=set(players.keys()))
