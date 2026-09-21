@@ -6080,6 +6080,19 @@ async function runShowPlayback(queue) {
         // need restoring together, not just the image.
         duelImage.textContent = lastDuelPrompt || '';
         duelAnswerText.textContent = lastDuelAnswer || '';
+        // Scott: "we have to put a -- in the 'says/blurts' area when we
+        // change players, otherwise that stale info sits too long
+        // visually." The say/blurt area only ever got overwritten once
+        // THIS player's own attempt actually started producing content
+        // (startRapidFireGuesses/playDuelTurn) -- during the whole
+        // live-thinking stretch before that (this player's clock/
+        // highlight already moved, per the fixes above), it was still
+        // showing whatever the PREVIOUS player's turn last left there.
+        // Same neutral reset openStage already uses for a brand new duel,
+        // applied here too so a mid-duel handover gets it just as clean.
+        duelGuess.classList.remove('show', 'correct', 'wrong', 'passed', 'rapidfire', 'thinking');
+        duelSayLabel.textContent = 'They say:';
+        duelGuessText.textContent = '—';
         startLiveClockTick(ev.data.player_id);
       }
       // Echoes the same live-call status right on that player's own
